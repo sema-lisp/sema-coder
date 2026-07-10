@@ -1,5 +1,5 @@
 (load "harness.sema")
-(load "../tui.sema")
+(load "../src/tui.sema")
 
 (set! *rows* 24) (set! *cols* 80) (set! *cwd* "/tmp") (set! *model* "")
 (define d "/tmp/sc-hot-headless") (shell "rm" "-rf" d) (file/mkdir d)

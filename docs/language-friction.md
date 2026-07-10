@@ -14,13 +14,40 @@ constructor — both already supported); item 4 was narrowed to PARTIAL. One
 incidental gap surfaced during verification and was filed as **#94** (prelude
 macro names can't be `(define (name …) …)` heads).
 
+## Upstream status (checked 2026-07-10, evening)
+
+Fixed on `main` — in the Unreleased changelog, **not yet in any release**
+(latest release is 1.30.0, which still has all of these). This codebase keeps
+its workarounds until a release ships; each carries a "fold onto the builtin"
+note at the definition site:
+
+- **#82 stale global reads from `load`ed units** — CLOSED (repro +
+  characterization on the issue). `should-quit?` accessor workaround stays in
+  `src/tui.sema`.
+- **#90 `enumerate`/`map-indexed`** — CLOSED. Local copies stay in
+  `src/text.sema`.
+- **#91 sequence HOFs over `mutable-array`** — CLOSED. The
+  `mutable-array/->vector` copies stay in `src/transcript.sema` / `src/mcp.sema`.
+- **#92 `string/truncate-width`** — CLOSED. `clip-width`/`clip-plain` stay in
+  `src/text.sema`.
+- **#94 prelude-macro names as define heads** — still OPEN, but the fix is in
+  the Unreleased changelog ("Prelude macro names are usable as ordinary
+  identifiers").
+
+Still open upstream: **#83** (string/index-of start offset), **#84**
+(take/drop order), **#85** (deftool `:default`), **#86** (`agent/run`
+`:usage`), **#87** (cancelled turn loses transcript), **#88**
+(read-key-timeout blocks scheduler), **#89** (`shell` `:cwd`/`:env` +
+`shell/quote`), **#93** (`markdown/to-ansi`). Related new bug found upstream:
+**#104** (async/spawn snapshots captured locals).
+
 ## Blocker (filed separately)
 
 0. **Stale global reads in recursive functions from `load`ed units** — [#82].
    The TUI's quit flag (`set!` from a command handler, read by the key loop) is
-   never observed, so the TUI can't exit; 9-line repro and characterization in
-   `docs/bugs/load-unit-stale-global-read-in-recursive-fns.md`. sema-coder now
-   reads the flag through an accessor as a workaround.
+   never observed, so the TUI can't exit; 9-line repro and characterization on
+   the issue (sema-lisp/sema#82). sema-coder reads the flag through an accessor
+   as a workaround (fixed upstream, unreleased — see "Upstream status" above).
 
 ## Stdlib gaps that caused shipped bugs
 

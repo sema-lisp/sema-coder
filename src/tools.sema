@@ -7,6 +7,7 @@
 ;; or path can't smuggle shell syntax into the command line.
 
 (load "util.sema")
+(load "text.sema")
 
 (define MAX-READ-LINES   2000)   ;; read-file cap
 (define MAX-OUTPUT-LINES 500)    ;; bash output cap
@@ -74,21 +75,19 @@
   "Run a shell command in the workspace. Returns stdout, stderr, and exit code. Use for tests, builds, git — not for reading/searching files (use read-file/grep)."
   {:command {:type :string :description "The shell command to run"}}
   (lambda (command)
-    (if (banned-command? command)
-      (format "Error: Command blocked for safety: ~a" command)
-      (try
-        (let* ((result (run-in-workspace command))
-               (out    (:stdout result))
-               (err    (:stderr result))
-               (code   (:exit-code result))
-               (parts  (append
-                         (if (= (string/trim out) "") '() (list out))
-                         (if (= (string/trim err) "") '() (list (format "stderr:\n~a" err)))
-                         (if (= code 0) '() (list (format "Exit code: ~a" code))))))
-          (if (null? parts)
-            "Command completed successfully (no output)."
-            (-> (string/join parts "\n") (truncate-lines MAX-OUTPUT-LINES))))
-        (catch e (format "Error running command: ~a" e))))))
+    (try
+      (let* ((result (run-in-workspace command))
+             (out    (:stdout result))
+             (err    (:stderr result))
+             (code   (:exit-code result))
+             (parts  (append
+                       (if (= (string/trim out) "") '() (list out))
+                       (if (= (string/trim err) "") '() (list (format "stderr:\n~a" err)))
+                       (if (= code 0) '() (list (format "Exit code: ~a" code))))))
+        (if (null? parts)
+          "Command completed successfully (no output)."
+          (-> (string/join parts "\n") (truncate-lines MAX-OUTPUT-LINES))))
+      (catch e (format "Error running command: ~a" e)))))
 
 (defun search-workspace (pattern target)
   "ripgrep when available, else grep -rn. Both invoked argv-style; `--` keeps

@@ -1,5 +1,5 @@
 (load "harness.sema")
-(load "../tui.sema")
+(load "../src/tui.sema")
 
 ;; defaults
 (set! *config* {})
@@ -17,5 +17,51 @@
 (check "old binding gone"   (keymap-action "ctrl-o") #f)
 (check "others unaffected"  (key-hint :quit) "⌃D")
 
+;; a key bound to a non-built-in action runs the like-named custom command
+(register-command! "ping" "test ping" (lambda (state args) (emit :info "pong") state))
+(set! *config* {:keys {:ping "ctrl-t"}})
+(clear-transcript!)
+(handle-ctrl "t")
+(check-true "keybind runs custom command"
+  (any (lambda (b) (and (equal? (:kind b) :info) (string/contains? (get b :text "") "pong")))
+       (vector->list (transcript-blocks))))
+;; a key whose action names no command is a no-op
+(set! *config* {:keys {:nope "ctrl-t"}})
+(clear-transcript!)
+(handle-ctrl "t")
+(check "key with no matching command is a no-op" (length (vector->list (transcript-blocks))) 0)
 (set! *config* {})
+
+;; ── :key on a command record binds it (reconciled; removal unbinds) ──
+(reconcile-commands! (list (command "test" {:desc "t" :run ["true"] :key "ctrl-t"})))
+(check "command :key bound"    (keymap-action "ctrl-t") :test)
+(reconcile-commands! (list (command "test" {:desc "t" :run ["true"]})))
+(check "removed :key unbinds"  (keymap-action "ctrl-t") #f)
+(reconcile-commands! '())
+
+;; ── runtime bind-key! / unbind-key! (strongest layer) ──
+(bind-key! "ctrl-t" "ping")
+(check "bind-key! by name"     (keymap-action "ctrl-t") :ping)
+(check "bind-key! key-for"     (key-for :ping) "ctrl-t")
+(bind-key! "ctrl-y" :ping)
+(check "rebinding moves it"    (key-for :ping) "ctrl-y")
+(unbind-key! :ping)
+(check "unbind-key! clears"    (keymap-action "ctrl-y") #f)
+
+;; ── layering: runtime > config :keys > command :key ──
+(reconcile-commands! (list (command "test" {:desc "t" :run ["true"] :key "ctrl-t"})))
+(set! *config* {:keys {:test "ctrl-y"}})
+(check "config :keys beats command :key" (key-for :test) "ctrl-y")
+(bind-key! "ctrl-b" :test)
+(check "bind-key! beats config"          (key-for :test) "ctrl-b")
+(unbind-key! :test)
+(reconcile-commands! '())
+(set! *config* {})
+
+;; ── conflicts: two actions on one key are reported ──
+(set! *config* {:keys {:foo "ctrl-o"}})   ;; collides with default :mcp
+(check "conflict detected" (keymap-conflicts) (list "ctrl-o"))
+(set! *config* {})
+(check "no conflicts by default" (keymap-conflicts) '())
+
 (done)

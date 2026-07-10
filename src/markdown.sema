@@ -6,38 +6,11 @@
 ;; GFM tables render with aligned, per-column-justified cells.
 
 (load "theme.sema")
+(load "text.sema")   ;; clip-plain / clip-styled — the shared width-aware clippers
 
 (defun md-spaces (n) (if (> n 0) (string/repeat " " n) ""))
 
-(defun md-clip (s w)
-  "Truncate plain S to display width W (no ellipsis)."
-  (if (<= (string/width s) w) s
-    (let loop ((i 0) (acc 0))
-      (if (>= i (string-length s)) s
-        (let ((cw (string/width (string/slice s i (+ i 1)))))
-          (if (> (+ acc cw) w) (string/slice s 0 i) (loop (+ i 1) (+ acc cw))))))))
-
 (defun nth-or (lst i default) (if (< i (length lst)) (nth lst i) default))
-
-(define MD-ESC "\x1b;")
-
-(defun ansi-escape-end (s i)
-  "Index just past the ANSI escape (ESC [ … letter) starting at S[i]."
-  (let loop ((j (+ i 2)))
-    (if (>= j (string-length s)) j
-      (if (regex/match #"[A-Za-z]" (string/slice s j (+ j 1))) (+ j 1) (loop (+ j 1))))))
-
-(defun clip-styled (s w)
-  "Clip a possibly-styled S to display width W without ever cutting an ANSI
-   escape, closing any open style at the cut (safe under terminal resize)."
-  (if (<= (string/width s) w) s
-    (let loop ((i 0) (col 0))
-      (if (>= i (string-length s)) s
-        (if (= (string/slice s i (+ i 1)) MD-ESC)
-          (loop (ansi-escape-end s i) col)
-          (let ((cw (string/width (string/slice s i (+ i 1)))))
-            (if (> (+ col cw) w) (string-append (string/slice s 0 i) "\x1b;[0m")
-              (loop (+ i 1) (+ col cw)))))))))
 
 ;; ── Inline styling ───────────────────────────────────────────────
 ;; Each pass rewrites one construct; styled spans carry ANSI (no markup chars),
@@ -50,17 +23,17 @@
   (let loop ((s text) (out ""))
     (let ((m (regex/match pattern s)))
       (if (not m)
-        (string-append out s)
+        (string/append out s)
         (let* ((matched (:match m))
                (inner   (nth (:groups m) 0))
                (idx     (string/index-of s matched)))
-          (if (or (not idx) (= (string-length matched) 0))
-            (string-append out s)
-            (loop (string/slice s (+ idx (string-length matched)) (string-length s))
-                  (string-append out (string/slice s 0 idx) (style-fn inner)))))))))
+          (if (or (not idx) (= (string/length matched) 0))
+            (string/append out s)
+            (loop (string/slice s (+ idx (string/length matched)) (string/length s))
+                  (string/append out (string/slice s 0 idx) (style-fn inner)))))))))
 
 (defun md-code-span (s) (muted s))
-(defun md-strike (s) (string-append ESC-STRIKE s ESC-RESET))
+(defun md-strike (s) (string/append ESC-STRIKE s ESC-RESET))
 (define ESC-STRIKE "\x1b;[9m")
 (define ESC-RESET  "\x1b;[0m")
 
@@ -81,8 +54,8 @@
 (defun split-cells (line)
   "Split a table row into trimmed cells, dropping the outer pipes."
   (let* ((t (string/trim line))
-         (t (if (string/starts-with? t "|") (string/slice t 1 (string-length t)) t))
-         (t (if (string/ends-with? t "|") (string/slice t 0 (- (string-length t) 1)) t)))
+         (t (if (string/starts-with? t "|") (string/slice t 1 (string/length t)) t))
+         (t (if (string/ends-with? t "|") (string/slice t 0 (- (string/length t) 1)) t)))
     (map string/trim (string/split t "|"))))
 
 (defun cell-align (sep)
@@ -97,10 +70,10 @@
   (if (> (string/width text) w)
     (clip-styled text w)
     (let ((pad (max 0 (- w (string/width text)))))
-      (cond ((equal? align :right)  (string-append (md-spaces pad) text))
+      (cond ((equal? align :right)  (string/append (md-spaces pad) text))
             ((equal? align :center) (let ((l (quotient pad 2)))
-                                      (string-append (md-spaces l) text (md-spaces (- pad l)))))
-            (else                   (string-append text (md-spaces pad)))))))
+                                      (string/append (md-spaces l) text (md-spaces (- pad l)))))
+            (else                   (string/append text (md-spaces pad)))))))
 
 (define MD-MAX-COL 60)   ;; a single very-long cell can't blow the table out past this
 
@@ -145,21 +118,21 @@
     (or (string/starts-with? t "```") (string/starts-with? t "~~~"))))
 
 (defun md-code-line (line width)
-  (string-append (faint "│ ") (muted (md-clip line (max 0 (- width 2))))))
+  (string/append (faint "│ ") (muted (clip-plain line (max 0 (- width 2))))))
 
 (defun wrap-hang (prefix text width indent)
   "First line = PREFIX + wrapped text; continuations get INDENT."
   (let ((wrapped (string/word-wrap text (max 4 (- width (string/width prefix))))))
     (if (null? wrapped) (list prefix)
-      (cons (string-append prefix (car wrapped))
-            (map (lambda (l) (string-append indent l)) (cdr wrapped))))))
+      (cons (string/append prefix (car wrapped))
+            (map (lambda (l) (string/append indent l)) (cdr wrapped))))))
 
 (defun md-task (text)
   "If TEXT is a task item, {:glyph … :text rest}; else #f."
   (cond ((or (string/starts-with? text "[x] ") (string/starts-with? text "[X] "))
-         {:glyph (ok "☑") :text (string/slice text 4 (string-length text))})
+         {:glyph (ok "☑") :text (string/slice text 4 (string/length text))})
         ((string/starts-with? text "[ ] ")
-         {:glyph (faint "☐") :text (string/slice text 4 (string-length text))})
+         {:glyph (faint "☐") :text (string/slice text 4 (string/length text))})
         (else #f)))
 
 (defun md-render-line (line width)
@@ -173,19 +146,19 @@
         (list (heading (nth (:groups m) 1)))))
     ((regex/match #"^>\s?(.*)$" line)
       (let ((m (regex/match #"^>\s?(.*)$" line)))
-        (map (lambda (l) (string-append (faint "▏ ") l))
+        (map (lambda (l) (string/append (faint "▏ ") l))
              (string/word-wrap (md-inline (nth (:groups m) 0)) (max 4 (- width 2))))))
     ((regex/match #"^(\s*)[-*+]\s+(.+)$" line)
       (let* ((m (regex/match #"^(\s*)[-*+]\s+(.+)$" line))
              (raw (nth (:groups m) 1))
              (task (md-task raw)))
         (if task
-          (wrap-hang (string-append (:glyph task) " ") (md-inline (:text task)) width "  ")
+          (wrap-hang (string/append (:glyph task) " ") (md-inline (:text task)) width "  ")
           (wrap-hang (accent "• ") (md-inline raw) width "  "))))
     ((regex/match #"^(\s*)(\d+)[.)]\s+(.+)$" line)
       (let* ((m (regex/match #"^(\s*)(\d+)[.)]\s+(.+)$" line))
              (num (nth (:groups m) 1)))
-        (wrap-hang (accent (string-append num ". ")) (md-inline (nth (:groups m) 2)) width "   ")))
+        (wrap-hang (accent (string/append num ". ")) (md-inline (nth (:groups m) 2)) width "   ")))
     (else (string/word-wrap (md-inline line) width))))
 
 (defun md-lines (text width)

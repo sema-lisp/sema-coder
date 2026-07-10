@@ -1,0 +1,105 @@
+;; text.sema — display-width-aware string helpers, shared by the TUI, the
+;; markdown renderer, and the tools.
+;;
+;; Everything here measures in DISPLAY WIDTH (string/width), not codepoints, so
+;; wide chars (CJK, emoji) can never overflow a terminal row. One family of
+;; clip/pad primitives lives here — do not grow bespoke variants elsewhere.
+
+(define TEXT-RESET-SGR "\x1b;[0m")
+(define TEXT-ESC "\x1b;")
+
+;; ── Clipping ─────────────────────────────────────────────────────
+
+(defun clip-width (s w)
+  "Truncate PLAIN S to display width <= W, adding an ellipsis when cut."
+  (if (<= (string/width s) w) s
+    (let loop ((i 0) (acc 0))
+      (if (>= i (string/length s)) s
+        (let ((cw (string/width (string/slice s i (+ i 1)))))
+          (if (> (+ acc cw 1) w)
+            (string/append (string/slice s 0 i) "…")
+            (loop (+ i 1) (+ acc cw))))))))
+
+(defun clip-plain (s w)
+  "Truncate PLAIN S to display width <= W (no ellipsis)."
+  (if (<= (string/width s) w) s
+    (let loop ((i 0) (acc 0))
+      (if (>= i (string/length s)) s
+        (let ((cw (string/width (string/slice s i (+ i 1)))))
+          (if (> (+ acc cw) w) (string/slice s 0 i) (loop (+ i 1) (+ acc cw))))))))
+
+(defun ansi-escape-end (s i)
+  "Index just past the ANSI escape (ESC [ … letter) starting at S[i]."
+  (let loop ((j (+ i 2)))
+    (if (>= j (string/length s)) j
+      (if (regex/match #"[A-Za-z]" (string/slice s j (+ j 1))) (+ j 1) (loop (+ j 1))))))
+
+(defun clip-styled (s w)
+  "Clip a possibly-styled S to display width W without ever cutting an ANSI
+   escape, closing any open style at the cut (safe under terminal resize)."
+  (if (<= (string/width s) w) s
+    (let loop ((i 0) (col 0))
+      (if (>= i (string/length s)) s
+        (if (= (string/slice s i (+ i 1)) TEXT-ESC)
+          (loop (ansi-escape-end s i) col)
+          (let ((cw (string/width (string/slice s i (+ i 1)))))
+            (if (> (+ col cw) w) (string/append (string/slice s 0 i) TEXT-RESET-SGR)
+              (loop (+ i 1) (+ col cw)))))))))
+
+;; ── Padding ──────────────────────────────────────────────────────
+
+(defun pad-width (s w)
+  "Pad plain S with spaces to display width W (no truncation)."
+  (let ((n (string/width s)))
+    (if (< n w) (string/append s (string/repeat " " (- w n))) s)))
+
+(defun pad-to (s w)
+  "Pad a (possibly styled) string to visible width W, resetting SGR before the
+   padding so an unclosed style (e.g. markdown crossing a wrap) can't bleed into
+   the padding or the next row."
+  (let ((n (string/width s)))
+    (if (< n w)
+      (string/append s TEXT-RESET-SGR (string/repeat " " (- w n)))
+      (string/append s TEXT-RESET-SGR))))
+
+(defun fit-plain (s w)
+  "Pad or truncate PLAIN text to exactly display width W."
+  (pad-width (clip-width s w) w))
+
+;; ── Truncation (codepoint / line granularity) ────────────────────
+
+(defun truncate-str (s max-len)
+  (if (> (string/length s) max-len)
+    (string/append (string/slice s 0 max-len) "…")
+    s))
+
+(defun truncate-lines (text n)
+  "Cap TEXT at N lines, noting how much was cut."
+  (let ((lines (string/split text "\n")))
+    (if (<= (length lines) n)
+      text
+      (string/append
+        (string/join (take n lines) "\n")
+        (format "\n\n[truncated — showing first ~a of ~a lines]" n (length lines))))))
+
+(defun lines->numbered (text)
+  "Prepend 1-indexed line numbers (tab-separated) to each line."
+  (let ((lines (string/split text "\n")))
+    (string/join
+      (->> lines
+           (zip (range 0 (length lines)))
+           ;; zip yields 2-element lists (i line), not cons pairs — index with nth.
+           (map (lambda (p) (format "~a\t~a" (+ 1 (nth p 0)) (nth p 1)))))
+      "\n")))
+
+;; ── Indexed iteration ────────────────────────────────────────────
+
+(defun enumerate (xs)
+  (let loop ((i 0) (rest xs) (out '()))
+    (if (null? rest) (reverse out)
+      (loop (+ i 1) (cdr rest) (cons (cons i (car rest)) out)))))
+
+(defun enumerate-map (f xs)
+  (let loop ((i 0) (rest xs) (out '()))
+    (if (null? rest) (reverse out)
+      (loop (+ i 1) (cdr rest) (cons (f i (car rest)) out)))))

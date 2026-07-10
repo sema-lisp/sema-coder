@@ -1,0 +1,39 @@
+(load "harness.sema")
+(load "../src/text.sema")
+
+;; ── clipping ──
+(check "clip-width fits"      (clip-width "abc" 5) "abc")
+(check "clip-width cuts"      (clip-width "abcdef" 4) "abc…")
+(check "clip-plain fits"      (clip-plain "abc" 5) "abc")
+(check "clip-plain cuts"      (clip-plain "abcdef" 4) "abcd")
+;; wide chars: 你=2 cols — width-aware, not codepoint-count
+(check "clip-plain CJK"       (clip-plain "你你你" 4) "你你")
+(check-true "clip-width CJK ≤w" (<= (string/width (clip-width "你你你你" 5)) 5))
+
+;; styled clip never cuts an escape, closes the open style
+(define styled (string/append "\x1b;[31m" "abcdef" "\x1b;[0m"))
+(check-true "clip-styled ≤w"  (<= (string/width (clip-styled styled 4)) 4))
+(check-true "clip-styled closes" (string/ends-with? (clip-styled styled 4) "\x1b;[0m"))
+
+;; ── padding ──
+(check "pad-width pads"       (pad-width "ab" 4) "ab  ")
+(check "pad-width long"       (pad-width "abcdef" 4) "abcdef")
+(check "fit-plain pads"       (fit-plain "ab" 4) "ab  ")
+(check "fit-plain cuts"       (fit-plain "abcdef" 4) "abc…")
+(check-true "pad-to resets"   (string/contains? (pad-to "ab" 4) "\x1b;[0m"))
+(check "pad-to width"         (string/width (pad-to "ab" 6)) 6)
+
+;; ── truncation ──
+(check "truncate-str short"   (truncate-str "abc" 5) "abc")
+(check "truncate-str long"    (truncate-str "abcdef" 3) "abc…")
+(check "truncate-lines keeps" (truncate-lines "a\nb" 5) "a\nb")
+(check-true "truncate-lines notes cut"
+  (string/contains? (truncate-lines "a\nb\nc\nd" 2) "truncated"))
+(check "numbered"             (lines->numbered "a\nb") "1\ta\n2\tb")
+
+;; ── indexed iteration ──
+(check "enumerate-map" (enumerate-map (lambda (i x) (list i x)) (list "a" "b"))
+                       (list (list 0 "a") (list 1 "b")))
+(check "enumerate len" (length (enumerate (list "a" "b" "c"))) 3)
+
+(done)

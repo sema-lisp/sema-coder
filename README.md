@@ -19,46 +19,63 @@ safety) is Rust. It depends on nothing but the `sema` binary.
 
 ![Sema Coder — a sample session](screenshot.png)
 
+## Requirements
+
+- **`sema` ≥ 1.30** — install with
+  `curl -fsSL https://sema-lang.com/install.sh | sh` (or
+  `brew install helgesverre/tap/sema-lang`, or `cargo install sema-lang`;
+  see the [sema README](https://github.com/sema-lisp/sema#installation)).
+- **An API key** — `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in the environment.
+- Optional: **`rg`** (ripgrep) — the grep tool prefers it, falling back to `grep`.
+
 ## Run
 
 ```bash
 # Interactive (full-screen TUI on a TTY)
-./main.sema                     # or: sema main.sema
+./coder.sema                     # or: sema coder.sema
 
 # One-shot (prose to stdout, pipeable)
-./main.sema -- -p "explain this codebase"
+./coder.sema -- -p "explain this codebase"
 
 # Override the model
-./main.sema -- -m claude-haiku-4-5-20251001
+./coder.sema -- -m claude-haiku-4-5-20251001
 ```
 
-`./main.sema` works because the file is `chmod +x` with a `#!/usr/bin/env sema`
-shebang. Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` first.
+`./coder.sema` works because the file is `chmod +x` with a `#!/usr/bin/env sema`
+shebang.
 
 ## Architecture
 
 ```
 sema-coder/
-├── main.sema       Entry point — CLI parsing, boot, REPL/TUI dispatch
-├── banner.sema     Wordmark + welcome (on-brand gold)
-├── theme.sema      Brand palette (sema gold #c8a855)
-├── config.sema     Config loading
-├── commands.sema   Slash-command registry + built-ins
-├── tools.sema      7 LLM-callable tools
-├── agent.sema      System prompt + agent construction
-├── mcp.sema        MCP client runtime (connect, tool-merge, autostart)
-├── session.sema    Session persistence — conversations as JSONL
-├── markdown.sema   Markdown → styled terminal lines
-├── display.sema    Output sink (emit) + tool-call rendering
-├── tui.sema        Full-screen TUI — frame-diffed, async agent turns
-└── util.sema       Path safety + string helpers
+├── coder.sema          Entry point — CLI parsing, boot, REPL/TUI dispatch
+├── src/
+│   ├── agent.sema      System prompt + agent construction
+│   ├── banner.sema     Wordmark + welcome (on-brand gold)
+│   ├── commands.sema   Slash-command registry + built-ins
+│   ├── config.sema     Config loading (init.sema as Sema data)
+│   ├── display.sema    Output sink (emit) + tool-call rendering
+│   ├── keymap.sema     Global shortcuts, rebindable via config
+│   ├── markdown.sema   Markdown → styled terminal lines
+│   ├── mcp.sema        MCP client runtime (connect, tool-merge, autostart)
+│   ├── overlay.sema    Modal overlays — MCP manager + session picker
+│   ├── session.sema    Session persistence — conversations as JSONL
+│   ├── text.sema       Width-aware clip/pad/truncate string helpers
+│   ├── theme.sema      Brand palette (sema gold #c8a855)
+│   ├── tools.sema      7 LLM-callable tools
+│   ├── transcript.sema Transcript blocks → styled lines (cached)
+│   ├── tui.sema        Full-screen TUI — frame-diffed, async agent turns
+│   └── util.sema       Workspace path resolution + shell quoting
+├── tests/              Test suite (tests/run.sh runs it)
+└── docs/               Design notes; dated plans live in docs/plans/
 ```
 
 It is built on Sema's own primitives: `defagent` / `deftool` / `agent/run` (the
 LLM agent loop), `async` / `async/cancel` (concurrent turns), `make-parameter` /
 `parameterize` (the command registry), `mutable-array/*` (the streaming
 transcript), `file/*` and `shell` (tools), `json/*` (config), `term/*` (theming +
-screen control), `path/within?` (sandboxing), `llm/session-usage` (token/cost HUD).
+screen control), `path/within?` (workspace path resolution), `llm/session-usage`
+(token/cost HUD).
 
 In the TUI, an agent turn runs as an async task while a sibling task keeps pumping
 input, so scrolling, resize, and type-ahead all work while tokens stream in, and
@@ -78,7 +95,7 @@ Config is **Sema data, not JSON** — an `init.sema` file that calls
 config keeps running if a save doesn't parse), and lives at:
 
 ```
-<config-dir>/sema/sema-code/init.sema
+<config-dir>/sema/sema-coder/init.sema
 ```
 
 `<config-dir>` is the OS default (`~/Library/Application Support` on macOS,
@@ -143,8 +160,9 @@ real commands and reach real services).
 
 ### Custom commands
 
-A `(command "name" spec)` becomes `/name`. The `spec` carries `:desc` plus
-**exactly one** handler:
+A `(command "name" spec)` becomes `/name`. The `spec` carries `:desc`, an
+optional `:key` (a keyboard shortcut that fires the command, e.g.
+`:key "ctrl-t"`), plus **exactly one** handler:
 
 - `:run` — an **argv list** run in the workspace, never shell-interpreted (the
   safe default). The keyword `:args` marks where the text you type after the
@@ -155,7 +173,7 @@ A `(command "name" spec)` becomes `/name`. The `spec` carries `:desc` plus
   (or the symbol `quit`); write output with `(emit :info "…")`.
 
 Config commands hot-reload — removing one from `init.sema` unregisters it. You
-can also register commands at runtime from Sema, after loading `commands.sema`:
+can also register commands at runtime from Sema, after loading `src/commands.sema`:
 
 ```scheme
 (register-command! "hello" "Say hi"
@@ -164,7 +182,20 @@ can also register commands at runtime from Sema, after loading `commands.sema`:
 
 ### Keybindings
 
-Rebind any action under `:keys`, e.g. `{:mcp "ctrl-p" :palette "ctrl-space"}`:
+The keymap is data, merged from four layers (weakest first): the built-in
+defaults below → `:key` on command records → the config `:keys` map → runtime
+`bind-key!` calls. A key bound to an action that isn't a built-in fires the
+like-named slash command, so all of these bind `⌃T` to `/test`:
+
+```scheme
+(command "test" {:desc "run tests" :run ["make" "test"] :key "ctrl-t"})  ; on the command
+:keys {:test "ctrl-t"}                                                   ; in the :keys map
+(bind-key! "ctrl-t" "test")                                              ; from Sema code
+```
+
+Rebind built-in actions the same way, e.g. `:keys {:mcp "ctrl-p"}`;
+`(unbind-key! action)` drops a runtime bind. Binding one key to two actions
+logs a warning at boot/reload (first match wins).
 
 | Action | Default | Does |
 | --- | --- | --- |
@@ -179,7 +210,7 @@ Rebind any action under `:keys`, e.g. `{:mcp "ctrl-p" :palette "ctrl-space"}`:
 
 ## Sessions
 
-Every turn is written to `<config-dir>/sema/sema-code/sessions/<id>.jsonl` — a
+Every turn is written to `<config-dir>/sema/sema-coder/sessions/<id>.jsonl` — a
 meta line plus one message per line, in the exact `agent/run` shape (tool calls
 and results included), so a conversation resumes verbatim. `/resume` (or `⌃R`)
 opens a picker of past sessions, newest first: `↑↓` to move, `Enter` to preview a
@@ -189,10 +220,28 @@ keep going.
 ## Tools
 
 `read-file`, `write-file`, `edit-file`, `bash`, `grep`, `find-files`, `list-dir`.
-Every path — including the search tools' — resolves through `path/within?`, which
-keeps reads, writes, and searches inside the workspace root (catching both `../`
-and symlink escapes). The search tools invoke `rg`/`grep`/`find`/`ls` argv-style,
-so patterns are never shell-interpreted.
+
+Every **path** — including the search tools' — resolves through `path/within?`,
+which keeps reads, writes, and searches inside the workspace root (catching both
+`../` and symlink escapes). The search tools invoke `rg`/`grep`/`find`/`ls`
+argv-style, so patterns are never shell-interpreted.
+
+**This is accident prevention, not a sandbox.** The `bash` tool runs real shell
+commands with your privileges, unrestricted — the path check above applies only
+to the file/search tools. Treat a session like you'd treat any coding agent:
+run it in a workspace you're prepared to let it modify.
+
+## Development
+
+```bash
+./tests/run.sh    # run the test suite (needs sema on PATH)
+```
+
+Tests live in `tests/*_test.sema` on a tiny `check`/`done` harness
+(`tests/harness.sema`); each file exits non-zero on failure. Design notes are
+in `docs/` (dated planning documents are archived under `docs/plans/`;
+`docs/language-friction.md` tracks upstream sema issues this app found, with
+their fix status).
 
 ## License
 

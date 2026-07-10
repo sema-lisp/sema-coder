@@ -1,5 +1,5 @@
 (load "harness.sema")
-(load "../markdown.sema")
+(load "../src/markdown.sema")
 
 (defun plain (lines) (map term/strip lines))
 
@@ -49,7 +49,7 @@
 
 ;; ── column alignment: every row renders to the same width (no overflow) ──
 (let ((ws (map string/width
-                (md-lines (string-append
+                (md-lines (string/append
                             "| ID | Name | Desc |\n|----|------|------|\n"
                             "| 1 | Alice | short |\n"
                             "| 2 | Björn Ångström | a very long description that definitely exceeds the sixty character column cap for sure |\n"

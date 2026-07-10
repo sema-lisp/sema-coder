@@ -1,11 +1,11 @@
 ;; tui.sema — the full-screen (sema) coder terminal UI.
 ;;
-;; A bespoke, hand-rendered TUI built directly on the host primitives this
-;; branch added: alt-screen + cursor control (term/*), raw-mode key input
+;; A bespoke, hand-rendered TUI built directly on the host primitives:
+;; alt-screen + cursor control (term/*), raw-mode key input
 ;; (io/tty-raw!, io/read-key-timeout), terminal size + resize (sys/term-size,
 ;; sys/on-signal :winch), and streaming agent turns (agent/run :on-text).
 ;;
-;; Rendering model (Mire-inspired): every frame is rebuilt as a list of exactly
+;; Rendering model: every frame is rebuilt as a list of exactly
 ;; `*rows*` strings; we diff against the previous frame and rewrite only the rows
 ;; that changed — so there is no full-screen clear and no flicker. All output
 ;; goes through one stream (stdout via `display`) so cursor moves and content
@@ -16,56 +16,26 @@
 ;; "pump" task keeps the UI alive for the whole turn — keys are polled
 ;; non-blocking (scroll, resize, and type-ahead all keep working while tokens
 ;; stream in) and Ctrl-C cancels the turn task cleanly via async/cancel.
+;;
+;; Module layout: text.sema (width-aware string helpers), keymap.sema
+;; (bindings), transcript.sema (blocks → styled lines), overlay.sema (the
+;; MCP + resume modals). This file owns the shared UI state, the frame/diff
+;; renderer, input, the agent turn, and session persistence.
 
 (load "commands.sema")   ;; brings in theme, config, agent, tools, display, util
-(load "markdown.sema")   ;; assistant-message rendering
+(load "text.sema")
+(load "keymap.sema")
+(load "transcript.sema")
+(load "overlay.sema")
 
 ;; ── Terminal control as strings (emitted through one stream) ─────────────────
 
 (define ESC "\x1b;")
-(defun goto (row col) (string-append ESC "[" (number->string row) ";" (number->string col) "H"))
-(define CLEAR-LINE (string-append ESC "[2K"))
-(define SHOW-CURSOR (string-append ESC "[?25h" ESC "[6 q"))  ;; show + steady bar (no blink)
-(define HIDE-CURSOR (string-append ESC "[?25l"))
-(define RESET-CURSOR (string-append ESC "[0 q"))            ;; restore terminal default on exit
-(define RESET-SGR (string-append ESC "[0m"))               ;; close any open color/style
-
-;; ── Keymap — global shortcuts, rebindable via (coder-config {:keys {…}}) ──
-
-(define default-keymap
-  {:mcp        "ctrl-o"
-   :resume     "ctrl-r"
-   :palette    "ctrl-k"
-   :quit       "ctrl-d"
-   :interrupt  "ctrl-c"
-   :clear-line "ctrl-u"
-   :line-start "ctrl-a"
-   :line-end   "ctrl-e"
-   :repaint    "ctrl-l"})
-
-(defun active-keymap () (merge default-keymap (get *config* :keys {})))
-
-(defun keymap-action (keystr)
-  "Which action is bound to KEYSTR (e.g. \"ctrl-o\"), or #f."
-  (let ((km (active-keymap)))
-    (let loop ((ks (keys km)))
-      (cond ((null? ks) #f)
-            ((= (get km (car ks)) keystr) (car ks))
-            (else (loop (cdr ks)))))))
-
-(defun key-for (action) (get (active-keymap) action ""))
-
-(defun action-ctrl-char (action)
-  "The letter of ACTION's ctrl binding (\"o\" for \"ctrl-o\"), or \"\"."
-  (let ((k (key-for action)))
-    (if (string/starts-with? k "ctrl-") (string/slice k 5 (string-length k)) "")))
-
-(defun key-hint (action)
-  "Display form of ACTION's binding, e.g. :mcp → \"⌃O\"."
-  (let ((k (key-for action)))
-    (if (string/starts-with? k "ctrl-")
-      (string-append "⌃" (string/upper (string/slice k 5 (string-length k))))
-      k)))
+(defun goto (row col) (string/append ESC "[" (number->string row) ";" (number->string col) "H"))
+(define CLEAR-LINE (string/append ESC "[2K"))
+(define SHOW-CURSOR (string/append ESC "[?25h" ESC "[6 q"))  ;; show + steady bar (no blink)
+(define HIDE-CURSOR (string/append ESC "[?25l"))
+(define RESET-CURSOR (string/append ESC "[0 q"))            ;; restore terminal default on exit
 
 ;; ── Mutable UI state ─────────────────────────────────────────────────────────
 
@@ -76,7 +46,6 @@
 (define *agent* #f)
 (define *config* {})
 (define *messages* '())
-(define *transcript* (mutable-array/new 64))   ;; blocks, oldest → newest
 (define *input* "")
 (define *cursor* 0)         ;; caret index into *input* (codepoints)
 (define *scroll* 0)         ;; lines scrolled up from the bottom (0 = follow tail)
@@ -87,179 +56,24 @@
 (define *type-buffer* "")   ;; received-but-not-yet-revealed text (typewriter)
 (define *should-quit* #f)
 (define *last-frame* '())   ;; previous frame's rows, for diffing
-(define *overlay* #f)         ;; #f | {:kind :mcp :view :list|:tools :sel N :tsel N}
 (define *config-watcher* #f)  ;; fs/watch handle on the config dir
 (define *config-error* #f)    ;; string while the last reload failed (persistent banner)
 (define *reload-at* 0)        ;; debounce: reload once the change settles (0 = idle)
 (define *session-id* #f)      ;; current session's file id (persisted after each turn)
 (define *session-created* 0)  ;; its creation timestamp (ms)
 
-;; The key loop must read the quit flag through a function call: a direct
-;; global read inside a recursive loop in a `load`ed unit never observes a
-;; cross-function set! — see docs/bugs/load-unit-stale-global-read-in-recursive-fns.md.
+;; The key loop must read the quit flag through a function call: on current
+;; sema releases, a direct global read inside a recursive loop in a `load`ed
+;; unit never observes a cross-function set! (fresh invocations do — hence
+;; the accessor).
 (defun should-quit? () *should-quit*)
-
-;; ── Block constructors + transcript mutation ─────────────────────────────────
-;; The transcript is a mutable array so streaming is O(1) per token: every
-;; :on-text delta rewrites the last block in place instead of rebuilding the
-;; whole list.
-
-;; Rendered transcript lines are cached and recomputed only when the content or
-;; width changes — so scrolling (which only re-windows) never re-parses markdown.
-(define *tlines* '())
-(define *tlines-w* -1)
-(define *tlines-dirty* #t)
-(defun mark-tdirty! () (set! *tlines-dirty* #t))
-
-(defun add-block! (b) (mutable-array/push! *transcript* b) (mark-tdirty!))
-
-(defun clear-transcript! () (set! *transcript* (mutable-array/new 64)) (mark-tdirty!))
-
-(defun transcript-blocks () (mutable-array/->vector *transcript*))
-
-(defun kind? (b k) (equal? (get b :kind :none) k))
-
-(defun update-last! (f)
-  (let ((n (mutable-array/length *transcript*)))
-    (when (> n 0)
-      (mutable-array/set! *transcript* (- n 1)
-        (f (mutable-array/get *transcript* (- n 1))))
-      (mark-tdirty!))))
-
-(defun last-block ()
-  (let ((n (mutable-array/length *transcript*)))
-    (if (> n 0) (mutable-array/get *transcript* (- n 1)) #f)))
-
-(defun append-assistant! (delta)
-  (let ((lb (last-block)))
-    (if (and lb (kind? lb :assistant))
-      (update-last! (lambda (b) (assoc b :text (string-append (:text b) delta))))
-      (add-block! {:kind :assistant :text delta}))))
-
-(defun set-last-tool-done! (ms result err)
-  (update-last! (lambda (b) (assoc b :state :done :ms ms :result result :error err))))
-
-;; ── Small helpers ────────────────────────────────────────────────────────────
-
-(defun pad-to (s w)
-  "Pad a (possibly styled) string to visible width W, resetting SGR before the
-   padding so an unclosed style (e.g. markdown crossing a wrap) can't bleed into
-   the padding or the next row."
-  (let ((n (string/width s)))
-    (if (< n w)
-      (string-append s RESET-SGR (string/repeat " " (- w n)))
-      (string-append s RESET-SGR))))
-
-(defun clamp-plain (s w)
-  "Truncate PLAIN text to width W, adding an ellipsis when cut."
-  (if (<= (string-length s) w) s
-    (if (<= w 1) (string/slice s 0 w)
-      (string-append (string/slice s 0 (- w 1)) "…"))))
-
-(defun clip-width (s w)
-  "Truncate PLAIN S to display width <= W (ellipsis when cut). Width-accurate,
-   so it's safe for wide chars where a codepoint count would overflow the row."
-  (if (<= (string/width s) w) s
-    (let loop ((i 0) (acc 0))
-      (if (>= i (string-length s)) s
-        (let ((cw (string/width (string/slice s i (+ i 1)))))
-          (if (> (+ acc cw 1) w)
-            (string-append (string/slice s 0 i) "…")
-            (loop (+ i 1) (+ acc cw))))))))
-
-(defun fit-line (l w)
-  "Indent one preformatted line, guaranteeing it fits width W. Keeps ANSI while
-   it fits (the common case); only when a line is genuinely too wide for the
-   terminal does it strip color and clip — so an over-wide row can never break
-   the fixed-row diff model by soft-wrapping."
-  (indent (if (<= (string/width l) w) l (clip-width (term/strip l) w))))
-
-;; ── Text wrapping ────────────────────────────────────────────────────────────
-;; Delegates to the native, display-width-aware string/wrap (correct for CJK /
-;; emoji / combining marks, which a char-count wrap gets wrong).
-
-(defun wrap-text (text w) (string/word-wrap text w))
-
-;; ── Transcript → styled lines (each fits within *cols*, 1-space left margin) ──
-
-(defun indent (line) (string-append " " line))
-
-(defun tool-result-lines (b w)
-  "A one-line preview of a completed tool's result under its line — faint, or red
-   if it errored. Multi-line results collapse to the first line + a count."
-  (let* ((r (get b :result ""))
-         (s (if (string? r) r (str r)))
-         (lines (string/split s "\n"))
-         (head  (if (null? lines) "" (car lines)))
-         (extra (- (length lines) 1))
-         (preview (if (> extra 0) (string-append head " … +" (number->string extra) " lines") head))
-         (paint (if (get b :error #f) bad faint)))
-    (if (= (string/trim s) "") '()
-      (list (indent (string-append "  " (paint (clamp-plain preview (max 4 (- w 6))))))))))
-
-(defun block-lines (b w)
-  "Render one transcript block to a list of styled lines (content width W)."
-  (cond
-    ((kind? b :user)
-      (append
-        (map (lambda (i-l)
-               (let ((i (nth i-l 0)) (l (nth i-l 1)))
-                 (if (= i 0)
-                   (indent (string-append (accent (string-append user-glyph " ")) (bright l)))
-                   (indent (string-append "  " (bright l))))))
-             (enumerate (wrap-text (:text b) (- w 2))))
-        (list "")))
-    ((kind? b :assistant)
-      ;; Markdown-rendered. An empty assistant block (the pre-first-token
-      ;; streaming target, or a post-tool round with no text) renders nothing.
-      (if (= (string/trim (:text b)) "") '()
-        (append (map indent (md-lines (:text b) w)) (list ""))))
-    ((kind? b :raw)
-      ;; Preformatted output (command stdout, pretty JSON): preserve internal
-      ;; whitespace — split on newlines only, clip each line to width instead of
-      ;; reflowing (word-wrap would collapse the spaces columns depend on).
-      (append (map (lambda (l) (fit-line l w)) (string/split (:text b) "\n"))
-              (list "")))
-    ((kind? b :tool)
-      (let* ((tool (:tool b)) (arg (clamp-plain (get b :arg "") (max 4 (- w 18)))))
-        (if (equal? (get b :state :done) :running)
-          (list (indent (string-append (faint "·") " "
-                                        (accent-dim (term/style tool :bold)) " " (muted arg))))
-          (cons
-            (indent (string-append (ok "✔") " "
-                                   (accent-dim (term/style tool :bold)) " " (muted arg)
-                                   " " (faint (string-append (number->string (get b :ms 0)) "ms"))))
-            (tool-result-lines b w)))))
-    ((kind? b :info)  (map (lambda (l) (indent (muted l))) (wrap-text (:text b) w)))
-    ((kind? b :ok)    (map (lambda (l) (indent (ok l))) (wrap-text (:text b) w)))
-    ((kind? b :warn)  (map (lambda (l) (indent (warn l))) (wrap-text (:text b) w)))
-    ;; Pre-styled chrome (help rows, /tools): keep its ANSI and column padding
-    ;; intact — split on newlines only, never word-wrap; fit-line guards the
-    ;; rare too-narrow-terminal overflow.
-    ((kind? b :line)  (map (lambda (l) (fit-line l w)) (string/split (:text b) "\n")))
-    ((kind? b :error) (map (lambda (l) (indent (bad l))) (wrap-text (string-append "error: " (:text b)) w)))
-    (else '())))
-
-(defun enumerate (xs)
-  (let loop ((i 0) (rest xs) (out '()))
-    (if (null? rest) (reverse out)
-      (loop (+ i 1) (cdr rest) (cons (cons i (car rest)) out)))))
-
-(defun transcript-lines (w)
-  (when (or *tlines-dirty* (not (= w *tlines-w*)))
-    (set! *tlines* (->> (transcript-blocks)
-                        (map (lambda (b) (block-lines b w)))
-                        (apply append)))
-    (set! *tlines-w* w)
-    (set! *tlines-dirty* #f))
-  *tlines*)
 
 ;; ── Palette (slash-command popup) ────────────────────────────────────────────
 
 (defun palette-open? () (string/starts-with? *input* "/"))
 
 (defun palette-query ()
-  (let* ((rest (string/slice *input* 1 (string-length *input*)))
+  (let* ((rest (string/slice *input* 1 (string/length *input*)))
          (sp   (string/index-of rest " ")))
     (if sp (string/slice rest 0 sp) rest)))
 
@@ -274,8 +88,8 @@
     (let ((q (string/lower query)) (it (string/lower item)))
       (let loop ((qi 0) (ii 0) (score 0) (streak 0))
         (cond
-          ((>= qi (string-length q)) score)
-          ((>= ii (string-length it)) #f)
+          ((>= qi (string/length q)) score)
+          ((>= ii (string/length it)) #f)
           ((equal? (string/slice q qi (+ qi 1)) (string/slice it ii (+ ii 1)))
             (loop (+ qi 1) (+ ii 1) (+ score (+ 1 streak) (if (= ii 0) 3 0)) (+ streak 1)))
           (else (loop qi (+ ii 1) score 0)))))))
@@ -291,300 +105,26 @@
 
 (defun palette-limit (matches) (min 8 (length matches)))
 
-(defun fit-plain (s n)
-  "Pad or truncate PLAIN text to exactly width N."
-  (let ((len (string-length s)))
-    (cond ((= len n) s)
-          ((< len n) (string-append s (string/repeat " " (- n len))))
-          (else (clamp-plain s n)))))
-
 (defun palette-box (matches sel bw)
   "Render the slash palette as a bordered box of outer width BW: gold parens/label,
    faint borders, the selected row in accent. Returns a list of styled lines."
   (let* ((shown (take (palette-limit matches) matches))
          (inner (max 8 (- bw 4)))                 ;; text width inside │ … │
          (label " commands ")
-         (top (string-append (faint "┌") (accent-dim label)
-                             (faint (string-append (string/repeat "─" (max 0 (- bw 2 (string-length label)))) "┐"))))
-         (bot (faint (string-append "└" (string/repeat "─" (max 0 (- bw 2))) "┘")))
+         (top (string/append (faint "┌") (accent-dim label)
+                             (faint (string/append (string/repeat "─" (max 0 (- bw 2 (string/length label)))) "┐"))))
+         (bot (faint (string/append "└" (string/repeat "─" (max 0 (- bw 2))) "┘")))
          (rows (enumerate-map
                  (lambda (i e)
                    (let* ((sel?  (= i sel))
-                          (nm    (string/pad-right (string-append "/" (:name e)) 12))
+                          (nm    (string/pad-right (string/append "/" (:name e)) 12))
                           (dw    (max 4 (- inner 15)))
-                          (txt   (fit-plain (string-append (if sel? "▸ " "  ") nm " "
-                                                           (clamp-plain (:desc e) dw)) inner))
+                          (txt   (fit-plain (string/append (if sel? "▸ " "  ") nm " "
+                                                           (clip-width (:desc e) dw)) inner))
                           (body  (if sel? (accent txt) (muted txt))))
-                     (string-append (faint "│ ") body (faint " │"))))
+                     (string/append (faint "│ ") body (faint " │"))))
                  shown)))
     (map indent (append (list top) rows (list bot)))))
-
-(defun enumerate-map (f xs)
-  (let loop ((i 0) (rest xs) (out '()))
-    (if (null? rest) (reverse out)
-      (loop (+ i 1) (cdr rest) (cons (f i (car rest)) out)))))
-
-;; ── MCP management modal (single-slot overlay) ───────────────────────────────
-
-(defun overlay-active? () (if *overlay* #t #f))
-(defun close-overlay! () (set! *overlay* #f))
-(defun open-mcp-modal! () (set! *overlay* {:kind :mcp :view :list :sel 0 :tsel 0}))
-(defun overlay-merge! (m) (set! *overlay* (merge *overlay* m)))
-
-(defun mcp-sel-server ()
-  (let ((v (mcp-records)) (i (:sel *overlay*)))
-    (if (and (> (length v) 0) (< i (length v))) (nth v i) #f)))
-
-(defun rebuild-agent-with-mcp! ()
-  (set! *agent* (create-agent *cwd* *model* *config*)))
-
-(defun mcp-status-glyph (status)
-  (cond ((equal? status :connected)  (ok "●"))
-        ((equal? status :connecting) (accent "◐"))
-        ((equal? status :needs-auth) (warn "▲"))
-        ((equal? status :error)      (bad "○"))
-        (else                        (faint "◌"))))
-
-(defun mcp-status-label (rec)
-  (let ((s (:status rec)))
-    (cond ((equal? s :connected)  "connected")
-          ((equal? s :connecting) "connecting…")
-          ((equal? s :needs-auth) "needs auth — press c to sign in")
-          ((equal? s :error)      (string-append "error: " (get rec :error "")))
-          (else                   "idle — press c to connect"))))
-
-;; ── Bordered box helpers (clip content to the inner width, ANSI-safe) ──
-
-(defun box-row (content inner)
-  (let ((c (if (> (string/width content) inner) (clip-width (term/strip content) inner) content)))
-    (string-append (faint "│ ") (pad-to c inner) (faint " │"))))
-(defun box-top (title bw)
-  (string-append (faint "┌") (accent-dim title)
-                 (faint (string-append (string/repeat "─" (max 0 (- bw 2 (string-length title)))) "┐"))))
-(defun box-bot (bw) (faint (string-append "└" (string/repeat "─" (max 0 (- bw 2))) "┘")))
-(defun box-sep (bw) (faint (string-append "├" (string/repeat "─" (max 0 (- bw 2))) "┤")))
-
-(defun mcp-row-text (rec sel? inner)
-  (let ((line (string-append
-                (if sel? (accent "▸ ") "  ")
-                (mcp-status-glyph (:status rec)) " "
-                (bright (string/pad-right (:name rec) 12)) " "
-                (muted (string/pad-right (:transport rec) 5)) " "
-                (if (equal? (:status rec) :connected)
-                  (muted (string-append (number->string (length (:tools rec))) " tools  ")) "        ")
-                (muted (mcp-status-label rec)))))
-    (if sel? line line)))
-
-(defun mcp-list-rows (bw)
-  (let* ((inner (max 8 (- bw 4)))
-         (servers (mcp-records))
-         (sel (:sel *overlay*))
-         (rows (if (= (length servers) 0)
-                 (list (box-row (muted "No MCP servers — add one in init.sema (press e)") inner))
-                 (enumerate-map (lambda (i rec) (box-row (mcp-row-text rec (= i sel) inner) inner))
-                                (vector->list servers)))))
-    (append
-      (list (box-top " MCP servers " bw))
-      rows
-      (list (box-sep bw))
-      (list (box-row (faint "↑↓ · c connect · d disconnect · t tools · e edit · Esc") inner))
-      (list (box-bot bw)))))
-
-(defun mcp-tools-rows (bw)
-  (let* ((inner (max 8 (- bw 4)))
-         (srv (mcp-sel-server))
-         (names (if (and srv (equal? (:status srv) :connected)) (map tool/name (:tools srv)) '()))
-         (tsel (:tsel *overlay*))
-         (shown (take (min 10 (length names)) (drop (max 0 (- tsel 9)) names)))
-         (rows (if (null? names)
-                 (list (box-row (muted "not connected — no tools") inner))
-                 (map (lambda (n) (box-row (string-append "  " (accent n)) inner)) shown))))
-    (append
-      (list (box-top (string-append " " (if srv (:name srv) "?") " · tools ") bw))
-      rows
-      (list (box-sep bw))
-      (list (box-row (faint "↑↓ scroll · Esc back") inner))
-      (list (box-bot bw)))))
-
-(defun mcp-modal-rows ()
-  (let* ((bw  (min (max 40 (- *cols* 6)) 72))
-         (box (if (equal? (:view *overlay*) :tools) (mcp-tools-rows bw) (mcp-list-rows bw))))
-    (map (lambda (r) (center-h r bw)) box)))
-
-(defun overlay-rows ()
-  (if (equal? (:kind *overlay*) :resume) (resume-modal-rows) (mcp-modal-rows)))
-
-(defun center-h (row bw)
-  (string-append (string/repeat " " (max 0 (quotient (- *cols* bw) 2))) row))
-
-(defun overlay-center (base box)
-  (let* ((n (length base)) (h (length box)) (top (max 0 (quotient (- n h) 2))))
-    (append (take top base) box (drop (min n (+ top h)) base))))
-
-;; ── Overlay key handling ──
-
-(defun mcp-connect-selected! ()
-  (let ((srv (mcp-sel-server)))
-    (when srv (mcp-connect! (:name srv)) (rebuild-agent-with-mcp!))))
-
-(defun mcp-disconnect-selected! ()
-  (let ((srv (mcp-sel-server)))
-    (when srv (mcp-disconnect! (:name srv)) (rebuild-agent-with-mcp!))))
-
-(defun key-name= (k name) (and (equal? (:kind k) :key) (equal? (:name k) name)))
-(defun key-char= (k ch)   (and (equal? (:kind k) :char) (equal? (:char k) ch)))
-(defun key-ctrl= (k ch)   (and (equal? (:kind k) :ctrl) (equal? (:char k) ch)))
-
-(defun mcp-list-key (k)
-  (let ((n (length (mcp-records))))
-    (cond
-      ((key-name= k :up)     (overlay-merge! {:sel (max 0 (- (:sel *overlay*) 1))}))
-      ((key-name= k :down)   (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel *overlay*) 1))}))
-      ((or (key-name= k :esc) (key-ctrl= k (action-ctrl-char :mcp))) (close-overlay!))
-      ((or (key-char= k "c") (key-char= k "r")) (mcp-connect-selected!))
-      ((key-char= k "d")     (mcp-disconnect-selected!))
-      ((or (key-char= k "t") (key-name= k :enter)) (overlay-merge! {:view :tools :tsel 0}))
-      ((key-char= k "e")     (open-config!))
-      (else nil))))
-
-(defun mcp-tools-key (k)
-  (cond
-    ((key-name= k :esc)  (overlay-merge! {:view :list}))
-    ((key-name= k :up)   (overlay-merge! {:tsel (max 0 (- (:tsel *overlay*) 1))}))
-    ((key-name= k :down) (overlay-merge! {:tsel (+ (:tsel *overlay*) 1)}))
-    (else nil)))
-
-(defun handle-overlay-key (k)
-  (cond
-    ((equal? (:kind *overlay*) :resume) (handle-resume-key k))
-    ((equal? (:view *overlay*) :tools)  (mcp-tools-key k))
-    (else                               (mcp-list-key k))))
-
-;; ── Resume modal (session history; single-slot overlay) ──────────────────────
-
-(defun open-resume-modal! ()
-  (set! *overlay* {:kind :resume :view :list :sel 0 :dscroll 0 :sessions (list-sessions)}))
-
-(defun resume-sel-session ()
-  (let ((ss (:sessions *overlay*)) (i (:sel *overlay*)))
-    (if (and (> (length ss) 0) (< i (length ss))) (nth ss i) #f)))
-
-(defun pad-width (s w)
-  "Pad plain S with spaces to display width W (no truncation)."
-  (let ((n (string/width s)))
-    (if (< n w) (string-append s (string/repeat " " (- w n))) s)))
-
-(defun window-list (lst sel maxrows)
-  "A MAXROWS-long window of LST that keeps index SEL visible → {:items :start}."
-  (let* ((n (length lst))
-         (start (max 0 (min (max 0 (- sel (quotient maxrows 2))) (max 0 (- n maxrows))))))
-    {:items (take (min maxrows (max 0 (- n start))) (drop start lst)) :start start}))
-
-(defun session-model-label (m)
-  (let ((md (:model m))) (if (or (not md) (= md "")) "auto" md)))
-
-(defun resume-row-text (m sel? inner)
-  (let* ((meta   (string-append (number->string (:count m)) " msgs · " (session-model-label m)))
-         (titlew (max 8 (- inner 4 (string/width meta) 2)))
-         (title  (pad-width (clip-width (:title m) titlew) titlew)))
-    (string-append (if sel? (accent "▸ ") "  ") (bright title) "  " (muted meta))))
-
-(defun resume-list-rows (bw)
-  (let* ((inner (max 8 (- bw 4)))
-         (sessions (:sessions *overlay*))
-         (sel (:sel *overlay*))
-         (win (window-list sessions sel 12))
-         (start (:start win))
-         (rows (if (= (length sessions) 0)
-                 (list (box-row (muted "No saved sessions yet — they're written after each turn") inner))
-                 (enumerate-map (lambda (i m) (box-row (resume-row-text m (= (+ i start) sel) inner) inner))
-                                (:items win)))))
-    (append
-      (list (box-top " Resume session " bw))
-      rows
-      (list (box-sep bw))
-      (list (box-row (faint "↑↓ · enter view · r restore · Esc") inner))
-      (list (box-bot bw)))))
-
-(defun session-first-line (s)
-  (let ((parts (filter (lambda (l) (not (= (string/trim l) ""))) (string/split s "\n"))))
-    (if (null? parts) "" (string/trim (car parts)))))
-
-(defun msg-role-label (role)
-  (cond ((= role "user")      (accent "▸ you "))
-        ((= role "assistant") (ok "● sema"))
-        ((= role "tool")      (faint "   tool"))
-        (else                 (muted role))))
-
-(defun msg-preview-text (m)
-  (let ((role (get m :role "")) (calls (get m :tool-calls '())))
-    (cond
-      ((= role "tool")
-        (string-append "→ " (get m :tool-name "") ": " (session-first-line (get m :content ""))))
-      ((and (= role "assistant") (> (length calls) 0) (= (string/trim (get m :content "")) ""))
-        (string-append "→ " (string/join (map (lambda (tc) (get tc :name "")) calls) ", ")))
-      (else (session-first-line (get m :content ""))))))
-
-(defun msg-preview-row (m inner)
-  (let* ((label (msg-role-label (get m :role "")))
-         (avail (max 4 (- inner (string/width (term/strip label)) 1))))
-    (string-append label " " (muted (clip-width (msg-preview-text m) avail)))))
-
-(define RESUME-DETAIL-ROWS 14)   ;; visible message-preview lines in the detail view
-
-(defun resume-detail-rows (bw)
-  ;; One preview line per message, so dscroll is a direct top offset (clamped).
-  (let* ((inner (max 8 (- bw 4)))
-         (msgs (:detail *overlay*))
-         (lines (map (lambda (m) (msg-preview-row m inner)) msgs))
-         (start (max 0 (min (:dscroll *overlay*) (max 0 (- (length lines) RESUME-DETAIL-ROWS)))))
-         (win (take (min RESUME-DETAIL-ROWS (max 0 (- (length lines) start))) (drop start lines)))
-         (sel (resume-sel-session)))
-    (append
-      (list (box-top (string-append " " (if sel (clip-width (:title sel) 30) "session") " ") bw))
-      (if (null? lines)
-        (list (box-row (muted "empty session") inner))
-        (map (lambda (l) (box-row l inner)) win))
-      (list (box-sep bw))
-      (list (box-row (faint "↑↓ scroll · enter/r restore · Esc back") inner))
-      (list (box-bot bw)))))
-
-(defun resume-modal-rows ()
-  (let* ((bw  (min (max 40 (- *cols* 6)) 72))
-         (box (if (equal? (:view *overlay*) :detail) (resume-detail-rows bw) (resume-list-rows bw))))
-    (map (lambda (r) (center-h r bw)) box)))
-
-(defun resume-open-detail! ()
-  (let ((m (resume-sel-session)))
-    (when m
-      (let ((msgs (try (:messages (load-session (:id m))) (catch e '()))))
-        (overlay-merge! {:view :detail :dscroll 0 :detail msgs})))))
-
-(defun resume-restore-selected! ()
-  (let ((m (resume-sel-session)))
-    (when m (restore-session! (:id m)) (close-overlay!))))
-
-(defun resume-list-key (k)
-  (let ((n (length (:sessions *overlay*))))
-    (cond
-      ((key-name= k :up)   (overlay-merge! {:sel (max 0 (- (:sel *overlay*) 1))}))
-      ((key-name= k :down) (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel *overlay*) 1))}))
-      ((or (key-name= k :esc) (key-ctrl= k (action-ctrl-char :resume))) (close-overlay!))
-      ((key-name= k :enter) (resume-open-detail!))
-      ((key-char= k "r")    (resume-restore-selected!))
-      (else nil))))
-
-(defun resume-detail-key (k)
-  (let ((maxd (max 0 (- (length (:detail *overlay*)) RESUME-DETAIL-ROWS))))
-    (cond
-      ((key-name= k :esc)  (overlay-merge! {:view :list}))
-      ((key-name= k :up)   (overlay-merge! {:dscroll (max 0 (- (:dscroll *overlay*) 1))}))
-      ((key-name= k :down) (overlay-merge! {:dscroll (min maxd (+ (:dscroll *overlay*) 1))}))
-      ((or (key-name= k :enter) (key-char= k "r")) (resume-restore-selected!))
-      (else nil))))
-
-(defun handle-resume-key (k)
-  (if (equal? (:view *overlay*) :detail) (resume-detail-key k) (resume-list-key k)))
 
 ;; ── Frame assembly ───────────────────────────────────────────────────────────
 
@@ -628,9 +168,9 @@
                              (list (format "$~a" (/ (round (* cost 10000)) 10000.0)))
                              '()))
                          " · ")))
-         (left  (string-append " " (wordmark-with "coder")))
+         (left  (string/append " " (wordmark-with "coder")))
          (gap   (max 1 (- *cols* (string/width left) (string/width right) 1))))
-    (string-append left (string/repeat " " gap) right)))
+    (string/append left (string/repeat " " gap) right)))
 
 (define spinner-frames ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"])
 (defun spinner-frame () (nth spinner-frames (mod (quotient (time-ms) 80) 10)))
@@ -640,7 +180,7 @@
   ;; spinner while a turn runs, else a scroll indicator, else nothing.
   (indent (cond
     (*config-error* (bad "⚠ config error — using last good (fix init.sema)"))
-    (*busy*         (faint (string-append (spinner-frame) " thinking · ctrl-c interrupts")))
+    (*busy*         (faint (string/append (spinner-frame) " thinking · ctrl-c interrupts")))
     ((> *scroll* 0) (faint (format "↕ scrolled +~a" *scroll*)))
     (else           ""))))
 
@@ -651,7 +191,7 @@
    still fits — so `shown` never exceeds the row and wide chars can't overflow
    the fixed-row diff model."
   (let* ((avail (max 4 (- *cols* 4)))
-         (len   (string-length *input*))
+         (len   (string/length *input*))
          (cw    (lambda (i) (string/width (string/slice *input* i (+ i 1)))))
          (start (let loop ((i *cursor*) (w 0))
                   (if (<= i 0) 0
@@ -664,7 +204,7 @@
      :caret-col (min *cols* (+ 4 (string/width (string/slice *input* start *cursor*))))}))
 
 (defun prompt-line ()
-  (indent (string-append (accent (string-append prompt-glyph " ")) (:text (prompt-view)))))
+  (indent (string/append (accent (string/append prompt-glyph " ")) (:text (prompt-view)))))
 
 (defun viewport (lines h)
   "Take the last H lines, honoring *scroll* (0 = bottom). Pad with blanks on top."
@@ -711,11 +251,11 @@
          (updates (enumerate-map
                     (lambda (i new)
                       (if (equal? new (frame-ref *last-frame* i)) ""
-                        (string-append (goto (+ i 1) 1) CLEAR-LINE new)))
+                        (string/append (goto (+ i 1) 1) CLEAR-LINE new)))
                     frame)))
     ;; One write: the changed rows, park + show the cursor at the prompt caret
     ;; (hidden while a modal is up, since the prompt is behind it).
-    (display (string-append (apply string-append updates)
+    (display (string/append (apply string/append updates)
                             (goto (- *rows* 1) (:caret-col (prompt-view)))
                             (if (overlay-active?) HIDE-CURSOR SHOW-CURSOR)))
     (io/flush)
@@ -723,22 +263,20 @@
 
 (defun full-repaint! () (set! *last-frame* '()) (render!))
 
-;; ── Streaming callbacks (fired inside the agent task) ────────────────────────
-
-;; ── Typewriter reveal ─────────────────────────────────────────────
+;; ── Typewriter reveal (streaming callbacks fire inside the agent task) ───────
 ;; Network deltas land in *type-buffer*; the pump reveals them at a steady
 ;; per-tick pace so display cadence is smooth regardless of burstiness, and the
 ;; whole transcript re-renders on the 16ms tick, not on every token.
 
 (defun on-text-cb (delta)
-  (when (> (string-length delta) 0)
-    (set! *type-buffer* (string-append *type-buffer* delta))))
+  (when (> (string/length delta) 0)
+    (set! *type-buffer* (string/append *type-buffer* delta))))
 
 (defun reveal-tick! ()
   "Move a chunk of *type-buffer* into the streaming block. #t if it revealed.
    Reveals ~a third of the pending text (min 5 chars) so it catches up on bursts
    but types char-by-char as it drains."
-  (let ((len (string-length *type-buffer*)))
+  (let ((len (string/length *type-buffer*)))
     (if (= len 0) #f
       (let* ((n (min len (max 5 (quotient len 3))))
              (chunk (string/slice *type-buffer* 0 n)))
@@ -748,7 +286,7 @@
 
 (defun flush-type-buffer! ()
   "Reveal everything pending at once (block boundaries, interrupts, errors)."
-  (when (> (string-length *type-buffer*) 0)
+  (when (> (string/length *type-buffer*) 0)
     (append-assistant! *type-buffer*)
     (set! *type-buffer* "")))
 
@@ -777,7 +315,7 @@
   ;; of the turn. Guard each pass so one bad key/frame can't stop the pump; the
   ;; turn's own await/catch owns real errors.
   (let loop ()
-    (when (or (async/pending? turn) (> (string-length *type-buffer*) 0))
+    (when (or (async/pending? turn) (> (string/length *type-buffer*) 0))
       (try
         (begin
           (check-resize!)
@@ -818,7 +356,9 @@
 ;; exact agent/run :messages shape), so /resume can reload it and continue.
 
 (defun new-session! ()
-  (set! *session-id* (number->string (time-ms)))
+  ;; timestamp + pid: two instances started in the same millisecond can't
+  ;; silently share (and clobber) one session file.
+  (set! *session-id* (format "~a-~a" (time-ms) (sys/pid)))
   (set! *session-created* (time-ms)))
 
 (defun persist-session! ()
@@ -904,15 +444,15 @@
 ;; ── Key handling ─────────────────────────────────────────────────────────────
 
 (defun insert-char! (ch)
-  (set! *input* (string-append (string/slice *input* 0 *cursor*) ch
-                               (string/slice *input* *cursor* (string-length *input*))))
-  (set! *cursor* (+ *cursor* (string-length ch)))
+  (set! *input* (string/append (string/slice *input* 0 *cursor*) ch
+                               (string/slice *input* *cursor* (string/length *input*))))
+  (set! *cursor* (+ *cursor* (string/length ch)))
   (set! *psel* 0))
 
 (defun backspace! ()
   (when (> *cursor* 0)
-    (set! *input* (string-append (string/slice *input* 0 (- *cursor* 1))
-                                 (string/slice *input* *cursor* (string-length *input*))))
+    (set! *input* (string/append (string/slice *input* 0 (- *cursor* 1))
+                                 (string/slice *input* *cursor* (string/length *input*))))
     (set! *cursor* (- *cursor* 1))
     (set! *psel* 0)))
 
@@ -932,8 +472,8 @@
                  (known?  (get *commands* (:name parsed) #f))
                  (chosen  (cond (known? *input*)
                                 ((> (length matches) 0)
-                                 (string-append "/" (:name (nth matches (min *psel* (- (length matches) 1))))
-                                                (if (= (:args parsed) "") "" (string-append " " (:args parsed)))))
+                                 (string/append "/" (:name (nth matches (min *psel* (- (length matches) 1))))
+                                                (if (= (:args parsed) "") "" (string/append " " (:args parsed)))))
                                 (else *input*))))
             (clear-input!)
             (run-command! chosen)))
@@ -943,13 +483,21 @@
           (set! *scroll* 0)          ;; sending always returns you to the tail
           (run-agent-turn! text))))))
 
+(defun run-key-command! (action)
+  "A key bound to a non-built-in action fires the like-named custom command, so
+   :keys {:test \"ctrl-t\"} runs /test. Ignored mid-turn (like a typed command)."
+  (when (and action (not *busy*))
+    (let ((name (keyword->string action)))
+      (when (get *commands* name #f)
+        (run-command! (string/append "/" name))))))
+
 (defun handle-ctrl (ch)
-  (let ((action (keymap-action (string-append "ctrl-" ch))))
+  (let ((action (keymap-action (string/append "ctrl-" ch))))
     (cond
       ((equal? action :interrupt)
         (cond
           (*busy* (set! *interrupt* #t) (when *turn* (async/cancel *turn*)))
-          ((> (string-length *input*) 0) (clear-input!))
+          ((> (string/length *input*) 0) (clear-input!))
           (else (set! *should-quit* #t))))
       ((equal? action :quit)       (unless *busy* (set! *should-quit* #t)))
       ((equal? action :palette)    (set! *input* "/") (set! *cursor* 1) (set! *psel* 0))
@@ -957,24 +505,24 @@
       ((equal? action :resume)     (open-resume-modal!))
       ((equal? action :clear-line) (clear-input!))
       ((equal? action :line-start) (set! *cursor* 0))
-      ((equal? action :line-end)   (set! *cursor* (string-length *input*)))
+      ((equal? action :line-end)   (set! *cursor* (string/length *input*)))
       ((equal? action :repaint)    (full-repaint!))
-      (else nil))))
+      (else (run-key-command! action)))))
 
 (defun handle-named (name)
   (cond
     ((equal? name :enter)     (on-enter))
     ((equal? name :backspace) (backspace!))
     ((equal? name :left)      (set! *cursor* (max 0 (- *cursor* 1))))
-    ((equal? name :right)     (set! *cursor* (min (string-length *input*) (+ *cursor* 1))))
+    ((equal? name :right)     (set! *cursor* (min (string/length *input*) (+ *cursor* 1))))
     ((equal? name :home)      (set! *cursor* 0))
-    ((equal? name :end)       (set! *cursor* (string-length *input*)))
+    ((equal? name :end)       (set! *cursor* (string/length *input*)))
     ((equal? name :tab)
       (when (palette-open?)
         (let ((matches (palette-matches)))
           (when (> (length matches) 0)
-            (set! *input* (string-append "/" (:name (nth matches (min *psel* (- (length matches) 1)))) " "))
-            (set! *cursor* (string-length *input*))))))
+            (set! *input* (string/append "/" (:name (nth matches (min *psel* (- (length matches) 1)))) " "))
+            (set! *cursor* (string/length *input*))))))
     ((equal? name :up)
       (if (palette-open?) (set! *psel* (max 0 (- *psel* 1)))
         (scroll-by! 1)))
@@ -1036,6 +584,13 @@
              (any (lambda (p) (string/ends-with? p "init.sema")) (get ev :paths '())))
            evs))))
 
+(defun warn-keymap-conflicts! ()
+  (let ((dups (keymap-conflicts)))
+    (unless (null? dups)
+      (add-block! {:kind :warn
+                   :text (format "keymap: ~a bound to more than one action — first match wins"
+                                 (string/join dups ", "))}))))
+
 (defun reload-config! ()
   (ensure-config!)
   (let ((r (load-config (config-path))))
@@ -1047,7 +602,8 @@
         (set! *config* cfg)
         (set! *agent* (create-agent *cwd* *model* cfg))
         (add-block! {:kind :ok :text (format "config reloaded · model → ~a"
-                                        (if (= (:model cfg) "") "auto" (:model cfg)))}))
+                                        (if (= (:model cfg) "") "auto" (:model cfg)))})
+        (warn-keymap-conflicts!))
       (set! *config-error* (format "~a" (:error r)))))
   (render!))
 
@@ -1077,6 +633,7 @@
         (add-block! {:kind :info :text (format "(sema) coder — ~a · ~a" cwd (if (= model "") "auto" model))})
         (add-block! {:kind :info :text (format "type / for commands · ~a MCP · ~a resume · ~a palette · ~a quit"
                                          (key-hint :mcp) (key-hint :resume) (key-hint :palette) (key-hint :quit))})
+        (warn-keymap-conflicts!)
         (let ((na (mcp-needs-auth)))
           (unless (null? na)
             (add-block! {:kind :warn :text (format "~a MCP server(s) need auth: ~a — ~a to sign in"

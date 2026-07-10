@@ -1,0 +1,94 @@
+;; keymap.sema — global shortcuts as data.
+;;
+;; The active keymap is a merge of four layers, weakest first:
+;;
+;;   1. default-keymap            — the built-in actions below
+;;   2. command-declared keys     — (command "test" {:key "ctrl-t" …}) in config
+;;   3. (coder-config {:keys …})  — explicit overrides in init.sema
+;;   4. (bind-key! …)             — runtime binds from Sema code
+;;
+;; It is derived on every read (from *config*, defined in tui.sema — all load
+;; units share one global env), so a config hot-reload changes bindings with no
+;; reconcile step. An action that isn't a built-in fires the like-named slash
+;; command (see run-key-command! in tui.sema), so binding a key to a command is
+;; just naming it.
+;;
+;; NOTE: these defaults are documented in two other places — the README's
+;; keybindings table and the annotated init.sema template in config.sema.
+;; Change all three together.
+
+(define default-keymap
+  {:mcp        "ctrl-o"
+   :resume     "ctrl-r"
+   :palette    "ctrl-k"
+   :quit       "ctrl-d"
+   :interrupt  "ctrl-c"
+   :clear-line "ctrl-u"
+   :line-start "ctrl-a"
+   :line-end   "ctrl-e"
+   :repaint    "ctrl-l"})
+
+;; The two mutable layers live inside one stable container, mutated in place
+;; and never rebound: on current sema, rebinding a module global with set! can
+;; serve stale values to readers in other load units, while reads through a
+;; stable container always see the latest write. Slot 0 = command-declared
+;; keys (replaced wholesale on every config reconcile, so a :key removed from
+;; init.sema unbinds); slot 1 = runtime binds (survive reloads).
+(define *keymap-layers* (mutable-array/new 2 {}))
+
+(defun command-keys () (mutable-array/get *keymap-layers* 0))
+(defun runtime-keys () (mutable-array/get *keymap-layers* 1))
+
+(defun set-command-keys! (m) (mutable-array/set! *keymap-layers* 0 m))
+
+(defun as-action (action)
+  "Normalize an action name: a string names the like-named slash command."
+  (if (string? action) (string->keyword action) action))
+
+(defun bind-key! (key action)
+  "Bind KEY (e.g. \"ctrl-t\") to ACTION — a built-in action keyword, or a
+   command name (string or keyword) to run that slash command. Strongest layer;
+   survives config reloads."
+  (mutable-array/set! *keymap-layers* 1 (assoc (runtime-keys) (as-action action) key)))
+
+(defun unbind-key! (action)
+  "Drop ACTION's runtime bind (weaker layers show through again)."
+  (mutable-array/set! *keymap-layers* 1 (dissoc (runtime-keys) (as-action action))))
+
+(defun active-keymap ()
+  (merge default-keymap (command-keys) (get *config* :keys {}) (runtime-keys)))
+
+(defun keymap-action (keystr)
+  "Which action is bound to KEYSTR (e.g. \"ctrl-o\"), or #f."
+  (let ((km (active-keymap)))
+    (let loop ((ks (keys km)))
+      (cond ((null? ks) #f)
+            ((= (get km (car ks)) keystr) (car ks))
+            (else (loop (cdr ks)))))))
+
+(defun key-for (action) (get (active-keymap) action ""))
+
+(defun action-ctrl-char (action)
+  "The letter of ACTION's ctrl binding (\"o\" for \"ctrl-o\"), or \"\"."
+  (let ((k (key-for action)))
+    (if (string/starts-with? k "ctrl-") (string/slice k 5 (string/length k)) "")))
+
+(defun key-hint (action)
+  "Display form of ACTION's binding, e.g. :mcp → \"⌃O\"."
+  (let ((k (key-for action)))
+    (if (string/starts-with? k "ctrl-")
+      (string/append "⌃" (string/upper (string/slice k 5 (string/length k))))
+      k)))
+
+(defun keymap-conflicts ()
+  "Keys bound to more than one action in the active keymap (an override
+   colliding with a default or another bind). Empty list when clean."
+  (let ((km (active-keymap)))
+    (let loop ((ks (keys km)) (seen {}) (dups '()))
+      (if (null? ks)
+        (reverse dups)
+        (let* ((k    (car ks))
+               (bind (get km k)))
+          (if (get seen bind #f)
+            (loop (cdr ks) seen (if (member bind dups) dups (cons bind dups)))
+            (loop (cdr ks) (assoc seen bind #t) dups)))))))

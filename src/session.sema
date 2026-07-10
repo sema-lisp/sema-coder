@@ -5,9 +5,10 @@
 ;; with tool-calls and tool results — so a restored session resumes verbatim).
 
 (load "config.sema")
+(load "text.sema")   ;; truncate-str for session titles
 
 (defun sessions-dir () (path/join (config-dir) "sessions"))
-(defun session-path (id) (path/join (sessions-dir) (string-append id ".jsonl")))
+(defun session-path (id) (path/join (sessions-dir) (string/append id ".jsonl")))
 
 (defun session-title (messages)
   "First user message, one line, truncated — the human-readable label."

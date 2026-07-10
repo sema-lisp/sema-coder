@@ -10,13 +10,14 @@
 ;; through `emit` (see display.sema), so the same registry drives the plain
 ;; REPL and the full-screen TUI — the TUI just parameterizes the sink.
 ;;
-;; Users can ALSO define commands declaratively in config.json without writing
-;; Sema — see the `:commands` map (name → shell template, $ARGS substituted).
+;; Users can ALSO define commands declaratively in init.sema without touching
+;; this file — see the `:commands` list of (command name spec) records below.
 
 (load "display.sema")
 (load "config.sema")
 (load "agent.sema")
 (load "session.sema")
+(load "keymap.sema")   ;; command records may declare a :key
 
 ;; ── Registry ─────────────────────────────────────────────────────
 
@@ -105,13 +106,20 @@
   (set! *command-order* (filter (lambda (n) (not (= n name))) *command-order*)))
 
 (defun reconcile-commands! (cmds)
-  "Replace the config-owned command set with CMDS (list of command records)."
+  "Replace the config-owned command set with CMDS (list of command records).
+   A record's :key becomes a keybinding for the like-named action, replaced
+   wholesale each reconcile so a removed :key unbinds."
   (for-each unregister-command! *config-command-names*)
   (set! *config-command-names* (map :name cmds))
   (for-each
     (lambda (spec)
       (register-command! (:name spec) (get spec :desc "") (config-command-handler spec)))
-    cmds))
+    cmds)
+  (set-command-keys!
+    (foldl (lambda (m spec)
+             (let ((k (get spec :key #f)))
+               (if k (assoc m (string->keyword (:name spec)) k) m)))
+           {} cmds)))
 
 (defun boot-config! ()
   "Ensure init.sema exists, load it, reconcile config-owned commands; return the

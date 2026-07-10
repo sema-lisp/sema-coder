@@ -1,5 +1,5 @@
 (load "harness.sema")
-(load "../mcp.sema")
+(load "../src/mcp.sema")
 
 ;; ── reconcile records against config server declarations ──
 (mcp-reset!)

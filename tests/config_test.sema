@@ -1,5 +1,5 @@
 (load "harness.sema")
-(load "../config.sema")
+(load "../src/config.sema")
 
 ;; ── constructors return values ──
 (check "mcp-server record"

@@ -1,5 +1,5 @@
 (load "harness.sema")
-(load "../agent.sema")   ;; loads util, tools
+(load "../src/agent.sema")   ;; loads util, tools
 
 ;; create-agent builds a real agent value (no network), with the base tools
 (let ((a (create-agent "/tmp" "" {})))

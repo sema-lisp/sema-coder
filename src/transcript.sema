@@ -1,0 +1,129 @@
+;; transcript.sema — the TUI's conversation transcript: block storage, block →
+;; styled-line rendering, and the rendered-line cache.
+;;
+;; The transcript is a mutable array so streaming is O(1) per token: every
+;; :on-text delta rewrites the last block in place instead of rebuilding the
+;; whole list. Rendered lines are cached and recomputed only when the content
+;; or width changes — so scrolling (which only re-windows) never re-parses
+;; markdown.
+
+(load "theme.sema")
+(load "text.sema")
+(load "markdown.sema")
+
+;; ── Block storage + mutation ─────────────────────────────────────────────────
+
+(define *transcript* (mutable-array/new 64))   ;; blocks, oldest → newest
+
+(define *tlines* '())
+(define *tlines-w* -1)
+(define *tlines-dirty* #t)
+(defun mark-tdirty! () (set! *tlines-dirty* #t))
+
+(defun add-block! (b) (mutable-array/push! *transcript* b) (mark-tdirty!))
+
+(defun clear-transcript! () (set! *transcript* (mutable-array/new 64)) (mark-tdirty!))
+
+(defun transcript-blocks () (mutable-array/->vector *transcript*))
+
+(defun kind? (b k) (equal? (get b :kind :none) k))
+
+(defun update-last! (f)
+  (let ((n (mutable-array/length *transcript*)))
+    (when (> n 0)
+      (mutable-array/set! *transcript* (- n 1)
+        (f (mutable-array/get *transcript* (- n 1))))
+      (mark-tdirty!))))
+
+(defun last-block ()
+  (let ((n (mutable-array/length *transcript*)))
+    (if (> n 0) (mutable-array/get *transcript* (- n 1)) #f)))
+
+(defun append-assistant! (delta)
+  (let ((lb (last-block)))
+    (if (and lb (kind? lb :assistant))
+      (update-last! (lambda (b) (assoc b :text (string/append (:text b) delta))))
+      (add-block! {:kind :assistant :text delta}))))
+
+(defun set-last-tool-done! (ms result err)
+  (update-last! (lambda (b) (assoc b :state :done :ms ms :result result :error err))))
+
+;; ── Block → styled lines ─────────────────────────────────────────────────────
+
+(defun indent (line) (string/append " " line))
+
+(defun fit-line (l w)
+  "Indent one preformatted line, guaranteeing it fits width W. Keeps ANSI while
+   it fits (the common case); only when a line is genuinely too wide for the
+   terminal does it strip color and clip — so an over-wide row can never break
+   the fixed-row diff model by soft-wrapping."
+  (indent (if (<= (string/width l) w) l (clip-width (term/strip l) w))))
+
+;; Delegates to the native, display-width-aware string/wrap (correct for CJK /
+;; emoji / combining marks, which a char-count wrap gets wrong).
+(defun wrap-text (text w) (string/word-wrap text w))
+
+(defun tool-result-lines (b w)
+  "A one-line preview of a completed tool's result under its line — faint, or red
+   if it errored. Multi-line results collapse to the first line + a count."
+  (let* ((r (get b :result ""))
+         (s (if (string? r) r (str r)))
+         (lines (string/split s "\n"))
+         (head  (if (null? lines) "" (car lines)))
+         (extra (- (length lines) 1))
+         (preview (if (> extra 0) (string/append head " … +" (number->string extra) " lines") head))
+         (paint (if (get b :error #f) bad faint)))
+    (if (= (string/trim s) "") '()
+      (list (indent (string/append "  " (paint (clip-width preview (max 4 (- w 6))))))))))
+
+(defun block-lines (b w)
+  "Render one transcript block to a list of styled lines (content width W)."
+  (cond
+    ((kind? b :user)
+      (append
+        (map (lambda (i-l)
+               (let ((i (nth i-l 0)) (l (nth i-l 1)))
+                 (if (= i 0)
+                   (indent (string/append (accent (string/append user-glyph " ")) (bright l)))
+                   (indent (string/append "  " (bright l))))))
+             (enumerate (wrap-text (:text b) (- w 2))))
+        (list "")))
+    ((kind? b :assistant)
+      ;; Markdown-rendered. An empty assistant block (the pre-first-token
+      ;; streaming target, or a post-tool round with no text) renders nothing.
+      (if (= (string/trim (:text b)) "") '()
+        (append (map indent (md-lines (:text b) w)) (list ""))))
+    ((kind? b :raw)
+      ;; Preformatted output (command stdout, pretty JSON): preserve internal
+      ;; whitespace — split on newlines only, clip each line to width instead of
+      ;; reflowing (word-wrap would collapse the spaces columns depend on).
+      (append (map (lambda (l) (fit-line l w)) (string/split (:text b) "\n"))
+              (list "")))
+    ((kind? b :tool)
+      (let* ((tool (:tool b)) (arg (clip-width (get b :arg "") (max 4 (- w 18)))))
+        (if (equal? (get b :state :done) :running)
+          (list (indent (string/append (faint "·") " "
+                                        (accent-dim (term/style tool :bold)) " " (muted arg))))
+          (cons
+            (indent (string/append (ok "✔") " "
+                                   (accent-dim (term/style tool :bold)) " " (muted arg)
+                                   " " (faint (string/append (number->string (get b :ms 0)) "ms"))))
+            (tool-result-lines b w)))))
+    ((kind? b :info)  (map (lambda (l) (indent (muted l))) (wrap-text (:text b) w)))
+    ((kind? b :ok)    (map (lambda (l) (indent (ok l))) (wrap-text (:text b) w)))
+    ((kind? b :warn)  (map (lambda (l) (indent (warn l))) (wrap-text (:text b) w)))
+    ;; Pre-styled chrome (help rows, /tools): keep its ANSI and column padding
+    ;; intact — split on newlines only, never word-wrap; fit-line guards the
+    ;; rare too-narrow-terminal overflow.
+    ((kind? b :line)  (map (lambda (l) (fit-line l w)) (string/split (:text b) "\n")))
+    ((kind? b :error) (map (lambda (l) (indent (bad l))) (wrap-text (string/append "error: " (:text b)) w)))
+    (else '())))
+
+(defun transcript-lines (w)
+  (when (or *tlines-dirty* (not (= w *tlines-w*)))
+    (set! *tlines* (->> (transcript-blocks)
+                        (map (lambda (b) (block-lines b w)))
+                        (apply append)))
+    (set! *tlines-w* w)
+    (set! *tlines-dirty* #f))
+  *tlines*)

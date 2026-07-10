@@ -5,7 +5,7 @@
 ;; theme.sema so the palette stays in one place.
 
 (load "theme.sema")
-(load "util.sema")
+(load "text.sema")
 
 ;; ── Output sink (parameterized so the TUI can reroute it) ────────
 ;;
@@ -50,6 +50,8 @@
 
 ;; ── Tool-call rendering (agent/run :on-tool-call hook) ───────────
 
+;; Single-slot by design: agent/run executes tool calls serially within a turn,
+;; so one start/end pair is ever in flight. Revisit if tools become parallel.
 (define active-spinner #f)
 (define active-tool "")
 (define active-arg "")

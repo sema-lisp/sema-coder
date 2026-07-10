@@ -1,5 +1,5 @@
 (load "harness.sema")
-(load "../commands.sema")   ;; brings in display, config, agent, tools, util
+(load "../src/commands.sema")   ;; brings in display, config, agent, tools, util
 
 ;; ── argv splicing is injection-safe (a typed arg is ONE token, never shell) ──
 (check "splice single arg"    (argv-for ["echo" :args] "hi; rm") (list "echo" "hi; rm"))

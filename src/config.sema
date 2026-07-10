@@ -6,14 +6,12 @@
 ;; mutates the app's active config or prints, so the caller owns recovery policy
 ;; and reconciles runtime to the returned value (no accumulators, no reset).
 
-(load "util.sema")
-
 ;; A parameter so tests (and a future --config flag) can redirect the dir.
 (define config-dir-override (make-parameter #f))
 (defun config-dir ()
   (or (config-dir-override)
       (let ((e (env "SEMA_CODER_CONFIG_DIR"))) (if (and e (not (= e ""))) e #f))
-      (path/join (sys/config-dir) "sema" "sema-code")))
+      (path/join (sys/config-dir) "sema" "sema-coder")))
 (defun config-path () (path/join (config-dir) "init.sema"))
 
 (define default-config
@@ -33,7 +31,9 @@
    :transport (if (get opts :url #f) "http" "stdio")})
 
 (defun command (name spec)
-  "A command record. SPEC carries :desc and one of :run (argv) / :do (fn) / :shell."
+  "A command record. SPEC carries :desc and one of :run (argv) / :do (fn) /
+   :shell, plus an optional :key (e.g. \"ctrl-t\") that binds the command to a
+   keyboard shortcut."
   (assoc spec :name name))
 
 (defun coder-config (m)
@@ -82,15 +82,16 @@
        )   ; only add servers you trust — they run real commands / reach real services
 
      ;; ── Slash commands — argv (no shell), or a Lisp handler. ──
+     ;; :key gives a command a keyboard shortcut, e.g. ctrl-t → /test.
      :commands
      (list
-       (command \"test\" {:desc \"run tests\" :run [\"make\" \"test\"]})
+       (command \"test\" {:desc \"run tests\" :run [\"make\" \"test\"] :key \"ctrl-t\"})
        ;; (command \"log\" {:desc \"git log\" :run [\"git\" \"log\" \"--oneline\" \"-n\" :args]})
        )
 
-     ;; ── Keybindings — rebind any action (defaults shown). ──
+     ;; ── Keybindings — rebind any action, or bind a key to a command name. ──
      ;; actions: :mcp :resume :palette :quit :interrupt :clear-line :line-start :line-end :repaint
-     :keys {}   ;; e.g. {:mcp \"ctrl-p\" :palette \"ctrl-space\"}
+     :keys {}   ;; e.g. {:mcp \"ctrl-p\" :test \"ctrl-t\"}
      }))
 ")
 

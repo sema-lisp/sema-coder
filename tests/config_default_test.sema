@@ -1,5 +1,5 @@
 (load "harness.sema")
-(load "../config.sema")
+(load "../src/config.sema")
 
 ;; Point the config dir at a temp location, generate the default, and confirm
 ;; it round-trips through the pure loader with the sema autostart server present.

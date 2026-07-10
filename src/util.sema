@@ -1,0 +1,32 @@
+;; util.sema — path resolution and shell quoting
+;;
+;; Path safety leans on the host primitive (path/within?) rather than ad-hoc
+;; string checks: it canonicalizes symlinks, so it catches `../` AND symlink
+;; escapes that a substring test would miss. This is accident prevention for
+;; the file tools, not a security boundary — the bash tool runs real commands
+;; with the user's privileges, unrestricted. String/width helpers live in
+;; text.sema.
+
+;; ── Workspace root (the file-tool boundary) ─────────────────────
+
+(define workspace-root ".")
+(defun set-workspace-root! (path) (set! workspace-root path))
+
+(defun resolve-path (root path)
+  "Resolve PATH against ROOT and assert the result stays inside root.
+   Absolute paths are fine as long as they land inside the workspace —
+   the system prompt announces an absolute cwd, so models often send them."
+  (let ((joined (if (path/absolute? path) path (path/join root path))))
+    (unless (path/within? root joined)
+      (error (format "Path escapes workspace: ~a" path)))
+    joined))
+
+(defun resolve-dir (root path)
+  "Like resolve-path, but nil/empty (an omitted tool arg) means root itself."
+  (if (or (nil? path) (= path "")) root (resolve-path root path)))
+
+;; ── Shell quoting ────────────────────────────────────────────────
+
+(defun sh-quote (s)
+  "Quote S as one sh word: wrap in single quotes, escaping embedded quotes."
+  (string/append "'" (string/replace s "'" "'\\''") "'"))

@@ -1,0 +1,274 @@
+;; overlay.sema — the TUI's single-slot modal overlay: the MCP management
+;; modal (⌃O) and the resume/session picker (⌃R), plus the shared bordered-box
+;; renderers and their key handlers.
+;;
+;; Reads the TUI globals (*cols*, *agent*, …) defined in tui.sema — all load
+;; units share one global env, and every read here happens inside a function
+;; invoked per-frame, so cross-unit set!s are always observed.
+
+(load "theme.sema")
+(load "text.sema")
+(load "keymap.sema")
+(load "mcp.sema")
+(load "session.sema")
+
+(define *overlay* #f)   ;; #f | {:kind :mcp|:resume :view … :sel N …}
+
+(defun overlay-active? () (if *overlay* #t #f))
+(defun close-overlay! () (set! *overlay* #f))
+(defun overlay-merge! (m) (set! *overlay* (merge *overlay* m)))
+
+;; ── Bordered box helpers (clip content to the inner width, ANSI-safe) ──
+
+(defun box-row (content inner)
+  (let ((c (if (> (string/width content) inner) (clip-width (term/strip content) inner) content)))
+    (string/append (faint "│ ") (pad-to c inner) (faint " │"))))
+(defun box-top (title bw)
+  (string/append (faint "┌") (accent-dim title)
+                 (faint (string/append (string/repeat "─" (max 0 (- bw 2 (string/length title)))) "┐"))))
+(defun box-bot (bw) (faint (string/append "└" (string/repeat "─" (max 0 (- bw 2))) "┘")))
+(defun box-sep (bw) (faint (string/append "├" (string/repeat "─" (max 0 (- bw 2))) "┤")))
+
+(defun window-list (lst sel maxrows)
+  "A MAXROWS-long window of LST that keeps index SEL visible → {:items :start}."
+  (let* ((n (length lst))
+         (start (max 0 (min (max 0 (- sel (quotient maxrows 2))) (max 0 (- n maxrows))))))
+    {:items (take (min maxrows (max 0 (- n start))) (drop start lst)) :start start}))
+
+(defun center-h (row bw)
+  (string/append (string/repeat " " (max 0 (quotient (- *cols* bw) 2))) row))
+
+(defun overlay-center (base box)
+  (let* ((n (length base)) (h (length box)) (top (max 0 (quotient (- n h) 2))))
+    (append (take top base) box (drop (min n (+ top h)) base))))
+
+;; ── Key predicates (shared by both modals) ──
+
+(defun key-name= (k name) (and (equal? (:kind k) :key) (equal? (:name k) name)))
+(defun key-char= (k ch)   (and (equal? (:kind k) :char) (equal? (:char k) ch)))
+(defun key-ctrl= (k ch)   (and (equal? (:kind k) :ctrl) (equal? (:char k) ch)))
+
+;; ── MCP management modal ─────────────────────────────────────────────────────
+
+(defun open-mcp-modal! () (set! *overlay* {:kind :mcp :view :list :sel 0 :tsel 0}))
+
+(defun mcp-sel-server ()
+  (let ((v (mcp-records)) (i (:sel *overlay*)))
+    (if (and (> (length v) 0) (< i (length v))) (nth v i) #f)))
+
+(defun rebuild-agent-with-mcp! ()
+  (set! *agent* (create-agent *cwd* *model* *config*)))
+
+(defun mcp-status-glyph (status)
+  (cond ((equal? status :connected)  (ok "●"))
+        ((equal? status :connecting) (accent "◐"))
+        ((equal? status :needs-auth) (warn "▲"))
+        ((equal? status :error)      (bad "○"))
+        (else                        (faint "◌"))))
+
+(defun mcp-status-label (rec)
+  (let ((s (:status rec)))
+    (cond ((equal? s :connected)  "connected")
+          ((equal? s :connecting) "connecting…")
+          ((equal? s :needs-auth) "needs auth — press c to sign in")
+          ((equal? s :error)      (string/append "error: " (get rec :error "")))
+          (else                   "idle — press c to connect"))))
+
+(defun mcp-row-text (rec sel?)
+  (string/append
+    (if sel? (accent "▸ ") "  ")
+    (mcp-status-glyph (:status rec)) " "
+    (bright (string/pad-right (:name rec) 12)) " "
+    (muted (string/pad-right (:transport rec) 5)) " "
+    (if (equal? (:status rec) :connected)
+      (muted (string/append (number->string (length (:tools rec))) " tools  ")) "        ")
+    (muted (mcp-status-label rec))))
+
+(defun mcp-list-rows (bw)
+  (let* ((inner (max 8 (- bw 4)))
+         (servers (mcp-records))
+         (sel (:sel *overlay*))
+         (rows (if (= (length servers) 0)
+                 (list (box-row (muted "No MCP servers — add one in init.sema (press e)") inner))
+                 (enumerate-map (lambda (i rec) (box-row (mcp-row-text rec (= i sel)) inner))
+                                (vector->list servers)))))
+    (append
+      (list (box-top " MCP servers " bw))
+      rows
+      (list (box-sep bw))
+      (list (box-row (faint "↑↓ · c connect · d disconnect · t tools · e edit · Esc") inner))
+      (list (box-bot bw)))))
+
+(defun mcp-tools-rows (bw)
+  (let* ((inner (max 8 (- bw 4)))
+         (srv (mcp-sel-server))
+         (names (if (and srv (equal? (:status srv) :connected)) (map tool/name (:tools srv)) '()))
+         (tsel (:tsel *overlay*))
+         (shown (take (min 10 (length names)) (drop (max 0 (- tsel 9)) names)))
+         (rows (if (null? names)
+                 (list (box-row (muted "not connected — no tools") inner))
+                 (map (lambda (n) (box-row (string/append "  " (accent n)) inner)) shown))))
+    (append
+      (list (box-top (string/append " " (if srv (:name srv) "?") " · tools ") bw))
+      rows
+      (list (box-sep bw))
+      (list (box-row (faint "↑↓ scroll · Esc back") inner))
+      (list (box-bot bw)))))
+
+(defun mcp-modal-rows ()
+  (let* ((bw  (min (max 40 (- *cols* 6)) 72))
+         (box (if (equal? (:view *overlay*) :tools) (mcp-tools-rows bw) (mcp-list-rows bw))))
+    (map (lambda (r) (center-h r bw)) box)))
+
+(defun mcp-connect-selected! ()
+  (let ((srv (mcp-sel-server)))
+    (when srv (mcp-connect! (:name srv)) (rebuild-agent-with-mcp!))))
+
+(defun mcp-disconnect-selected! ()
+  (let ((srv (mcp-sel-server)))
+    (when srv (mcp-disconnect! (:name srv)) (rebuild-agent-with-mcp!))))
+
+(defun mcp-list-key (k)
+  (let ((n (length (mcp-records))))
+    (cond
+      ((key-name= k :up)     (overlay-merge! {:sel (max 0 (- (:sel *overlay*) 1))}))
+      ((key-name= k :down)   (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel *overlay*) 1))}))
+      ((or (key-name= k :esc) (key-ctrl= k (action-ctrl-char :mcp))) (close-overlay!))
+      ((or (key-char= k "c") (key-char= k "r")) (mcp-connect-selected!))
+      ((key-char= k "d")     (mcp-disconnect-selected!))
+      ((or (key-char= k "t") (key-name= k :enter)) (overlay-merge! {:view :tools :tsel 0}))
+      ((key-char= k "e")     (open-config!))
+      (else nil))))
+
+(defun mcp-tools-key (k)
+  (cond
+    ((key-name= k :esc)  (overlay-merge! {:view :list}))
+    ((key-name= k :up)   (overlay-merge! {:tsel (max 0 (- (:tsel *overlay*) 1))}))
+    ((key-name= k :down) (overlay-merge! {:tsel (+ (:tsel *overlay*) 1)}))
+    (else nil)))
+
+;; ── Resume modal (session history) ───────────────────────────────────────────
+
+(defun open-resume-modal! ()
+  (set! *overlay* {:kind :resume :view :list :sel 0 :dscroll 0 :sessions (list-sessions)}))
+
+(defun resume-sel-session ()
+  (let ((ss (:sessions *overlay*)) (i (:sel *overlay*)))
+    (if (and (> (length ss) 0) (< i (length ss))) (nth ss i) #f)))
+
+(defun session-model-label (m)
+  (let ((md (:model m))) (if (or (not md) (= md "")) "auto" md)))
+
+(defun resume-row-text (m sel? inner)
+  (let* ((meta   (string/append (number->string (:count m)) " msgs · " (session-model-label m)))
+         (titlew (max 8 (- inner 4 (string/width meta) 2)))
+         (title  (pad-width (clip-width (:title m) titlew) titlew)))
+    (string/append (if sel? (accent "▸ ") "  ") (bright title) "  " (muted meta))))
+
+(defun resume-list-rows (bw)
+  (let* ((inner (max 8 (- bw 4)))
+         (sessions (:sessions *overlay*))
+         (sel (:sel *overlay*))
+         (win (window-list sessions sel 12))
+         (start (:start win))
+         (rows (if (= (length sessions) 0)
+                 (list (box-row (muted "No saved sessions yet — they're written after each turn") inner))
+                 (enumerate-map (lambda (i m) (box-row (resume-row-text m (= (+ i start) sel) inner) inner))
+                                (:items win)))))
+    (append
+      (list (box-top " Resume session " bw))
+      rows
+      (list (box-sep bw))
+      (list (box-row (faint "↑↓ · enter view · r restore · Esc") inner))
+      (list (box-bot bw)))))
+
+(defun session-first-line (s)
+  (let ((parts (filter (lambda (l) (not (= (string/trim l) ""))) (string/split s "\n"))))
+    (if (null? parts) "" (string/trim (car parts)))))
+
+(defun msg-role-label (role)
+  (cond ((= role "user")      (accent "▸ you "))
+        ((= role "assistant") (ok "● sema"))
+        ((= role "tool")      (faint "   tool"))
+        (else                 (muted role))))
+
+(defun msg-preview-text (m)
+  (let ((role (get m :role "")) (calls (get m :tool-calls '())))
+    (cond
+      ((= role "tool")
+        (string/append "→ " (get m :tool-name "") ": " (session-first-line (get m :content ""))))
+      ((and (= role "assistant") (> (length calls) 0) (= (string/trim (get m :content "")) ""))
+        (string/append "→ " (string/join (map (lambda (tc) (get tc :name "")) calls) ", ")))
+      (else (session-first-line (get m :content ""))))))
+
+(defun msg-preview-row (m inner)
+  (let* ((label (msg-role-label (get m :role "")))
+         (avail (max 4 (- inner (string/width (term/strip label)) 1))))
+    (string/append label " " (muted (clip-width (msg-preview-text m) avail)))))
+
+(define RESUME-DETAIL-ROWS 14)   ;; visible message-preview lines in the detail view
+
+(defun resume-detail-rows (bw)
+  ;; One preview line per message, so dscroll is a direct top offset (clamped).
+  (let* ((inner (max 8 (- bw 4)))
+         (msgs (:detail *overlay*))
+         (lines (map (lambda (m) (msg-preview-row m inner)) msgs))
+         (start (max 0 (min (:dscroll *overlay*) (max 0 (- (length lines) RESUME-DETAIL-ROWS)))))
+         (win (take (min RESUME-DETAIL-ROWS (max 0 (- (length lines) start))) (drop start lines)))
+         (sel (resume-sel-session)))
+    (append
+      (list (box-top (string/append " " (if sel (clip-width (:title sel) 30) "session") " ") bw))
+      (if (null? lines)
+        (list (box-row (muted "empty session") inner))
+        (map (lambda (l) (box-row l inner)) win))
+      (list (box-sep bw))
+      (list (box-row (faint "↑↓ scroll · enter/r restore · Esc back") inner))
+      (list (box-bot bw)))))
+
+(defun resume-modal-rows ()
+  (let* ((bw  (min (max 40 (- *cols* 6)) 72))
+         (box (if (equal? (:view *overlay*) :detail) (resume-detail-rows bw) (resume-list-rows bw))))
+    (map (lambda (r) (center-h r bw)) box)))
+
+(defun resume-open-detail! ()
+  (let ((m (resume-sel-session)))
+    (when m
+      (let ((msgs (try (:messages (load-session (:id m))) (catch e '()))))
+        (overlay-merge! {:view :detail :dscroll 0 :detail msgs})))))
+
+(defun resume-restore-selected! ()
+  (let ((m (resume-sel-session)))
+    (when m (restore-session! (:id m)) (close-overlay!))))
+
+(defun resume-list-key (k)
+  (let ((n (length (:sessions *overlay*))))
+    (cond
+      ((key-name= k :up)   (overlay-merge! {:sel (max 0 (- (:sel *overlay*) 1))}))
+      ((key-name= k :down) (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel *overlay*) 1))}))
+      ((or (key-name= k :esc) (key-ctrl= k (action-ctrl-char :resume))) (close-overlay!))
+      ((key-name= k :enter) (resume-open-detail!))
+      ((key-char= k "r")    (resume-restore-selected!))
+      (else nil))))
+
+(defun resume-detail-key (k)
+  (let ((maxd (max 0 (- (length (:detail *overlay*)) RESUME-DETAIL-ROWS))))
+    (cond
+      ((key-name= k :esc)  (overlay-merge! {:view :list}))
+      ((key-name= k :up)   (overlay-merge! {:dscroll (max 0 (- (:dscroll *overlay*) 1))}))
+      ((key-name= k :down) (overlay-merge! {:dscroll (min maxd (+ (:dscroll *overlay*) 1))}))
+      ((or (key-name= k :enter) (key-char= k "r")) (resume-restore-selected!))
+      (else nil))))
+
+(defun handle-resume-key (k)
+  (if (equal? (:view *overlay*) :detail) (resume-detail-key k) (resume-list-key k)))
+
+;; ── Dispatch ──
+
+(defun overlay-rows ()
+  (if (equal? (:kind *overlay*) :resume) (resume-modal-rows) (mcp-modal-rows)))
+
+(defun handle-overlay-key (k)
+  (cond
+    ((equal? (:kind *overlay*) :resume) (handle-resume-key k))
+    ((equal? (:view *overlay*) :tools)  (mcp-tools-key k))
+    (else                               (mcp-list-key k))))

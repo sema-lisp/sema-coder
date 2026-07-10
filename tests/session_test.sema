@@ -1,7 +1,7 @@
 (load "harness.sema")
-(load "../session.sema")
+(load "../src/session.sema")
 
-(define tmp (path/join (sys/temp-dir) (string-append "sema-coder-sess-" (number->string (sys/pid)))))
+(define tmp (path/join (sys/temp-dir) (string/append "sema-coder-sess-" (number->string (sys/pid)))))
 
 (define msgs
   (list
