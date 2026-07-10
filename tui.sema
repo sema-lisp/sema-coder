@@ -82,8 +82,8 @@
       (update-last! (lambda (b) (assoc b :text (string-append (:text b) delta))))
       (add-block! {:kind :assistant :text delta}))))
 
-(defun set-last-tool-done! (ms)
-  (update-last! (lambda (b) (assoc b :state :done :ms ms))))
+(defun set-last-tool-done! (ms result err)
+  (update-last! (lambda (b) (assoc b :state :done :ms ms :result result :error err))))
 
 ;; ── Small helpers ────────────────────────────────────────────────────────────
 
@@ -126,6 +126,19 @@
 
 (defun indent (line) (string-append " " line))
 
+(defun tool-result-lines (b w)
+  "A one-line preview of a completed tool's result under its line — faint, or red
+   if it errored. Multi-line results collapse to the first line + a count."
+  (let* ((r (get b :result ""))
+         (s (if (string? r) r (str r)))
+         (lines (string/split s "\n"))
+         (head  (if (null? lines) "" (car lines)))
+         (extra (- (length lines) 1))
+         (preview (if (> extra 0) (string-append head " … +" (number->string extra) " lines") head))
+         (paint (if (get b :error #f) bad faint)))
+    (if (= (string/trim s) "") '()
+      (list (indent (string-append "  " (paint (clamp-plain preview (max 4 (- w 6))))))))))
+
 (defun block-lines (b w)
   "Render one transcript block to a list of styled lines (content width W)."
   (cond
@@ -155,9 +168,11 @@
         (if (equal? (get b :state :done) :running)
           (list (indent (string-append (faint "·") " "
                                         (accent-dim (term/style tool :bold)) " " (muted arg))))
-          (list (indent (string-append (ok "✔") " "
-                                        (accent-dim (term/style tool :bold)) " " (muted arg)
-                                        " " (faint (string-append (number->string (get b :ms 0)) "ms"))))))))
+          (cons
+            (indent (string-append (ok "✔") " "
+                                   (accent-dim (term/style tool :bold)) " " (muted arg)
+                                   " " (faint (string-append (number->string (get b :ms 0)) "ms"))))
+            (tool-result-lines b w)))))
     ((kind? b :info)  (map (lambda (l) (indent (muted l))) (wrap-text (:text b) w)))
     ((kind? b :ok)    (map (lambda (l) (indent (ok l))) (wrap-text (:text b) w)))
     ;; Pre-styled chrome (help rows, /tools): keep its ANSI and column padding
@@ -393,7 +408,7 @@
         (let ((arg (tool-arg tool (if (map? args) args {}))))
           (add-block! {:kind :tool :tool tool :arg arg :state :running :ms 0})))
       ((= evt "end")
-        (set-last-tool-done! (get event :duration-ms 0))
+        (set-last-tool-done! (get event :duration-ms 0) (get event :result "") (get event :error #f))
         (add-block! {:kind :assistant :text ""}))))   ;; target for post-tool text
   (render!))
 

@@ -54,6 +54,14 @@
 (define active-tool "")
 (define active-arg "")
 
+(defun first-scalar-arg (args)
+  "First string/number value in ARGS — a generic inline arg for MCP/unknown tools."
+  (if (not (map? args)) ""
+    (let loop ((ks (keys args)))
+      (if (null? ks) ""
+        (let ((v (get args (car ks))))
+          (if (or (string? v) (number? v)) (truncate-str (str v) 60) (loop (cdr ks))))))))
+
 (defun tool-arg (tool args)
   "Pick the most useful single arg to show inline for a tool call."
   (cond
@@ -61,7 +69,7 @@
       (get args :path ""))
     ((equal? tool "bash")        (truncate-str (get args :command "") 60))
     ((member tool (list "grep" "find-files")) (get args :pattern ""))
-    (else "")))
+    (else (first-scalar-arg args))))
 
 (defun tool-result-line (tool arg ms)
   "The settled line shown after a tool call completes: ✔ tool arg Nms."
