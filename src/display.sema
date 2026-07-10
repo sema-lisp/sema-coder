@@ -22,13 +22,13 @@
 (define current-emit
   (make-parameter
     (lambda (kind text)
-      (cond
-        ((equal? kind :info)  (show-info text))
-        ((equal? kind :ok)    (show-ok text))
-        ((equal? kind :error) (show-error text))
-        ((equal? kind :line)  (io/println-error text))
-        ((equal? kind :raw)   (println text))
-        (else nil)))))
+      (match kind
+        (:info  (show-info text))
+        (:ok    (show-ok text))
+        (:error (show-error text))
+        (:line  (io/println-error text))
+        (:raw   (println text))
+        (_ nil)))))
 
 (defun emit (kind text) ((current-emit) kind text))
 
@@ -44,9 +44,9 @@
   (println text)
   (println ""))
 
-(defun show-info (text)  (io/println-error (muted  (format "  ~a" text))))
-(defun show-error (text) (io/println-error (bad    (format "  error: ~a" text))))
-(defun show-ok (text)    (io/println-error (ok     (format "  ~a" text))))
+(defun show-info (text)  (io/println-error (muted  f"  ${text}")))
+(defun show-error (text) (io/println-error (bad    f"  error: ${text}")))
+(defun show-ok (text)    (io/println-error (ok     f"  ${text}")))
 
 ;; ── Tool-call rendering (agent/run :on-tool-call hook) ───────────
 
@@ -79,18 +79,16 @@
     (ok "✔")
     (accent-dim (term/style tool :bold))
     (muted arg)
-    (faint (format "~ams" ms))))
+    (faint f"${ms}ms")))
 
 (defun on-tool-call (event)
-  (let ((evt  (:event event))
-        (tool (:tool event))
-        (args (:args event)))
+  (let (({:event evt :tool tool :args args} event))
     (cond
       ((= evt "start")
         (set! active-tool tool)
         (set! active-arg (tool-arg tool (if (map? args) args {})))
         (set! active-spinner
-          (term/spinner-start (muted (format "~a ~a" tool active-arg)))))
+          (term/spinner-start (muted f"${tool} ${active-arg}"))))
       ((= evt "end")
         (when active-spinner
           (term/spinner-stop active-spinner {})

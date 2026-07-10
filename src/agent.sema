@@ -22,15 +22,15 @@
 5. Make minimal, focused changes and match the surrounding code's style.
 6. Be concise. Show code, not prose about code."
 
-      (format "## Environment
-Working directory: ~a
-Platform: ~a" cwd platform))
+      f"## Environment
+Working directory: ${cwd}
+Platform: ${platform}")
     "\n\n"))
 
 (defun create-agent (cwd model cfg)
   "Build the coding agent. Model precedence: explicit arg > config > auto."
   (set-workspace-root! cwd)
-  (let* ((platform (format "~a (~a)" (sys/os) (sys/arch)))
+  (let* ((platform f"${(sys/os)} (${(sys/arch)})")
          (chosen
            (cond
              ((not (= model "")) model)

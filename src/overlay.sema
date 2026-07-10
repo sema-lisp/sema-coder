@@ -60,19 +60,20 @@
   (set! *agent* (create-agent *cwd* *model* *config*)))
 
 (defun mcp-status-glyph (status)
-  (cond ((equal? status :connected)  (ok "●"))
-        ((equal? status :connecting) (accent "◐"))
-        ((equal? status :needs-auth) (warn "▲"))
-        ((equal? status :error)      (bad "○"))
-        (else                        (faint "◌"))))
+  (match status
+    (:connected  (ok "●"))
+    (:connecting (accent "◐"))
+    (:needs-auth (warn "▲"))
+    (:error      (bad "○"))
+    (_           (faint "◌"))))
 
 (defun mcp-status-label (rec)
-  (let ((s (:status rec)))
-    (cond ((equal? s :connected)  "connected")
-          ((equal? s :connecting) "connecting…")
-          ((equal? s :needs-auth) "needs auth — press c to sign in")
-          ((equal? s :error)      (string/append "error: " (get rec :error "")))
-          (else                   "idle — press c to connect"))))
+  (match (:status rec)
+    (:connected  "connected")
+    (:connecting "connecting…")
+    (:needs-auth "needs auth — press c to sign in")
+    (:error      f"error: ${(get rec :error "")}")
+    (_           "idle — press c to connect")))
 
 (defun mcp-row-text (rec sel?)
   (string/append
@@ -121,12 +122,12 @@
     (map #(center-h % bw) box)))
 
 (defun mcp-connect-selected! ()
-  (let ((srv (mcp-sel-server)))
-    (when srv (mcp-connect! (:name srv)) (rebuild-agent-with-mcp!))))
+  (when-let (srv (mcp-sel-server))
+    (mcp-connect! (:name srv)) (rebuild-agent-with-mcp!)))
 
 (defun mcp-disconnect-selected! ()
-  (let ((srv (mcp-sel-server)))
-    (when srv (mcp-disconnect! (:name srv)) (rebuild-agent-with-mcp!))))
+  (when-let (srv (mcp-sel-server))
+    (mcp-disconnect! (:name srv)) (rebuild-agent-with-mcp!)))
 
 (defun mcp-list-key (k)
   (let ((n (length (mcp-records))))
@@ -187,10 +188,11 @@
     (if (null? parts) "" (string/trim (car parts)))))
 
 (defun msg-role-label (role)
-  (cond ((= role "user")      (accent "▸ you "))
-        ((= role "assistant") (ok "● sema"))
-        ((= role "tool")      (faint "   tool"))
-        (else                 (muted role))))
+  (match role
+    ("user"      (accent "▸ you "))
+    ("assistant" (ok "● sema"))
+    ("tool"      (faint "   tool"))
+    (_           (muted role))))
 
 (defun msg-preview-text (m)
   (let ((role (get m :role "")) (calls (get m :tool-calls '())))
@@ -231,14 +233,13 @@
     (map #(center-h % bw) box)))
 
 (defun resume-open-detail! ()
-  (let ((m (resume-sel-session)))
-    (when m
-      (let ((msgs (try (:messages (load-session (:id m))) (catch e '()))))
-        (overlay-merge! {:view :detail :dscroll 0 :detail msgs})))))
+  (when-let (m (resume-sel-session))
+    (let ((msgs (try (:messages (load-session (:id m))) (catch e '()))))
+      (overlay-merge! {:view :detail :dscroll 0 :detail msgs}))))
 
 (defun resume-restore-selected! ()
-  (let ((m (resume-sel-session)))
-    (when m (restore-session! (:id m)) (close-overlay!))))
+  (when-let (m (resume-sel-session))
+    (restore-session! (:id m)) (close-overlay!)))
 
 (defun resume-list-key (k)
   (let ((n (length (:sessions *overlay*))))

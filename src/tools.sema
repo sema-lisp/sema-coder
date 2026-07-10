@@ -24,8 +24,8 @@
           (-> (file/read resolved)
               lines->numbered
               (truncate-lines MAX-READ-LINES))
-          (format "Error: File not found: ~a" path)))
-      (catch e (format "Error reading file ~a: ~a" path e)))))
+          f"Error: File not found: ${path}"))
+      (catch e f"Error reading file ${path}: ${e}"))))
 
 (deftool write-file
   "Create or overwrite a file. Creates parent directories automatically."
@@ -36,8 +36,8 @@
       (let ((resolved (resolve-path workspace-root path)))
         (file/mkdir (path/dir resolved))
         (file/write resolved content)
-        (format "Wrote ~a chars to ~a" (string/length content) path))
-      (catch e (format "Error writing file ~a: ~a" path e)))))
+        f"Wrote ${(string/length content)} chars to ${path}")
+      (catch e f"Error writing file ${path}: ${e}"))))
 
 (defun count-occurrences (haystack needle)
   "How many times NEEDLE appears in HAYSTACK (n matches → n+1 split parts)."
@@ -52,18 +52,18 @@
     (try
       (let ((resolved (resolve-path workspace-root path)))
         (if (not (file/exists? resolved))
-          (format "Error: File not found: ~a" path)
+          f"Error: File not found: ${path}"
           (let* ((content (file/read resolved))
                  (n       (count-occurrences content old_string)))
             (cond
               ((= n 0)
-                (format "Error: old_string not found in ~a. Read the file first." path))
+                f"Error: old_string not found in ${path}. Read the file first.")
               ((> n 1)
-                (format "Error: old_string matches ~a times in ~a. Add surrounding context to make it unique." n path))
+                f"Error: old_string matches ${n} times in ${path}. Add surrounding context to make it unique.")
               (else
                 (file/write resolved (string/replace content old_string new_string))
-                (format "Edited ~a (1 replacement)" path))))))
-      (catch e (format "Error editing file ~a: ~a" path e)))))
+                f"Edited ${path} (1 replacement)")))))
+      (catch e f"Error editing file ${path}: ${e}"))))
 
 ;; ── Shell-backed tools ───────────────────────────────────────────
 
@@ -82,12 +82,12 @@
              (code   (:exit-code result))
              (parts  (append
                        (if (= (string/trim out) "") '() (list out))
-                       (if (= (string/trim err) "") '() (list (format "stderr:\n~a" err)))
-                       (if (= code 0) '() (list (format "Exit code: ~a" code))))))
+                       (if (= (string/trim err) "") '() (list f"stderr:\n${err}"))
+                       (if (= code 0) '() (list f"Exit code: ${code}")))))
         (if (null? parts)
           "Command completed successfully (no output)."
           (-> (string/join parts "\n") (truncate-lines MAX-OUTPUT-LINES))))
-      (catch e (format "Error running command: ~a" e)))))
+      (catch e f"Error running command: ${e}"))))
 
 (defun search-workspace (pattern target)
   "ripgrep when available, else grep -rn. Both invoked argv-style; `--` keeps
@@ -109,8 +109,8 @@
           (cond
             ((not (= out "")) (truncate-lines out MAX-MATCH-LINES))
             ((= err "")       "No matches found.")
-            (else             (format "Error searching: ~a" err))))
-        (catch e (format "Error searching: ~a" e))))))
+            (else             f"Error searching: ${err}")))
+        (catch e f"Error searching: ${e}")))))
 
 (deftool find-files
   "Find files by glob pattern. Skips .git, node_modules, target."
@@ -126,7 +126,7 @@
                               "-not" "-path" "*/target/*"))
                (out    (string/trim (:stdout result))))
           (if (= out "") "No files found." (truncate-lines out MAX-FIND-LINES)))
-        (catch e (format "Error finding files: ~a" e))))))
+        (catch e f"Error finding files: ${e}")))))
 
 (deftool list-dir
   "List directory contents with types and sizes."
@@ -138,9 +138,9 @@
              (err    (string/trim (:stderr result))))
         (cond
           ((not (= out "")) out)
-          ((= err "")       (format "Error: Directory empty or not found: ~a" path))
-          (else             (format "Error listing directory ~a: ~a" path err))))
-      (catch e (format "Error listing directory ~a: ~a" path e)))))
+          ((= err "")       f"Error: Directory empty or not found: ${path}")
+          (else             f"Error listing directory ${path}: ${err}")))
+      (catch e f"Error listing directory ${path}: ${e}"))))
 
 (defun all-tools ()
   (list read-file write-file edit-file bash grep find-files list-dir))

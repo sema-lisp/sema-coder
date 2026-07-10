@@ -71,35 +71,34 @@
          (lines (string/split s "\n"))
          (head  (if (null? lines) "" (car lines)))
          (extra (- (length lines) 1))
-         (preview (if (> extra 0) (string/append head " … +" (number->string extra) " lines") head))
+         (preview (if (> extra 0) f"${head} … +${extra} lines" head))
          (paint (if (get b :error #f) bad faint)))
     (if (= (string/trim s) "") '()
       (list (indent (string/append "  " (paint (clip-width preview (max 4 (- w 6))))))))))
 
 (defun block-lines (b w)
   "Render one transcript block to a list of styled lines (content width W)."
-  (cond
-    ((kind? b :user)
+  (match (get b :kind :none)
+    (:user
       (append
-        (map (lambda (i-l)
-               (let ((i (nth i-l 0)) (l (nth i-l 1)))
-                 (if (= i 0)
-                   (indent (string/append (accent (string/append user-glyph " ")) (bright l)))
-                   (indent (string/append "  " (bright l))))))
+        (map (lambda ([i l])
+               (if (= i 0)
+                 (indent (string/append (accent (string/append user-glyph " ")) (bright l)))
+                 (indent (string/append "  " (bright l)))))
              (enumerate (wrap-text (:text b) (- w 2))))
         (list "")))
-    ((kind? b :assistant)
+    (:assistant
       ;; Markdown-rendered. An empty assistant block (the pre-first-token
       ;; streaming target, or a post-tool round with no text) renders nothing.
       (if (= (string/trim (:text b)) "") '()
         (append (map indent (md-lines (:text b) w)) (list ""))))
-    ((kind? b :raw)
+    (:raw
       ;; Preformatted output (command stdout, pretty JSON): preserve internal
       ;; whitespace — split on newlines only, clip each line to width instead of
       ;; reflowing (word-wrap would collapse the spaces columns depend on).
       (append (map #(fit-line % w) (string/split (:text b) "\n"))
               (list "")))
-    ((kind? b :tool)
+    (:tool
       (let* ((tool (:tool b)) (arg (clip-width (get b :arg "") (max 4 (- w 18)))))
         (if (equal? (get b :state :done) :running)
           (list (indent (string/append (faint "·") " "
@@ -107,17 +106,17 @@
           (cons
             (indent (string/append (ok "✔") " "
                                    (accent-dim (term/style tool :bold)) " " (muted arg)
-                                   " " (faint (string/append (number->string (get b :ms 0)) "ms"))))
+                                   " " (faint f"${(get b :ms 0)}ms")))
             (tool-result-lines b w)))))
-    ((kind? b :info)  (map #(indent (muted %)) (wrap-text (:text b) w)))
-    ((kind? b :ok)    (map #(indent (ok %)) (wrap-text (:text b) w)))
-    ((kind? b :warn)  (map #(indent (warn %)) (wrap-text (:text b) w)))
+    (:info  (map #(indent (muted %)) (wrap-text (:text b) w)))
+    (:ok    (map #(indent (ok %)) (wrap-text (:text b) w)))
+    (:warn  (map #(indent (warn %)) (wrap-text (:text b) w)))
     ;; Pre-styled chrome (help rows, /tools): keep its ANSI and column padding
     ;; intact — split on newlines only, never word-wrap; fit-line guards the
     ;; rare too-narrow-terminal overflow.
-    ((kind? b :line)  (map #(fit-line % w) (string/split (:text b) "\n")))
-    ((kind? b :error) (map #(indent (bad %)) (wrap-text (string/append "error: " (:text b)) w)))
-    (else '())))
+    (:line  (map #(fit-line % w) (string/split (:text b) "\n")))
+    (:error (map #(indent (bad %)) (wrap-text (string/append "error: " (:text b)) w)))
+    (_ '())))
 
 (defun transcript-lines (w)
   (when (or *tlines-dirty* (not (= w *tlines-w*)))

@@ -45,12 +45,11 @@
 (defun dispatch-command (cmd state)
   ;; Config-declared commands are registered into *commands* by reconcile, so the
   ;; one registry answers everything.
-  (let ((spec (get *commands* (:name cmd) nil)))
-    (if spec
-      ((:handler spec) state (:args cmd))
-      (begin
-        (emit :error (format "unknown command: /~a (try /help)" (:name cmd)))
-        state))))
+  (if-let (spec (get *commands* (:name cmd) nil))
+    ((:handler spec) state (:args cmd))
+    (begin
+      (emit :error f"unknown command: /${(:name cmd)} (try /help)")
+      state)))
 
 (defun run-user-command (template args)
   "Run a config-defined command: substitute $ARGS, run in the workspace."
@@ -98,7 +97,7 @@
       ((:do spec)    ((:do spec) state args))
       ((:run spec)   (run-argv-command (:run spec) args) state)
       ((:shell spec) (run-user-command (:shell spec) args) state)
-      (else (emit :error (format "command /~a has no :run, :do, or :shell" (:name spec)))
+      (else (emit :error f"command /${(:name spec)} has no :run, :do, or :shell")
             state))))
 
 (defun unregister-command! (name)
@@ -127,7 +126,7 @@
   (ensure-config!)
   (let* ((r   (load-config (config-path)))
          (cfg (if (:ok r) (:ok r)
-                (begin (emit :error (format "config: ~a — using defaults" (:error r)))
+                (begin (emit :error f"config: ${(:error r)} — using defaults")
                        default-config))))
     (reconcile-commands! (:commands cfg))
     (reconcile-servers! (:mcp-servers cfg))
@@ -162,11 +161,10 @@
   (lambda (state args)
     (if (= args "")
       (begin
-        (emit :info (format "model: ~a"
-          (let ((m (:model state))) (if (= m "") "auto" m))))
+        (emit :info f"model: ${(if (= (:model state) "") "auto" (:model state))}")
         state)
       (begin
-        (emit :ok (format "switched to ~a" args))
+        (emit :ok f"switched to ${args}")
         (assoc state
           :model args
           :agent (create-agent (:cwd state) args (:config state)))))))
@@ -179,7 +177,7 @@
 
 (register-command! "tools" "List the agent's tools"
   (lambda (state args)
-    (for-each #(emit :line (format "    ~a" (accent %))) (map tool/name (agent-tools)))
+    (for-each #(emit :line f"    ${(accent %)}") (map tool/name (agent-tools)))
     state))
 
 (register-command! "mcp" "Manage MCP servers (opens the modal; ⌃O in the TUI)"
@@ -216,9 +214,9 @@
 (register-command! "config" "Show the config path (/config edit opens it)"
   (lambda (state args)
     (if (= args "edit")
-      (begin (open-config!) (emit :info (format "opening ~a" (config-path))))
+      (begin (open-config!) (emit :info f"opening ${(config-path)}"))
       (begin
-        (emit :info (format "config: ~a" (config-path)))
+        (emit :info f"config: ${(config-path)}")
         (emit :info "edit it in any pane — changes hot-reload on save")))
     state))
 

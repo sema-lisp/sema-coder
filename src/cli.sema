@@ -33,7 +33,7 @@
                 (begin (io/println-error "Error: --print requires a value") (exit 1))
                 (begin (set! result (assoc result :prompt (car rest))) (loop (cdr rest)))))
             (else
-              (io/println-error (format "Error: unknown option: ~a (try --help)" arg))
+              (io/println-error f"Error: unknown option: ${arg} (try --help)")
               (exit 1))))))))
 
 (defun show-usage ()

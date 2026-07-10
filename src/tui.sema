@@ -144,9 +144,9 @@
 
 (defun fmt-count (n)
   ;; Bucket AFTER rounding so 999_960 reads "1.0M", not "1000.0k".
-  (cond ((>= n 1000000) (format "~aM" (round1 (/ n 1000000.0))))
+  (cond ((>= n 1000000) f"${(round1 (/ n 1000000.0))}M")
         ((>= n 1000)    (let ((k (round1 (/ n 1000.0))))
-                          (if (>= k 1000) "1.0M" (format "~ak" k))))
+                          (if (>= k 1000) "1.0M" f"${k}k")))
         (else           (number->string n))))
 
 (defun effective-model ()
@@ -161,11 +161,9 @@
          (right (muted (string/join
                          (append
                            (list (let ((m (effective-model))) (if (= m "") "auto" m))
-                                 (format "↑~a ↓~a"
-                                   (fmt-count (get u :prompt-tokens 0))
-                                   (fmt-count (get u :completion-tokens 0))))
+                                 f"↑${(fmt-count (get u :prompt-tokens 0))} ↓${(fmt-count (get u :completion-tokens 0))}")
                            (if (> cost 0.0)
-                             (list (format "$~a" (/ (round (* cost 10000)) 10000.0)))
+                             (list f"$${(/ (round (* cost 10000)) 10000.0)}")
                              '()))
                          " · ")))
          (left  (string/append " " (wordmark-with "coder")))
@@ -181,7 +179,7 @@
   (indent (cond
     (*config-error* (bad "⚠ config error — using last good (fix init.sema)"))
     (*busy*         (faint (string/append (spinner-frame) " thinking · ctrl-c interrupts")))
-    ((> *scroll* 0) (faint (format "↕ scrolled +~a" *scroll*)))
+    ((> *scroll* 0) (faint f"↕ scrolled +${*scroll*}"))
     (else           ""))))
 
 (defun prompt-view ()
@@ -292,7 +290,7 @@
 
 (defun on-tool-cb (event)
   (flush-type-buffer!)   ;; land any pending text before the tool block / next segment
-  (let ((evt (:event event)) (tool (:tool event)) (args (:args event)))
+  (let (({:event evt :tool tool :args args} event))
     (cond
       ((= evt "start")
         (let ((arg (tool-arg tool (if (map? args) args {}))))
@@ -343,7 +341,7 @@
                       (if *interrupt*
                         (begin (set! *type-buffer* "") (add-block! {:kind :info :text "interrupted"}))
                         (begin (flush-type-buffer!)
-                               (add-block! {:kind :error :text (format "~a" (get e :message (str e)))})))
+                               (add-block! {:kind :error :text (str (get e :message (str e)))})))
                       #f))))
       (await pump)   ;; drain the remaining buffer at the typewriter pace
       (set! *turn* #f)
@@ -358,7 +356,7 @@
 (defun new-session! ()
   ;; timestamp + pid: two instances started in the same millisecond can't
   ;; silently share (and clobber) one session file.
-  (set! *session-id* (format "~a-~a" (time-ms) (sys/pid)))
+  (set! *session-id* f"${(time-ms)}-${(sys/pid)}")
   (set! *session-created* (time-ms)))
 
 (defun persist-session! ()
@@ -399,14 +397,13 @@
     (apply append (map #(message->blocks % idx) messages))))
 
 (defun restore-session! (id)
-  (let* ((s (load-session id)) (msgs (:messages s)))
-    (set! *messages* msgs)
+  (let (({:keys [meta messages]} (load-session id)))
+    (set! *messages* messages)
     (set! *session-id* id)
-    (set! *session-created* (get (:meta s) :created (time-ms)))
+    (set! *session-created* (get meta :created (time-ms)))
     (clear-transcript!)
-    (for-each add-block! (messages->blocks msgs))
-    (add-block! {:kind :info :text (format "resumed “~a” · ~a messages"
-                                     (get (:meta s) :title id) (length msgs))})
+    (for-each add-block! (messages->blocks messages))
+    (add-block! {:kind :info :text f"resumed “${(get meta :title id)}” · ${(length messages)} messages"})
     (set! *scroll* 0)))
 
 ;; ── Commands (dispatched through the shared registry) ────────────────────────
@@ -435,7 +432,7 @@
                 (parameterize ((current-emit tui-emit))
                   (dispatch-command (parse-command input) (tui-state)))
                 (catch e
-                  (add-block! {:kind :error :text (format "command failed: ~a" (get e :message (str e)))})
+                  (add-block! {:kind :error :text f"command failed: ${(get e :message (str e))}"})
                   (tui-state)))))
     (if (equal? next 'quit)
       (set! *should-quit* #t)
@@ -492,68 +489,65 @@
         (run-command! (string/append "/" name))))))
 
 (defun handle-ctrl (ch)
-  (let ((action (keymap-action (string/append "ctrl-" ch))))
-    (cond
-      ((equal? action :interrupt)
-        (cond
-          (*busy* (set! *interrupt* #t) (when *turn* (async/cancel *turn*)))
-          ((> (string/length *input*) 0) (clear-input!))
-          (else (set! *should-quit* #t))))
-      ((equal? action :quit)       (unless *busy* (set! *should-quit* #t)))
-      ((equal? action :palette)    (set! *input* "/") (set! *cursor* 1) (set! *psel* 0))
-      ((equal? action :mcp)        (open-mcp-modal!))
-      ((equal? action :resume)     (open-resume-modal!))
-      ((equal? action :clear-line) (clear-input!))
-      ((equal? action :line-start) (set! *cursor* 0))
-      ((equal? action :line-end)   (set! *cursor* (string/length *input*)))
-      ((equal? action :repaint)    (full-repaint!))
-      (else (run-key-command! action)))))
+  (match (keymap-action (string/append "ctrl-" ch))
+    (:interrupt
+      (cond
+        (*busy* (set! *interrupt* #t) (when *turn* (async/cancel *turn*)))
+        ((> (string/length *input*) 0) (clear-input!))
+        (else (set! *should-quit* #t))))
+    (:quit       (unless *busy* (set! *should-quit* #t)))
+    (:palette    (set! *input* "/") (set! *cursor* 1) (set! *psel* 0))
+    (:mcp        (open-mcp-modal!))
+    (:resume     (open-resume-modal!))
+    (:clear-line (clear-input!))
+    (:line-start (set! *cursor* 0))
+    (:line-end   (set! *cursor* (string/length *input*)))
+    (:repaint    (full-repaint!))
+    (action      (run-key-command! action))))
 
 (defun handle-named (name)
-  (cond
-    ((equal? name :enter)     (on-enter))
-    ((equal? name :backspace) (backspace!))
-    ((equal? name :left)      (set! *cursor* (max 0 (- *cursor* 1))))
-    ((equal? name :right)     (set! *cursor* (min (string/length *input*) (+ *cursor* 1))))
-    ((equal? name :home)      (set! *cursor* 0))
-    ((equal? name :end)       (set! *cursor* (string/length *input*)))
-    ((equal? name :tab)
+  (match name
+    (:enter     (on-enter))
+    (:backspace (backspace!))
+    (:left      (set! *cursor* (max 0 (- *cursor* 1))))
+    (:right     (set! *cursor* (min (string/length *input*) (+ *cursor* 1))))
+    (:home      (set! *cursor* 0))
+    (:end       (set! *cursor* (string/length *input*)))
+    (:tab
       (when (palette-open?)
         (let ((matches (palette-matches)))
           (when (> (length matches) 0)
             (set! *input* (string/append "/" (:name (nth matches (min *psel* (- (length matches) 1)))) " "))
             (set! *cursor* (string/length *input*))))))
-    ((equal? name :up)
+    (:up
       (if (palette-open?) (set! *psel* (max 0 (- *psel* 1)))
         (scroll-by! 1)))
-    ((equal? name :down)
+    (:down
       (if (palette-open?)
         (set! *psel* (min (+ *psel* 1)
                           (max 0 (- (palette-limit (palette-matches)) 1))))
         (scroll-by! -1)))
-    ((equal? name :page-up)   (scroll-by! (transcript-height)))
-    ((equal? name :page-down) (scroll-by! (- (transcript-height))))
-    ((equal? name :esc)       (when (palette-open?) (clear-input!)))
-    (else nil)))
+    (:page-up   (scroll-by! (transcript-height)))
+    (:page-down (scroll-by! (- (transcript-height))))
+    (:esc       (when (palette-open?) (clear-input!)))
+    (_ nil)))
 
 (defun handle-mouse (k)
   ;; Wheel scrolls the transcript; other mouse events are ignored for now.
-  (let ((action (:action k)))
-    (cond
-      ((equal? action :wheel-up)   (scroll-by! 3))
-      ((equal? action :wheel-down) (scroll-by! -3))
-      (else nil))))
+  (match (:action k)
+    (:wheel-up   (scroll-by! 3))
+    (:wheel-down (scroll-by! -3))
+    (_ nil)))
 
 (defun handle-key (k)
   (if (overlay-active?)
     (handle-overlay-key k)
-    (let ((kind (:kind k)))
-      (cond
-        ((equal? kind :ctrl)  (handle-ctrl (:char k)))
-        ((equal? kind :key)   (handle-named (:name k)))
-        ((equal? kind :char)  (insert-char! (:char k)))
-        ((equal? kind :mouse) (handle-mouse k))
-        (else nil)))))
+    (match (:kind k)
+      (:ctrl  (handle-ctrl (:char k)))
+      (:key   (handle-named (:name k)))
+      (:char  (insert-char! (:char k)))
+      (:mouse (handle-mouse k))
+      (_ nil))))
 
 ;; ── Resize ───────────────────────────────────────────────────────────────────
 
@@ -588,8 +582,7 @@
   (let ((dups (keymap-conflicts)))
     (unless (null? dups)
       (add-block! {:kind :warn
-                   :text (format "keymap: ~a bound to more than one action — first match wins"
-                                 (string/join dups ", "))}))))
+                   :text f"keymap: ${(string/join dups ", ")} bound to more than one action — first match wins"}))))
 
 (defun reload-config! ()
   (ensure-config!)
@@ -601,10 +594,9 @@
         (reconcile-servers! (:mcp-servers cfg))
         (set! *config* cfg)
         (set! *agent* (create-agent *cwd* *model* cfg))
-        (add-block! {:kind :ok :text (format "config reloaded · model → ~a"
-                                        (if (= (:model cfg) "") "auto" (:model cfg)))})
+        (add-block! {:kind :ok :text f"config reloaded · model → ${(if (= (:model cfg) "") "auto" (:model cfg))}"})
         (warn-keymap-conflicts!))
-      (set! *config-error* (format "~a" (:error r)))))
+      (set! *config-error* (str (:error r)))))
   (render!))
 
 (defun poll-config! ()
@@ -630,14 +622,12 @@
     (term/with-alt-screen
       (term/with-mouse
         (term/set-title "(sema) coder")
-        (add-block! {:kind :info :text (format "(sema) coder — ~a · ~a" cwd (if (= model "") "auto" model))})
-        (add-block! {:kind :info :text (format "type / for commands · ~a MCP · ~a resume · ~a palette · ~a quit"
-                                         (key-hint :mcp) (key-hint :resume) (key-hint :palette) (key-hint :quit))})
+        (add-block! {:kind :info :text f"(sema) coder — ${cwd} · ${(if (= model "") "auto" model)}"})
+        (add-block! {:kind :info :text f"type / for commands · ${(key-hint :mcp)} MCP · ${(key-hint :resume)} resume · ${(key-hint :palette)} palette · ${(key-hint :quit)} quit"})
         (warn-keymap-conflicts!)
         (let ((na (mcp-needs-auth)))
           (unless (null? na)
-            (add-block! {:kind :warn :text (format "~a MCP server(s) need auth: ~a — ~a to sign in"
-                                             (length na) (string/join na ", ") (key-hint :mcp))})))
+            (add-block! {:kind :warn :text f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")} — ${(key-hint :mcp)} to sign in"})))
         (start-config-watch!)
         (full-repaint!)
         (let loop ()

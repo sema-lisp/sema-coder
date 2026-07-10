@@ -80,7 +80,7 @@
       text
       (string/append
         (string/join (take n lines) "\n")
-        (format "\n\n[truncated — showing first ~a of ~a lines]" n (length lines))))))
+        f"\n\n[truncated — showing first ${n} of ${(length lines)} lines]"))))
 
 (defun lines->numbered (text)
   "Prepend 1-indexed line numbers (tab-separated) to each line."
@@ -89,15 +89,16 @@
       (->> lines
            (zip (range 0 (length lines)))
            ;; zip yields 2-element lists (i line), not cons pairs — index with nth.
-           (map #(format "~a\t~a" (+ 1 (nth % 0)) (nth % 1))))
+           (map #(string/append (number->string (+ 1 (nth % 0))) "\t" (nth % 1))))
       "\n")))
 
 ;; ── Indexed iteration ────────────────────────────────────────────
 
 (defun enumerate (xs)
+  "XS → ((0 x0) (1 x1) …), destructurable as (lambda ([i x]) …)."
   (let loop ((i 0) (rest xs) (out '()))
     (if (null? rest) (reverse out)
-      (loop (+ i 1) (cdr rest) (cons (cons i (car rest)) out)))))
+      (loop (+ i 1) (cdr rest) (cons (list i (car rest)) out)))))
 
 (defun enumerate-map (f xs)
   (let loop ((i 0) (rest xs) (out '()))

@@ -19,7 +19,7 @@
   (begin
     (define cli (parse-cli))
     (when (:help cli) (show-usage) (exit 0))
-    (when (:version cli) (println (format "sema-coder ~a" VERSION)) (exit 0))
+    (when (:version cli) (println f"sema-coder ${VERSION}") (exit 0))
 
     (define provider (llm/auto-configure))
     (when (nil? provider)
@@ -49,7 +49,7 @@
     (show-welcome cwd model)
     (let ((na (mcp-needs-auth)))
       (unless (null? na)
-        (show-info (format "~a MCP server(s) need auth: ~a" (length na) (string/join na ", ")))))
+        (show-info f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")}")))
 
     (define state
       {:messages '() :model model :cwd cwd :agent sema-coder-agent :config cfg})
@@ -65,7 +65,7 @@
           (let ((next (try
                         (dispatch-command (parse-command input) state)
                         (catch e
-                          (show-error (format "command failed: ~a" (get e :message (str e))))
+                          (show-error f"command failed: ${(get e :message (str e))}")
                           state))))
             (if (equal? next 'quit)
               (begin (show-info "bye") (exit 0))
@@ -74,7 +74,7 @@
           (let ((result (try
                           (run-turn (:agent state) (string/trim input) (:messages state) on-tool-call)
                           (catch e
-                            (show-error (format "agent error: ~a" (get e :message (str e))))
+                            (show-error f"agent error: ${(get e :message (str e))}")
                             #f))))
             (when result
               (show-response (:response result))
@@ -86,5 +86,5 @@
       (loop)))
 
   (catch e
-    (io/println-error (format "Fatal error: ~a" (get e :message (str e))))
+    (io/println-error f"Fatal error: ${(get e :message (str e))}")
     (exit 1)))

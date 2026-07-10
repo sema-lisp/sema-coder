@@ -11,20 +11,12 @@
   (io/println-error "")
   (io/println-error (string/append "   " (wordmark-with "coder")))
   (io/println-error
-    (format "   ~a  ~a"
-      (muted "the lisp-native coding agent")
-      (faint (format "v~a" version))))
+    f"   ${(muted "the lisp-native coding agent")}  ${(faint f"v${version}")}")
   (io/println-error ""))
 
 (defun show-welcome (cwd model)
-  (io/println-error
-    (format "   ~a  ~a"
-      (faint "dir")
-      (muted cwd)))
-  (io/println-error
-    (format "   ~a  ~a"
-      (faint "model")
-      (muted (if (= model "") "auto" model))))
+  (io/println-error f"   ${(faint "dir")}  ${(muted cwd)}")
+  (io/println-error f"   ${(faint "model")}  ${(muted (if (= model "") "auto" model))}")
   (io/println-error
     (faint "   type /help for commands · /quit to exit"))
   (io/println-error ""))
