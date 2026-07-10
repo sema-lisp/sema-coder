@@ -44,14 +44,20 @@
 ;; so later passes don't re-match them.
 
 (defun md-replace-all (text pattern style-fn)
+  ;; regex/match returns BYTE offsets but string/slice is codepoint-indexed, so
+  ;; locate the match by its text (string/index-of, codepoint-based) to stay
+  ;; correct with multi-byte characters (emoji, CJK).
   (let loop ((s text) (out ""))
     (let ((m (regex/match pattern s)))
       (if (not m)
         (string-append out s)
-        (loop (string/slice s (:end m) (string-length s))
-              (string-append out
-                             (string/slice s 0 (:start m))
-                             (style-fn (nth (:groups m) 0))))))))
+        (let* ((matched (:match m))
+               (inner   (nth (:groups m) 0))
+               (idx     (string/index-of s matched)))
+          (if (or (not idx) (= (string-length matched) 0))
+            (string-append out s)
+            (loop (string/slice s (+ idx (string-length matched)) (string-length s))
+                  (string-append out (string/slice s 0 idx) (style-fn inner)))))))))
 
 (defun md-code-span (s) (muted s))
 (defun md-strike (s) (string-append ESC-STRIKE s ESC-RESET))

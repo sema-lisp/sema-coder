@@ -42,4 +42,9 @@
                  (map (lambda (r) (clip-styled r 8))
                       (md-lines "| **Alpha** | Beta |\n|----|----|\n| one | two |" 60)))))
 
+;; ── multi-byte safety: regex offsets are bytes, slicing is codepoints ──
+(check-true "emoji inline" (string/contains? (term/strip (md-inline "✅ **ok** ~~no~~ ⚠️ 🔥🔥")) "ok"))
+(check-true "emoji table"  (> (length (md-lines "| A | B |\n|---|---|\n| ✅ x | **y** ⚠️ |" 40)) 2))
+(check "cjk inline"        (term/strip (md-inline "**日本語** text")) "日本語 text")
+
 (done)
