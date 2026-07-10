@@ -80,6 +80,9 @@
     ;; Not a TTY (piped/dumb terminal) → the plain line-based REPL below.
     (show-banner VERSION)
     (show-welcome cwd model)
+    (let ((na (mcp-needs-auth)))
+      (unless (null? na)
+        (show-info (format "~a MCP server(s) need auth: ~a" (length na) (string/join na ", ")))))
 
     (define state
       {:messages '() :model model :cwd cwd :agent sema-coder-agent :config cfg})

@@ -215,6 +215,7 @@
             (tool-result-lines b w)))))
     ((kind? b :info)  (map (lambda (l) (indent (muted l))) (wrap-text (:text b) w)))
     ((kind? b :ok)    (map (lambda (l) (indent (ok l))) (wrap-text (:text b) w)))
+    ((kind? b :warn)  (map (lambda (l) (indent (warn l))) (wrap-text (:text b) w)))
     ;; Pre-styled chrome (help rows, /tools): keep its ANSI and column padding
     ;; intact — split on newlines only, never word-wrap; fit-line guards the
     ;; rare too-narrow-terminal overflow.
@@ -838,6 +839,10 @@
         (add-block! {:kind :info :text (format "(sema) coder — ~a · ~a" cwd (if (= model "") "auto" model))})
         (add-block! {:kind :info :text (format "type / for commands · ~a MCP · ~a palette · ~a quit"
                                          (key-hint :mcp) (key-hint :palette) (key-hint :quit))})
+        (let ((na (mcp-needs-auth)))
+          (unless (null? na)
+            (add-block! {:kind :warn :text (format "~a MCP server(s) need auth: ~a — ~a to sign in"
+                                             (length na) (string/join na ", ") (key-hint :mcp))})))
         (start-config-watch!)
         (full-repaint!)
         (let loop ()

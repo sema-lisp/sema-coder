@@ -33,4 +33,13 @@
 (check "manual stays idle"    (:status (mcp-get "manual")) :idle)
 (mcp-disconnect! "auto")
 
+;; ── auth-failure classification → :needs-auth, and the needs-auth list ──
+(check "auth-error 401"       (auth-error? "HTTP 401 Unauthorized") #t)
+(check "auth-error word"      (auth-error? "OAuth authorization required") #t)
+(check "non-auth error"       (auth-error? "connection refused") #f)
+(mcp-reset!)
+(reconcile-servers! (list (mcp-server "x" {:url "http://y"})))
+(mcp-set! "x" (lambda (r) (assoc r :status :needs-auth)))
+(check "needs-auth lists x"   (mcp-needs-auth) (list "x"))
+
 (done)
