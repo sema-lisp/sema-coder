@@ -120,6 +120,7 @@
                 (begin (emit :error (format "config: ~a — using defaults" (:error r)))
                        default-config))))
     (reconcile-commands! (:commands cfg))
+    (reconcile-servers! (:mcp-servers cfg))
     cfg))
 
 (defun open-config! ()
@@ -168,7 +169,7 @@
 
 (register-command! "tools" "List the agent's tools"
   (lambda (state args)
-    (for-each (lambda (n) (emit :line (format "    ~a" (accent n)))) (tool-names))
+    (for-each (lambda (n) (emit :line (format "    ~a" (accent n)))) (map tool/name (agent-tools)))
     state))
 
 (register-command! "cwd" "Show the working directory"

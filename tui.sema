@@ -612,6 +612,7 @@
       (let ((cfg (:ok r)))
         (set! *config-error* #f)
         (reconcile-commands! (:commands cfg))
+        (reconcile-servers! (:mcp-servers cfg))
         (set! *config* cfg)
         (set! *agent* (create-agent *cwd* *model* cfg))
         (add-block! {:kind :ok :text (format "config reloaded · model → ~a"

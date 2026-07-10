@@ -1,7 +1,7 @@
 (load "harness.sema")
 (load "../mcp.sema")
 
-;; ── Task 1: reconcile records against config server declarations ──
+;; ── reconcile records against config server declarations ──
 (mcp-reset!)
 (reconcile-servers! (list (mcp-server "a" {:command "x"})
                           (mcp-server "b" {:url "http://y"})))
@@ -12,7 +12,7 @@
 (check "b dropped"     (mcp-get "b") #f)
 (check "a kept idle"   (:status (mcp-get "a")) :idle)
 
-;; ── Task 2: connect / disconnect + tool-merge (keyless — real `sema mcp`) ──
+;; ── connect / disconnect + tool-merge (keyless — real `sema mcp`) ──
 (mcp-reset!)
 (reconcile-servers! (list (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))
 (check "connect →connected"  (mcp-connect! "sema") :connected)
@@ -23,5 +23,14 @@
 (mcp-disconnect! "sema")
 (check "disconnected idle"    (:status (mcp-get "sema")) :idle)
 (check "no tools after"       (length (all-mcp-tools)) 0)
+
+;; ── autostart connects only :autostart servers ──
+(mcp-reset!)
+(reconcile-servers! (list (mcp-server "auto"   {:command "sema" :args ["mcp" "--include" "eval"] :autostart #t})
+                          (mcp-server "manual" {:command "sema" :args ["mcp"]})))
+(check "autostart connects 1" (mcp-autostart!) 1)
+(check "auto connected"       (:status (mcp-get "auto")) :connected)
+(check "manual stays idle"    (:status (mcp-get "manual")) :idle)
+(mcp-disconnect! "auto")
 
 (done)

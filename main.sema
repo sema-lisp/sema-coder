@@ -59,11 +59,11 @@
       (io/println-error "Error: No API key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.")
       (exit 1))
 
-    (define cfg   (boot-config!))    ;; ensure + load init.sema, reconcile commands
+    (define cfg   (boot-config!))    ;; ensure + load init.sema, reconcile commands + servers
     (define cwd   (sys/cwd))
     (define model (:model cli))
-    ;; NB: not `agent` — that would shadow the (agent {…}) builtin constructor
-    ;; create-agent calls, breaking every later rebuild (/model, /reload).
+    (mcp-autostart!)                 ;; connect :autostart servers before the agent is built
+    ;; not `agent` — that name would shadow the (agent {…}) builtin constructor.
     (define sema-coder-agent (create-agent cwd model cfg))
 
     ;; One-shot mode — prose to stdout, nothing else.

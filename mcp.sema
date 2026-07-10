@@ -1,12 +1,9 @@
 ;; mcp.sema — MCP server runtime: records, sync connect, reconcile, tool-merge.
 ;;
-;; Records live in a mutable-array mutated in place (status/handle/tools), and are
-;; read only through the accessors below — so the pump loop sees fresh state
-;; despite #82 (a direct global read inside a recursive loop would go stale).
-;;
-;; Connect is SYNCHRONOUS: mcp/connect blocks the scheduler (issue #96), so an
-;; (async …) wrapper would freeze the UI for the whole connect. stdio connects
-;; are ~10ms; a remote/OAuth connect must suspend the TUI (see the modal).
+;; Records are a mutable-array mutated in place and read only via the accessors
+;; here, so status changes stay visible to the render/pump loop. Connect is
+;; synchronous (mcp/connect blocks the scheduler); a remote/OAuth connect
+;; suspends the TUI (see the modal).
 
 (load "config.sema")
 
@@ -96,3 +93,19 @@
   (apply append
     (map (lambda (r) (if (equal? (:status r) :connected) (:tools r) '()))
          (mcp-records))))
+
+(defun mcp-autostart! ()
+  "Connect every idle :autostart server. Call before entering the alt-screen so
+   a first-time OAuth prompt is visible. Returns the count connected."
+  (let ((n 0))
+    (for-each
+      (lambda (rec)
+        (when (and (:autostart rec) (equal? (:status rec) :idle))
+          (when (equal? (mcp-connect! (:name rec)) :connected)
+            (set! n (+ n 1)))))
+      (mcp-records))
+    n))
+
+(defun mcp-needs-auth ()
+  "Names of servers whose last connect failed needing authentication."
+  (map :name (filter (lambda (r) (equal? (:status r) :needs-auth)) (mcp-records))))
