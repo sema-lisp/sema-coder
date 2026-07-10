@@ -21,6 +21,7 @@
 
 (define *commands* {})        ;; name(string) → {:desc :handler}
 (define *command-order* '())  ;; registration order, for /help
+(define *tui-active* #f)      ;; set by tui-run; gates modal-vs-print behaviour
 
 (defun register-command! (name desc handler)
   (set! *commands* (assoc *commands* name {:desc desc :handler handler}))
@@ -170,6 +171,21 @@
 (register-command! "tools" "List the agent's tools"
   (lambda (state args)
     (for-each (lambda (n) (emit :line (format "    ~a" (accent n)))) (map tool/name (agent-tools)))
+    state))
+
+(register-command! "mcp" "Manage MCP servers (opens the modal; ⌃O in the TUI)"
+  (lambda (state args)
+    (if *tui-active*
+      (open-mcp-modal!)
+      (let ((servers (mcp-records)))
+        (if (= (length servers) 0)
+          (emit :info "no MCP servers declared (add one in init.sema)")
+          (for-each
+            (lambda (r) (emit :line (format "    ~a  ~a  ~a"
+                                     (string/pad-right (:name r) 14)
+                                     (string/pad-right (:transport r) 6)
+                                     (:status r))))
+            servers))))
     state))
 
 (register-command! "cwd" "Show the working directory"

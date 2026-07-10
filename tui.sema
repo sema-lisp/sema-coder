@@ -24,6 +24,9 @@
 (define ESC "\x1b;")
 (defun goto (row col) (string-append ESC "[" (number->string row) ";" (number->string col) "H"))
 (define CLEAR-LINE (string-append ESC "[2K"))
+(define SHOW-CURSOR (string-append ESC "[?25h" ESC "[6 q"))  ;; show + steady bar (no blink)
+(define HIDE-CURSOR (string-append ESC "[?25l"))
+(define RESET-CURSOR (string-append ESC "[0 q"))            ;; restore terminal default on exit
 
 ;; ── Mutable UI state ─────────────────────────────────────────────────────────
 
@@ -44,6 +47,7 @@
 (define *interrupt* #f)     ;; the user asked to cancel the current turn
 (define *should-quit* #f)
 (define *last-frame* '())   ;; previous frame's rows, for diffing
+(define *overlay* #f)         ;; #f | {:kind :mcp :view :list|:tools :sel N :tsel N}
 (define *config-watcher* #f)  ;; fs/watch handle on the config dir
 (define *config-error* #f)    ;; string while the last reload failed (persistent banner)
 (define *reload-at* 0)        ;; debounce: reload once the change settles (0 = idle)
@@ -262,6 +266,136 @@
     (if (null? rest) (reverse out)
       (loop (+ i 1) (cdr rest) (cons (f i (car rest)) out)))))
 
+;; ── MCP management modal (single-slot overlay) ───────────────────────────────
+
+(defun overlay-active? () (if *overlay* #t #f))
+(defun close-overlay! () (set! *overlay* #f))
+(defun open-mcp-modal! () (set! *overlay* {:kind :mcp :view :list :sel 0 :tsel 0}))
+(defun overlay-merge! (m) (set! *overlay* (merge *overlay* m)))
+
+(defun mcp-sel-server ()
+  (let ((v (mcp-records)) (i (:sel *overlay*)))
+    (if (and (> (length v) 0) (< i (length v))) (nth v i) #f)))
+
+(defun rebuild-agent-with-mcp! ()
+  (set! *agent* (create-agent *cwd* *model* *config*)))
+
+(defun mcp-status-glyph (status)
+  (cond ((equal? status :connected)  (ok "●"))
+        ((equal? status :connecting) (accent "◐"))
+        ((equal? status :needs-auth) (warn "▲"))
+        ((equal? status :error)      (bad "○"))
+        (else                        (faint "◌"))))
+
+(defun mcp-status-label (rec)
+  (let ((s (:status rec)))
+    (cond ((equal? s :connected)  "connected")
+          ((equal? s :connecting) "connecting…")
+          ((equal? s :needs-auth) "needs auth — press c to sign in")
+          ((equal? s :error)      (string-append "error: " (get rec :error "")))
+          (else                   "idle — press c to connect"))))
+
+;; ── Bordered box helpers (clip content to the inner width, ANSI-safe) ──
+
+(defun box-row (content inner)
+  (let ((c (if (> (string/width content) inner) (clip-width (term/strip content) inner) content)))
+    (string-append (faint "│ ") (pad-to c inner) (faint " │"))))
+(defun box-top (title bw)
+  (string-append (faint "┌") (accent-dim title)
+                 (faint (string-append (string/repeat "─" (max 0 (- bw 2 (string-length title)))) "┐"))))
+(defun box-bot (bw) (faint (string-append "└" (string/repeat "─" (max 0 (- bw 2))) "┘")))
+(defun box-sep (bw) (faint (string-append "├" (string/repeat "─" (max 0 (- bw 2))) "┤")))
+
+(defun mcp-row-text (rec sel? inner)
+  (let ((line (string-append
+                (if sel? (accent "▸ ") "  ")
+                (mcp-status-glyph (:status rec)) " "
+                (bright (string/pad-right (:name rec) 12)) " "
+                (muted (string/pad-right (:transport rec) 5)) " "
+                (if (equal? (:status rec) :connected)
+                  (muted (string-append (number->string (length (:tools rec))) " tools  ")) "        ")
+                (muted (mcp-status-label rec)))))
+    (if sel? line line)))
+
+(defun mcp-list-rows (bw)
+  (let* ((inner (max 8 (- bw 4)))
+         (servers (mcp-records))
+         (sel (:sel *overlay*))
+         (rows (if (= (length servers) 0)
+                 (list (box-row (muted "No MCP servers — add one in init.sema (press e)") inner))
+                 (enumerate-map (lambda (i rec) (box-row (mcp-row-text rec (= i sel) inner) inner))
+                                (vector->list servers)))))
+    (append
+      (list (box-top " MCP servers " bw))
+      rows
+      (list (box-sep bw))
+      (list (box-row (faint "↑↓ · c connect · d disconnect · t tools · e edit · Esc") inner))
+      (list (box-bot bw)))))
+
+(defun mcp-tools-rows (bw)
+  (let* ((inner (max 8 (- bw 4)))
+         (srv (mcp-sel-server))
+         (names (if (and srv (equal? (:status srv) :connected)) (map tool/name (:tools srv)) '()))
+         (tsel (:tsel *overlay*))
+         (shown (take (min 10 (length names)) (drop (max 0 (- tsel 9)) names)))
+         (rows (if (null? names)
+                 (list (box-row (muted "not connected — no tools") inner))
+                 (map (lambda (n) (box-row (string-append "  " (accent n)) inner)) shown))))
+    (append
+      (list (box-top (string-append " " (if srv (:name srv) "?") " · tools ") bw))
+      rows
+      (list (box-sep bw))
+      (list (box-row (faint "↑↓ scroll · Esc back") inner))
+      (list (box-bot bw)))))
+
+(defun mcp-modal-rows ()
+  (let* ((bw  (min (max 40 (- *cols* 6)) 72))
+         (box (if (equal? (:view *overlay*) :tools) (mcp-tools-rows bw) (mcp-list-rows bw))))
+    (map (lambda (r) (center-h r bw)) box)))
+
+(defun center-h (row bw)
+  (string-append (string/repeat " " (max 0 (quotient (- *cols* bw) 2))) row))
+
+(defun overlay-center (base box)
+  (let* ((n (length base)) (h (length box)) (top (max 0 (quotient (- n h) 2))))
+    (append (take top base) box (drop (min n (+ top h)) base))))
+
+;; ── Overlay key handling ──
+
+(defun mcp-connect-selected! ()
+  (let ((srv (mcp-sel-server)))
+    (when srv (mcp-connect! (:name srv)) (rebuild-agent-with-mcp!))))
+
+(defun mcp-disconnect-selected! ()
+  (let ((srv (mcp-sel-server)))
+    (when srv (mcp-disconnect! (:name srv)) (rebuild-agent-with-mcp!))))
+
+(defun key-name= (k name) (and (equal? (:kind k) :key) (equal? (:name k) name)))
+(defun key-char= (k ch)   (and (equal? (:kind k) :char) (equal? (:char k) ch)))
+(defun key-ctrl= (k ch)   (and (equal? (:kind k) :ctrl) (equal? (:char k) ch)))
+
+(defun mcp-list-key (k)
+  (let ((n (length (mcp-records))))
+    (cond
+      ((key-name= k :up)     (overlay-merge! {:sel (max 0 (- (:sel *overlay*) 1))}))
+      ((key-name= k :down)   (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel *overlay*) 1))}))
+      ((or (key-name= k :esc) (key-ctrl= k "o")) (close-overlay!))
+      ((or (key-char= k "c") (key-char= k "r")) (mcp-connect-selected!))
+      ((key-char= k "d")     (mcp-disconnect-selected!))
+      ((or (key-char= k "t") (key-name= k :enter)) (overlay-merge! {:view :tools :tsel 0}))
+      ((key-char= k "e")     (open-config!))
+      (else nil))))
+
+(defun mcp-tools-key (k)
+  (cond
+    ((key-name= k :esc)  (overlay-merge! {:view :list}))
+    ((key-name= k :up)   (overlay-merge! {:tsel (max 0 (- (:tsel *overlay*) 1))}))
+    ((key-name= k :down) (overlay-merge! {:tsel (+ (:tsel *overlay*) 1)}))
+    (else nil)))
+
+(defun handle-overlay-key (k)
+  (if (equal? (:view *overlay*) :tools) (mcp-tools-key k) (mcp-list-key k)))
+
 ;; ── Frame assembly ───────────────────────────────────────────────────────────
 
 (defun transcript-height () (max 1 (- *rows* 3)))
@@ -366,9 +500,11 @@
          (body (if (palette-open?)
                  (overlay-bottom tlines (palette-box (palette-matches) *psel* (- *cols* 3)))
                  tlines))
-         (rows (append (list (header-line)) body (list (prompt-line)) (list (status-line)))))
+         (rows (append (list (header-line)) body (list (prompt-line)) (list (status-line))))
+         (rows (fit-rows rows *rows*))
+         (rows (if (overlay-active?) (overlay-center rows (mcp-modal-rows)) rows)))
     ;; Normalize to exactly *rows* padded strings.
-    (map (lambda (s) (pad-to s *cols*)) (fit-rows rows *rows*))))
+    (map (lambda (s) (pad-to s *cols*)) rows)))
 
 (defun fit-rows (rows n)
   (let ((have (length rows)))
@@ -387,9 +523,11 @@
                       (if (equal? new (frame-ref *last-frame* i)) ""
                         (string-append (goto (+ i 1) 1) CLEAR-LINE new)))
                     frame)))
-    ;; One write: the changed rows, then the cursor parked at the prompt caret.
+    ;; One write: the changed rows, park + show the cursor at the prompt caret
+    ;; (hidden while a modal is up, since the prompt is behind it).
     (display (string-append (apply string-append updates)
-                            (goto (- *rows* 1) (:caret-col (prompt-view)))))
+                            (goto (- *rows* 1) (:caret-col (prompt-view)))
+                            (if (overlay-active?) HIDE-CURSOR SHOW-CURSOR)))
     (io/flush)
     (set! *last-frame* frame)))
 
@@ -545,6 +683,7 @@
     ((= ch "a") (set! *cursor* 0))
     ((= ch "e") (set! *cursor* (string-length *input*)))
     ((= ch "l") (full-repaint!))
+    ((= ch "o") (open-mcp-modal!))
     (else nil)))
 
 (defun handle-named (name)
@@ -583,13 +722,15 @@
       (else nil))))
 
 (defun handle-key (k)
-  (let ((kind (:kind k)))
-    (cond
-      ((equal? kind :ctrl)  (handle-ctrl (:char k)))
-      ((equal? kind :key)   (handle-named (:name k)))
-      ((equal? kind :char)  (insert-char! (:char k)))
-      ((equal? kind :mouse) (handle-mouse k))
-      (else nil))))
+  (if (overlay-active?)
+    (handle-overlay-key k)
+    (let ((kind (:kind k)))
+      (cond
+        ((equal? kind :ctrl)  (handle-ctrl (:char k)))
+        ((equal? kind :key)   (handle-named (:name k)))
+        ((equal? kind :char)  (insert-char! (:char k)))
+        ((equal? kind :mouse) (handle-mouse k))
+        (else nil)))))
 
 ;; ── Resize ───────────────────────────────────────────────────────────────────
 
@@ -647,6 +788,7 @@
 
 (defun tui-run (cwd model cfg agent)
   (set! *cwd* cwd) (set! *model* model) (set! *config* cfg) (set! *agent* agent)
+  (set! *tui-active* #t)
   (recompute-size!)
   (sys/on-signal :winch (lambda () (set! *resize-pending* #t)))
   ;; The guards restore raw mode, the alt screen, the cursor, and mouse reporting
@@ -666,4 +808,5 @@
           (let ((k (io/read-key-timeout 250)))
             (when k (handle-key k) (render!)))
           (unless (should-quit?) (loop))))))
+  (display RESET-CURSOR)
   (io/flush))
