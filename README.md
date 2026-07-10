@@ -111,6 +111,7 @@ A complete `init.sema`:
   (coder-config
     {:model      ""          ; "" = auto-detect from API keys; or e.g. "claude-sonnet-5"
      :max-turns  50          ; max tool-use rounds in a single turn
+     :tool-preview-lines 5   ; result lines shown under each tool call
 
      ;; MCP servers — each is a value; manage connections in the /mcp modal (⌃O).
      :mcp-servers
@@ -137,6 +138,7 @@ A complete `init.sema`:
 | --- | --- | --- |
 | `:model` | `""` | LLM model; `""` auto-detects from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
 | `:max-turns` | `50` | Max agent tool-use rounds per user turn |
+| `:tool-preview-lines` | `5` | Result lines shown under each tool call in the TUI |
 | `:mcp-servers` | `'()` | List of `(mcp-server …)` records |
 | `:commands` | `'()` | List of `(command …)` records |
 | `:keys` | `{}` | Action → key overrides |

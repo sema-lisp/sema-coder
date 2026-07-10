@@ -178,7 +178,7 @@
   ;; spinner while a turn runs, else a scroll indicator, else nothing.
   (indent (cond
     (*config-error* (bad "⚠ config error — using last good (fix init.sema)"))
-    (*busy*         (faint (string/append (spinner-frame) " thinking · ctrl-c interrupts")))
+    (*busy*         (faint (string/append (spinner-frame) " evaluating · ctrl-c interrupts")))
     ((> *scroll* 0) (faint f"↕ scrolled +${*scroll*}"))
     (else           ""))))
 
@@ -624,6 +624,7 @@
         (term/set-title "(sema) coder")
         (add-block! {:kind :info :text f"(sema) coder — ${cwd} · ${(if (= model "") "auto" model)}"})
         (add-block! {:kind :info :text f"type / for commands · ${(key-hint :mcp)} MCP · ${(key-hint :resume)} resume · ${(key-hint :palette)} palette · ${(key-hint :quit)} quit"})
+        (add-block! {:kind :info :text f"; ${(epigraph)}"})
         (warn-keymap-conflicts!)
         (let ((na (mcp-needs-auth)))
           (unless (null? na)
@@ -641,5 +642,7 @@
                               (when k2 (handle-key k2) (drain))))
               (render!)))
           (unless (should-quit?) (loop))))))
+  ;; Back on the main screen — a quiet sign-off in the scrollback.
+  (io/println-error (faint f"   ; ${goodbye-line}"))
   (display RESET-CURSOR)
   (io/flush))

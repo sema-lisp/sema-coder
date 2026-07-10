@@ -58,7 +58,7 @@
       (cond
         ((nil? input)                       ;; EOF — stdin closed
           (io/println-error "")
-          (show-info "bye")
+          (show-info goodbye-line)
           (exit 0))
         ((= (string/trim input) "") nil)    ;; blank line — ignore
         ((slash-command? input)
@@ -68,7 +68,7 @@
                           (show-error f"command failed: ${(get e :message (str e))}")
                           state))))
             (if (equal? next 'quit)
-              (begin (show-info "bye") (exit 0))
+              (begin (show-info goodbye-line) (exit 0))
               (set! state next))))
         (else
           (let ((result (try

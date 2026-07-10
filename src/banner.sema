@@ -19,4 +19,5 @@
   (io/println-error f"   ${(faint "model")}  ${(muted (if (= model "") "auto" model))}")
   (io/println-error
     (faint "   type /help for commands · /quit to exit"))
+  (io/println-error (faint f"   ; ${(epigraph)}"))
   (io/println-error ""))

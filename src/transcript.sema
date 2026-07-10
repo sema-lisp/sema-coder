@@ -64,17 +64,23 @@
 (defun wrap-text (text w) (string/word-wrap text w))
 
 (defun tool-result-lines (b w)
-  "A one-line preview of a completed tool's result under its line — faint, or red
-   if it errored. Multi-line results collapse to the first line + a count."
+  "A preview of a completed tool's result under its line — faint, or red if it
+   errored. Shows the first :tool-preview-lines lines (config, default 5);
+   anything longer collapses into a final “… +N lines” row."
   (let* ((r (get b :result ""))
          (s (if (string? r) r (str r)))
-         (lines (string/split s "\n"))
-         (head  (if (null? lines) "" (car lines)))
-         (extra (- (length lines) 1))
-         (preview (if (> extra 0) f"${head} … +${extra} lines" head))
-         (paint (if (get b :error #f) bad faint)))
+         (paint (if (get b :error #f) bad faint))
+         (limit (max 1 (get *config* :tool-preview-lines 5)))
+         (lines (string/split (string/trim-right s) "\n"))
+         (shown (take (min limit (length lines)) lines))
+         (extra (- (length lines) (length shown)))
+         (pw    (max 4 (- w 6))))
     (if (= (string/trim s) "") '()
-      (list (indent (string/append "  " (paint (clip-width preview (max 4 (- w 6))))))))))
+      (append
+        (map #(indent (string/append "  " (paint (clip-width % pw)))) shown)
+        (if (> extra 0)
+          (list (indent (string/append "  " (faint f"… +${extra} lines"))))
+          '())))))
 
 (defun block-lines (b w)
   "Render one transcript block to a list of styled lines (content width W)."

@@ -15,11 +15,12 @@
 (defun config-path () (path/join (config-dir) "init.sema"))
 
 (define default-config
-  {:model       ""        ;; "" = auto-detect from API keys
-   :max-turns   50
-   :mcp-servers '()
-   :commands    '()
-   :keys        {}})    ;; action → key overrides (e.g. {:mcp "ctrl-p"})
+  {:model              ""        ;; "" = auto-detect from API keys
+   :max-turns          50
+   :tool-preview-lines 5         ;; result lines shown under a tool call in the TUI
+   :mcp-servers        '()
+   :commands           '()
+   :keys               {}})      ;; action → key overrides (e.g. {:mcp "ctrl-p"})
 
 ;; ── Constructors: return values, never mutate ────────────────────
 
@@ -69,6 +70,7 @@
   (coder-config
     {:model      \"\"                 ; \"\" = auto-detect from API keys; or \"claude-sonnet-5\"
      :max-turns  50
+     :tool-preview-lines 5          ; result lines shown under each tool call
 
      ;; ── MCP servers — manage in the /mcp modal (⌃O). Each is a value. ──
      :mcp-servers

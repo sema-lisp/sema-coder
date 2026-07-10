@@ -42,3 +42,26 @@
 ;; Deliberately different from prompt-glyph so a sent message and the live input
 ;; line are visually distinct.
 (define user-glyph "▌")
+
+;; ── Epigraph — the Lisp-elder seasoning ──────────────────────────
+;; One quiet aphorism shown at session start, styled as a Lisp comment. This is
+;; the sanctioned home for the agent's character in the chrome (never in code).
+;; Keep them short, dry, and about meaning — a name is a sign (sêma).
+(define *epigraphs*
+  ["a name is a sign — make it carry its meaning."
+   "the parens never lie; the logic sometimes does."
+   "read before you write; the file was here before you."
+   "state is a debt; pay it back where you borrowed it."
+   "the smallest diff that tells the truth wins."
+   "code is read far more often than it is run."
+   "sixty years of parentheses; the good ideas kept their shape."
+   "every program is a list; the good ones admit it."
+   "a clear name spares a thousand comments."])
+
+;; The goodbye line — the elder is calm at the close of the loop.
+(define goodbye-line "(exit 0) — the loop rests.")
+
+;; Pick one epigraph per session. time-ms is stable across the couple of calls a
+;; single boot makes, and varies boot to boot.
+(defun epigraph ()
+  (nth *epigraphs* (mod (quotient (time-ms) 131) (length *epigraphs*))))
