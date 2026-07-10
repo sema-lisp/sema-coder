@@ -1,0 +1,20 @@
+(load "harness.sema")
+(load "../commands.sema")   ;; brings in display, config, agent, tools, util
+
+;; ── argv splicing is injection-safe (a typed arg is ONE token, never shell) ──
+(check "splice single arg"    (argv-for ["echo" :args] "hi; rm") (list "echo" "hi; rm"))
+(check "splice empty drops"   (argv-for ["echo" :args] "")       (list "echo"))
+(check "append when no :args" (argv-for ["git" "log"] "5")       (list "git" "log" "5"))
+(check "shell-safe stdout"
+       (string/trim (:stdout (apply shell (argv-for ["echo" :args] "a; b"))))
+       "a; b")
+
+;; ── reconcile REPLACES the config command set (never accumulates) ──
+(reconcile-commands! (list (command "a" {:desc "A" :run ["true"]})
+                           (command "b" {:desc "B" :run ["true"]})))
+(check "two config commands" (sort (config-command-names)) (list "a" "b"))
+(reconcile-commands! (list (command "a" {:desc "A" :run ["true"]})))
+(check "reload drops b" (config-command-names) (list "a"))
+(check-true "b is unregistered" (nil? (get *commands* "b" nil)))
+
+(done)

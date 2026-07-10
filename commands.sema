@@ -65,6 +65,58 @@
     (unless (= out "") (emit :raw out))
     (unless (= err "") (emit :error err))))
 
+;; ── Config-declared commands (data forms; argv by default, no shell) ──
+;; A command record from (command name spec) carries :desc and one of :run
+;; (argv vector) / :do (fn state args) / :shell (template). Config owns a
+;; replaceable set, so a reload drops removed ones — no accumulation.
+
+(define *config-command-names* '())
+(defun config-command-names () *config-command-names*)
+
+(defun argv-for (argv args)
+  "Build the argv LIST from ARGV (vector), splicing the typed ARGS string as ONE
+   argument where :args appears (dropped if empty); if :args is absent, append
+   ARGS when non-empty. Never interpreted by a shell."
+  (let ((lst (if (vector? argv) (vector->list argv) argv)))
+    (if (member :args lst)
+      (apply append
+        (map (lambda (x) (cond ((equal? x :args) (if (= args "") '() (list args)))
+                               (else (list x))))
+             lst))
+      (if (= args "") lst (append lst (list args))))))
+
+(defun run-argv-command (argv args)
+  (let* ((full (argv-for argv args))
+         (res  (apply shell full))
+         (out  (string/trim (:stdout res)))
+         (err  (string/trim (:stderr res))))
+    (emit :info (string/append "$ " (string/join full " ")))
+    (unless (= out "") (emit :raw out))
+    (unless (= err "") (emit :error err))))
+
+(defun config-command-handler (spec)
+  "Turn a command record into a (state args) → state handler."
+  (lambda (state args)
+    (cond
+      ((:do spec)    ((:do spec) state args))
+      ((:run spec)   (run-argv-command (:run spec) args) state)
+      ((:shell spec) (run-user-command (:shell spec) args) state)
+      (else (emit :error (format "command /~a has no :run, :do, or :shell" (:name spec)))
+            state))))
+
+(defun unregister-command! (name)
+  (set! *commands* (dissoc *commands* name))
+  (set! *command-order* (filter (lambda (n) (not (= n name))) *command-order*)))
+
+(defun reconcile-commands! (cmds)
+  "Replace the config-owned command set with CMDS (list of command records)."
+  (for-each unregister-command! *config-command-names*)
+  (set! *config-command-names* (map :name cmds))
+  (for-each
+    (lambda (spec)
+      (register-command! (:name spec) (get spec :desc "") (config-command-handler spec)))
+    cmds))
+
 ;; ── Built-in commands ────────────────────────────────────────────
 
 (defun help-row (name desc)
