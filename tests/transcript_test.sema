@@ -17,13 +17,13 @@
 ;; longer than the limit: limit lines + one "… +N lines" row
 (let ((rows (preview-lines "1\n2\n3\n4\n5\n6\n7")))
   (check "capped at limit + counter" (length rows) 6)
-  (check-true "counter row present" (string/contains? (term/strip (nth rows 5)) "+2 lines")))
+  (check-contains "counter row present" (term/strip (nth rows 5)) "+2 lines"))
 
 ;; configurable via :tool-preview-lines
 (set! *config* {:tool-preview-lines 1})
 (let ((rows (preview-lines "1\n2\n3")))
   (check "limit 1 shows one line + counter" (length rows) 2)
-  (check-true "counter counts the rest" (string/contains? (term/strip (nth rows 1)) "+2 lines")))
+  (check-contains "counter counts the rest" (term/strip (nth rows 1)) "+2 lines"))
 (set! *config* {})
 
 ;; empty results render nothing

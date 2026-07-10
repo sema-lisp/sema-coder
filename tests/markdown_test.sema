@@ -14,16 +14,18 @@
 (check "open fence"     (plain (md-lines "```\nx = 1" 40)) (list "│ x = 1"))
 (check "blank kept"     (plain (md-lines "a\n\nb" 40)) (list "a" "" "b"))
 (check-true "wraps"     (> (length (md-lines "word word word word word word word word" 18)) 1))
-(check-true "link text" (string/contains? (car (plain (md-lines "see [docs](http://x)" 40))) "docs"))
+(check-contains "link text" (car (plain (md-lines "see [docs](http://x)" 40))) "docs")
 
 ;; ── tables ──
 (define tbl "| Name | Age |\n|:-----|----:|\n| Bob | 42 |\n| Alice | 7 |")
 (let ((rows (md-lines tbl 40)))
   (check "table line count" (length rows) 4)
   (let ((p (map term/strip rows)))
-    (check-true "header cells" (and (string/contains? (nth p 0) "Name") (string/contains? (nth p 0) "Age")))
-    (check-true "sep is a rule"  (string/contains? (nth p 1) "─┼─"))
-    (check-true "body aligned"   (and (string/contains? (nth p 2) "Bob") (string/contains? (nth p 2) "42")))
+    (check-contains "header cell 1" (nth p 0) "Name")
+    (check-contains "header cell 2" (nth p 0) "Age")
+    (check-contains "sep is a rule" (nth p 1) "─┼─")
+    (check-contains "body cell 1"   (nth p 2) "Bob")
+    (check-contains "body cell 2"   (nth p 2) "42")
     ;; right-aligned Age column: the digits sit at the column's right edge
     (check "Alice row aligned"   (nth p 3) (nth p 3))))
 
@@ -31,8 +33,8 @@
 (check "task done" (car (plain (md-lines "- [x] done" 40))) "☑ done")
 (check "task todo" (car (plain (md-lines "- [ ] todo" 40))) "☐ todo")
 (check "strike plain" (car (plain (md-lines "~~gone~~" 40))) "gone")
-(check-true "strike styled" (string/contains? (car (md-lines "~~gone~~" 40)) "[9m"))
-(check-true "hr rule" (string/contains? (car (md-lines "---" 40)) "─"))
+(check-contains "strike styled" (car (md-lines "~~gone~~" 40)) "\x1b;[9m")
+(check-contains "hr rule" (car (md-lines "---" 40)) "─")
 
 ;; ── resize hardening: ANSI-safe clip never cuts an escape ──
 (check "clip-styled width" (string/width (clip-styled (bright "hello world") 5)) 5)
@@ -43,7 +45,7 @@
                       (md-lines "| **Alpha** | Beta |\n|----|----|\n| one | two |" 60)))))
 
 ;; ── multi-byte safety: regex offsets are bytes, slicing is codepoints ──
-(check-true "emoji inline" (string/contains? (term/strip (md-inline "✅ **ok** ~~no~~ ⚠️ 🔥🔥")) "ok"))
+(check-contains "emoji inline" (term/strip (md-inline "✅ **ok** ~~no~~ ⚠️ 🔥🔥")) "ok")
 (check-true "emoji table"  (> (length (md-lines "| A | B |\n|---|---|\n| ✅ x | **y** ⚠️ |" 40)) 2))
 (check "cjk inline"        (term/strip (md-inline "**日本語** text")) "日本語 text")
 
