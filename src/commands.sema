@@ -132,19 +132,34 @@
     (reconcile-servers! (:mcp-servers cfg))
     cfg))
 
+(defun editor-command ()
+  "The user's preferred editor: $VISUAL, then $EDITOR (may carry flags), or #f."
+  (let ((v (env "VISUAL")) (e (env "EDITOR")))
+    (cond ((and v (not (= v ""))) v)
+          ((and e (not (= e ""))) e)
+          (else #f))))
+
+(defun opened-ok? (res) (= (get res :exit-code 1) 0))
+
 (defun open-config! ()
-  "Open init.sema in a GUI editor (detached — a terminal $EDITOR can't take
-   over the TUI's tty). macOS uses `open -t` (the default text editor) because
-   nothing claims the .sema extension, so a plain `open` fails. Returns #t if
-   the opener reported success."
-  (let* ((path (config-path))
-         (res  (try
-                 (match (sys/platform)
-                   ("macos"   (shell "open" "-t" path))
-                   ("windows" (shell "cmd" "/c" "start" "" path))
-                   (_         (shell "xdg-open" path)))
-                 (catch e {:exit-code 1}))))
-    (= (get res :exit-code 1) 0)))
+  "Open init.sema in the user's editor. $VISUAL/$EDITOR first (zed, code, subl
+   — their CLIs detach; stdin is closed so a purely terminal editor, which
+   can't take over the TUI's tty, fails fast instead of wedging the app), then
+   the platform opener. macOS needs `open -t` because nothing claims the .sema
+   extension. Returns #t if an opener reported success."
+  (let ((path (config-path)))
+    (or
+      (when-let (ed (editor-command))
+        (opened-ok?
+          (try (shell "sh" "-c" f"${ed} ${(sh-quote path)} </dev/null")
+            (catch e {:exit-code 1}))))
+      (opened-ok?
+        (try
+          (match (sys/platform)
+            ("macos"   (shell "open" "-t" path))
+            ("windows" (shell "cmd" "/c" "start" "" path))
+            (_         (shell "xdg-open" path)))
+          (catch e {:exit-code 1}))))))
 
 ;; ── Built-in commands ────────────────────────────────────────────
 
