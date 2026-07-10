@@ -83,6 +83,7 @@
 (define *busy* #f)          ;; an agent turn is in flight
 (define *turn* #f)          ;; promise for the in-flight turn (#f when idle)
 (define *interrupt* #f)     ;; the user asked to cancel the current turn
+(define *type-buffer* "")   ;; received-but-not-yet-revealed text (typewriter)
 (define *should-quit* #f)
 (define *last-frame* '())   ;; previous frame's rows, for diffing
 (define *overlay* #f)         ;; #f | {:kind :mcp :view :list|:tools :sel N :tsel N}
@@ -577,11 +578,35 @@
 
 ;; ── Streaming callbacks (fired inside the agent task) ────────────────────────
 
+;; ── Typewriter reveal ─────────────────────────────────────────────
+;; Network deltas land in *type-buffer*; the pump reveals them at a steady
+;; per-tick pace so display cadence is smooth regardless of burstiness, and the
+;; whole transcript re-renders on the 16ms tick, not on every token.
+
 (defun on-text-cb (delta)
-  (when (> (string-length delta) 0) (append-assistant! delta))
-  (render!))
+  (when (> (string-length delta) 0)
+    (set! *type-buffer* (string-append *type-buffer* delta))))
+
+(defun reveal-tick! ()
+  "Move a chunk of *type-buffer* into the streaming block. #t if it revealed.
+   Reveals ~a third of the pending text (min 5 chars) so it catches up on bursts
+   but types char-by-char as it drains."
+  (let ((len (string-length *type-buffer*)))
+    (if (= len 0) #f
+      (let* ((n (min len (max 5 (quotient len 3))))
+             (chunk (string/slice *type-buffer* 0 n)))
+        (set! *type-buffer* (string/slice *type-buffer* n len))
+        (append-assistant! chunk)
+        #t))))
+
+(defun flush-type-buffer! ()
+  "Reveal everything pending at once (block boundaries, interrupts, errors)."
+  (when (> (string-length *type-buffer*) 0)
+    (append-assistant! *type-buffer*)
+    (set! *type-buffer* "")))
 
 (defun on-tool-cb (event)
+  (flush-type-buffer!)   ;; land any pending text before the tool block / next segment
   (let ((evt (:event event)) (tool (:tool event)) (args (:args event)))
     (cond
       ((= evt "start")
@@ -605,13 +630,14 @@
   ;; of the turn. Guard each pass so one bad key/frame can't stop the pump; the
   ;; turn's own await/catch owns real errors.
   (let loop ()
-    (when (async/pending? turn)
+    (when (or (async/pending? turn) (> (string-length *type-buffer*) 0))
       (try
         (begin
           (check-resize!)
           (let drain ()
             (let ((k (io/read-key-timeout 0)))
               (when k (handle-key k) (drain))))
+          (reveal-tick!)
           (render!))
         (catch e nil))
       (async/sleep 16)
@@ -620,6 +646,7 @@
 (defun run-agent-turn! (text)
   (set! *interrupt* #f)
   (set! *busy* #t)
+  (set! *type-buffer* "")
   ;; The empty assistant block is the streaming target for :on-text.
   (add-block! {:kind :assistant :text ""})
   (render!)
@@ -629,10 +656,11 @@
     (let ((result (try (await turn)
                     (catch e
                       (if *interrupt*
-                        (add-block! {:kind :info :text "interrupted"})
-                        (add-block! {:kind :error :text (format "~a" (get e :message (str e)))}))
+                        (begin (set! *type-buffer* "") (add-block! {:kind :info :text "interrupted"}))
+                        (begin (flush-type-buffer!)
+                               (add-block! {:kind :error :text (format "~a" (get e :message (str e)))})))
                       #f))))
-      (async/cancel pump)
+      (await pump)   ;; drain the remaining buffer at the typewriter pace
       (set! *turn* #f)
       (set! *busy* #f)
       (when result (set! *messages* (:messages result)))
