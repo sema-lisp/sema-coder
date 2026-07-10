@@ -101,9 +101,16 @@
 ;; :on-text delta rewrites the last block in place instead of rebuilding the
 ;; whole list.
 
-(defun add-block! (b) (mutable-array/push! *transcript* b))
+;; Rendered transcript lines are cached and recomputed only when the content or
+;; width changes — so scrolling (which only re-windows) never re-parses markdown.
+(define *tlines* '())
+(define *tlines-w* -1)
+(define *tlines-dirty* #t)
+(defun mark-tdirty! () (set! *tlines-dirty* #t))
 
-(defun clear-transcript! () (set! *transcript* (mutable-array/new 64)))
+(defun add-block! (b) (mutable-array/push! *transcript* b) (mark-tdirty!))
+
+(defun clear-transcript! () (set! *transcript* (mutable-array/new 64)) (mark-tdirty!))
 
 (defun transcript-blocks () (mutable-array/->vector *transcript*))
 
@@ -113,7 +120,8 @@
   (let ((n (mutable-array/length *transcript*)))
     (when (> n 0)
       (mutable-array/set! *transcript* (- n 1)
-        (f (mutable-array/get *transcript* (- n 1)))))))
+        (f (mutable-array/get *transcript* (- n 1))))
+      (mark-tdirty!))))
 
 (defun last-block ()
   (let ((n (mutable-array/length *transcript*)))
@@ -235,9 +243,13 @@
       (loop (+ i 1) (cdr rest) (cons (cons i (car rest)) out)))))
 
 (defun transcript-lines (w)
-  (->> (transcript-blocks)
-       (map (lambda (b) (block-lines b w)))
-       (apply append)))
+  (when (or *tlines-dirty* (not (= w *tlines-w*)))
+    (set! *tlines* (->> (transcript-blocks)
+                        (map (lambda (b) (block-lines b w)))
+                        (apply append)))
+    (set! *tlines-w* w)
+    (set! *tlines-dirty* #f))
+  *tlines*)
 
 ;; ── Palette (slash-command popup) ────────────────────────────────────────────
 
@@ -882,7 +894,12 @@
           (check-resize!)
           (poll-config!)
           (let ((k (io/read-key-timeout 250)))
-            (when k (handle-key k) (render!)))
+            (when k
+              (handle-key k)
+              ;; Coalesce a burst (e.g. rapid wheel events) into one render.
+              (let drain () (let ((k2 (io/read-key-timeout 0)))
+                              (when k2 (handle-key k2) (drain))))
+              (render!)))
           (unless (should-quit?) (loop))))))
   (display RESET-CURSOR)
   (io/flush))
