@@ -17,9 +17,6 @@ agent loop, tools, slash commands, the full-screen TUI, theming, and config all
 live in Sema. Only a thin layer of host primitives (terminal screen control, path
 safety) is Rust. It depends on nothing but the `sema` binary.
 
-Inspired by the open-source [pi.dev](https://pi.dev) and
-[opencode](https://github.com/sst/opencode) TUIs — not a Claude Code clone.
-
 ![Sema Coder — a sample session](screenshot.png)
 
 ## Run
@@ -54,15 +51,15 @@ sema-coder/
 └── util.sema       Path safety + string helpers
 ```
 
-Reused language primitives: `defagent` / `deftool` / `agent/run` (LLM agent loop),
-`async` / `async/cancel` (concurrent turns), `make-parameter` / `parameterize`
-(one command registry driving both front-ends), `mutable-array/*` (O(1) transcript
-streaming), `file/*` and `shell` (tools), `json/*` (config), `term/*` (theming +
+It is built on Sema's own primitives: `defagent` / `deftool` / `agent/run` (the
+LLM agent loop), `async` / `async/cancel` (concurrent turns), `make-parameter` /
+`parameterize` (the command registry), `mutable-array/*` (the streaming
+transcript), `file/*` and `shell` (tools), `json/*` (config), `term/*` (theming +
 screen control), `path/within?` (sandboxing), `llm/session-usage` (token/cost HUD).
 
 In the TUI, an agent turn runs as an async task while a sibling task keeps pumping
-input — so scrolling, resize, and type-ahead all work while tokens stream in, and
-**Ctrl-C interrupts the turn** (via `async/cancel`) without killing the app.
+input, so scrolling, resize, and type-ahead all work while tokens stream in, and
+**Ctrl-C interrupts the turn** without killing the app.
 
 ## Slash commands
 
