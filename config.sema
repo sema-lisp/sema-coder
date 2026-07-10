@@ -17,12 +17,11 @@
 (defun config-path () (path/join (config-dir) "init.sema"))
 
 (define default-config
-  {:model          ""        ;; "" = auto-detect from API keys
-   :max-turns      50
-   :context-budget 80000
-   :mcp-servers    '()
-   :commands       '()
-   :keys           {}})    ;; action → key overrides (e.g. {:mcp "ctrl-p"})
+  {:model       ""        ;; "" = auto-detect from API keys
+   :max-turns   50
+   :mcp-servers '()
+   :commands    '()
+   :keys        {}})    ;; action → key overrides (e.g. {:mcp "ctrl-p"})
 
 ;; ── Constructors: return values, never mutate ────────────────────
 

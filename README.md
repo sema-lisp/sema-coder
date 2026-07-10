@@ -68,33 +68,123 @@ input, so scrolling, resize, and type-ahead all work while tokens stream in, and
 
 Built-ins: `/help`, `/model [name]`, `/clear`, `/tools`, `/mcp`, `/resume`,
 `/cwd`, `/config`, `/reload`, `/quit`, `/exit`. In the TUI, type `/` to open a
-fuzzy command palette.
+fuzzy command palette. Add your own in config (see below).
+
+## Configuration
+
+Config is **Sema data, not JSON** — an `init.sema` file that calls
+`(configure! (coder-config {…}))`. It is created (annotated) on first run,
+**hot-reloads on save** (edit it in any pane; a banner shows and the last-good
+config keeps running if a save doesn't parse), and lives at:
+
+```
+<config-dir>/sema/sema-code/init.sema
+```
+
+`<config-dir>` is the OS default (`~/Library/Application Support` on macOS,
+`$XDG_CONFIG_HOME` or `~/.config` on Linux). Overrides, in order: the
+`SEMA_CODER_CONFIG_DIR` environment variable, then the OS default. Run `/config`
+to print the exact path, or `/config edit` (or `e` in the `⌃O` modal) to open it.
+
+A complete `init.sema`:
+
+```scheme
+(configure!
+  (coder-config
+    {:model      ""          ; "" = auto-detect from API keys; or e.g. "claude-sonnet-5"
+     :max-turns  50          ; max tool-use rounds in a single turn
+
+     ;; MCP servers — each is a value; manage connections in the /mcp modal (⌃O).
+     :mcp-servers
+     (list
+       ;; stdio: a local process speaking MCP over stdin/stdout
+       (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs,docs_search"]
+                           :autostart #t})           ; connect at boot
+       ;; http: a remote endpoint (OAuth is prompted when you connect)
+       (mcp-server "asana" {:url "https://mcp.asana.com/mcp"}))
+
+     ;; Custom slash commands — argv (no shell), a template, or a Sema handler.
+     :commands
+     (list
+       (command "test" {:desc "run tests"    :run ["make" "test"]})
+       (command "log"  {:desc "git log"      :run ["git" "log" "--oneline" "-n" :args]})
+       (command "diff" {:desc "wc diff"      :shell "git diff $ARGS"})
+       (command "hi"   {:desc "greet"        :do (lambda (state args) (emit :info "hi!") state)}))
+
+     ;; Rebind any keyboard action (defaults shown in the table below).
+     :keys {}}))               ; e.g. {:mcp "ctrl-p" :resume "ctrl-y"}
+```
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `:model` | `""` | LLM model; `""` auto-detects from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
+| `:max-turns` | `50` | Max agent tool-use rounds per user turn |
+| `:mcp-servers` | `'()` | List of `(mcp-server …)` records |
+| `:commands` | `'()` | List of `(command …)` records |
+| `:keys` | `{}` | Action → key overrides |
+
+### MCP servers
+
+Each server is a `(mcp-server "name" opts)` value. `opts` is either a **stdio**
+launcher (`:command` + `:args`) or an **http** endpoint (`:url`), plus the
+optional app key `:autostart`:
+
+```scheme
+(mcp-server "fs" {:command "npx" :args ["-y" "@modelcontextprotocol/server-filesystem" "."]})
+(mcp-server "asana" {:url "https://mcp.asana.com/mcp"})   ; OAuth on connect
+```
+
+`:autostart #t` connects at boot; otherwise you connect on demand. Manage
+connections in the `/mcp` modal (`⌃O`): `↑↓` select, `c` connect, `d` disconnect,
+`t` list a server's tools, `e` edit `init.sema`. A server that needs auth shows a
+`▲` — connect it to run the sign-in flow. Connecting merges that server's tools
+into the agent for the rest of the session (only add servers you trust — they run
+real commands and reach real services).
+
+### Custom commands
+
+A `(command "name" spec)` becomes `/name`. The `spec` carries `:desc` plus
+**exactly one** handler:
+
+- `:run` — an **argv list** run in the workspace, never shell-interpreted (the
+  safe default). The keyword `:args` marks where the text you type after the
+  command is spliced (dropped if you type nothing); without `:args` it is
+  appended. `["git" "log" "-n" :args]` + `/log 5` → `git log -n 5`.
+- `:shell` — a **template string** with `$ARGS` substituted, run via the shell.
+- `:do` — a **Sema handler** `(lambda (state args) … )` returning the next state
+  (or the symbol `quit`); write output with `(emit :info "…")`.
+
+Config commands hot-reload — removing one from `init.sema` unregisters it. You
+can also register commands at runtime from Sema, after loading `commands.sema`:
+
+```scheme
+(register-command! "hello" "Say hi"
+  (lambda (state args) (emit :info "hi!") state))
+```
+
+### Keybindings
+
+Rebind any action under `:keys`, e.g. `{:mcp "ctrl-p" :palette "ctrl-space"}`:
+
+| Action | Default | Does |
+| --- | --- | --- |
+| `:mcp` | `⌃O` | Open the MCP modal |
+| `:resume` | `⌃R` | Open the session picker |
+| `:palette` | `⌃K` | Open the slash-command palette |
+| `:quit` | `⌃D` | Quit |
+| `:interrupt` | `⌃C` | Interrupt the turn / clear input / quit |
+| `:clear-line` | `⌃U` | Clear the input line |
+| `:line-start` / `:line-end` | `⌃A` / `⌃E` | Move the caret |
+| `:repaint` | `⌃L` | Force a full repaint |
 
 ## Sessions
 
 Every turn is written to `<config-dir>/sema/sema-code/sessions/<id>.jsonl` — a
 meta line plus one message per line, in the exact `agent/run` shape (tool calls
 and results included), so a conversation resumes verbatim. `/resume` (or `⌃R`)
-opens a picker of past sessions, newest first: `↑↓` to move, `Enter` to preview,
-`r` to restore the conversation into the current session and keep going.
-
-### Adding commands — two ways
-
-**1. Declaratively, in config (no code).** Add an entry to the `commands` map; the
-key becomes `/name` and the value is a shell template run in the workspace, with
-`$ARGS` replaced by whatever you type after the command.
-
-**2. In Sema, one call.** Anywhere after loading `commands.sema`:
-
-```scheme
-(register-command! "diff" "Show the working-tree diff"
-  (lambda (state args)
-    (run-user-command "git diff $ARGS" args)
-    state))
-```
-
-A handler receives the live REPL `state` map and the argument string, and returns
-the next state (or the symbol `quit` to exit).
+opens a picker of past sessions, newest first: `↑↓` to move, `Enter` to preview a
+session's messages, `r` to restore the conversation into the current session and
+keep going.
 
 ## Tools
 

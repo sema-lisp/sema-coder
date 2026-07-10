@@ -9,7 +9,7 @@
 (check "command argv"
        (command "test" {:desc "t" :run ["make" "test"]})
        {:name "test" :desc "t" :run ["make" "test"]})
-(check "coder-config fills defaults" (:context-budget (coder-config {:model "m"})) 80000)
+(check "coder-config fills defaults" (:max-turns (coder-config {:model "m"})) 50)
 
 ;; ── load-config on a good file → {:ok cfg} ──
 (file/write "/tmp/sc-init-ok.sema"
