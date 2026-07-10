@@ -107,7 +107,7 @@
          (shown (take (min 10 (length names)) (drop (max 0 (- tsel 9)) names)))
          (rows (if (null? names)
                  (list (box-row (muted "not connected — no tools") inner))
-                 (map (lambda (n) (box-row (string/append "  " (accent n)) inner)) shown))))
+                 (map #(box-row (string/append "  " (accent %)) inner) shown))))
     (append
       (list (box-top (string/append " " (if srv (:name srv) "?") " · tools ") bw))
       rows
@@ -118,7 +118,7 @@
 (defun mcp-modal-rows ()
   (let* ((bw  (min (max 40 (- *cols* 6)) 72))
          (box (if (equal? (:view *overlay*) :tools) (mcp-tools-rows bw) (mcp-list-rows bw))))
-    (map (lambda (r) (center-h r bw)) box)))
+    (map #(center-h % bw) box)))
 
 (defun mcp-connect-selected! ()
   (let ((srv (mcp-sel-server)))
@@ -183,7 +183,7 @@
       (list (box-bot bw)))))
 
 (defun session-first-line (s)
-  (let ((parts (filter (lambda (l) (not (= (string/trim l) ""))) (string/split s "\n"))))
+  (let ((parts (filter #(not (= (string/trim %) "")) (string/split s "\n"))))
     (if (null? parts) "" (string/trim (car parts)))))
 
 (defun msg-role-label (role)
@@ -198,7 +198,7 @@
       ((= role "tool")
         (string/append "→ " (get m :tool-name "") ": " (session-first-line (get m :content ""))))
       ((and (= role "assistant") (> (length calls) 0) (= (string/trim (get m :content "")) ""))
-        (string/append "→ " (string/join (map (lambda (tc) (get tc :name "")) calls) ", ")))
+        (string/append "→ " (string/join (map #(get % :name "") calls) ", ")))
       (else (session-first-line (get m :content ""))))))
 
 (defun msg-preview-row (m inner)
@@ -212,7 +212,7 @@
   ;; One preview line per message, so dscroll is a direct top offset (clamped).
   (let* ((inner (max 8 (- bw 4)))
          (msgs (:detail *overlay*))
-         (lines (map (lambda (m) (msg-preview-row m inner)) msgs))
+         (lines (map #(msg-preview-row % inner) msgs))
          (start (max 0 (min (:dscroll *overlay*) (max 0 (- (length lines) RESUME-DETAIL-ROWS)))))
          (win (take (min RESUME-DETAIL-ROWS (max 0 (- (length lines) start))) (drop start lines)))
          (sel (resume-sel-session)))
@@ -220,7 +220,7 @@
       (list (box-top (string/append " " (if sel (clip-width (:title sel) 30) "session") " ") bw))
       (if (null? lines)
         (list (box-row (muted "empty session") inner))
-        (map (lambda (l) (box-row l inner)) win))
+        (map #(box-row % inner) win))
       (list (box-sep bw))
       (list (box-row (faint "↑↓ scroll · enter/r restore · Esc back") inner))
       (list (box-bot bw)))))
@@ -228,7 +228,7 @@
 (defun resume-modal-rows ()
   (let* ((bw  (min (max 40 (- *cols* 6)) 72))
          (box (if (equal? (:view *overlay*) :detail) (resume-detail-rows bw) (resume-list-rows bw))))
-    (map (lambda (r) (center-h r bw)) box)))
+    (map #(center-h % bw) box)))
 
 (defun resume-open-detail! ()
   (let ((m (resume-sel-session)))

@@ -98,10 +98,10 @@
   ;; Score every command, drop non-matches, best-first, then unwrap to entries.
   (let ((q (palette-query)))
     (->> (all-command-entries)
-         (map (lambda (e) (list (fuzzy-score q (:name e)) e)))
-         (filter (lambda (pair) (nth pair 0)))
-         (sort-by (lambda (pair) (- (nth pair 0))))
-         (map (lambda (pair) (nth pair 1))))))
+         (map #(list (fuzzy-score q (:name %)) %))
+         (filter #(nth % 0))
+         (sort-by #(- (nth % 0)))
+         (map #(nth % 1)))))
 
 (defun palette-limit (matches) (min 8 (length matches)))
 
@@ -192,7 +192,7 @@
    the fixed-row diff model."
   (let* ((avail (max 4 (- *cols* 4)))
          (len   (string/length *input*))
-         (cw    (lambda (i) (string/width (string/slice *input* i (+ i 1)))))
+         (cw    #(string/width (string/slice *input* % (+ % 1))))
          (start (let loop ((i *cursor*) (w 0))
                   (if (<= i 0) 0
                     (let ((wprev (cw (- i 1))))
@@ -234,7 +234,7 @@
          (rows (fit-rows rows *rows*))
          (rows (if (overlay-active?) (overlay-center rows (overlay-rows)) rows)))
     ;; Normalize to exactly *rows* padded strings.
-    (map (lambda (s) (pad-to s *cols*)) rows)))
+    (map #(pad-to % *cols*) rows)))
 
 (defun fit-rows (rows n)
   (let ((have (length rows)))
@@ -396,7 +396,7 @@
 (defun messages->blocks (messages)
   "Rebuild the transcript from stored MESSAGES for a resumed session."
   (let ((idx (tool-results-index messages)))
-    (apply append (map (lambda (m) (message->blocks m idx)) messages))))
+    (apply append (map #(message->blocks % idx) messages))))
 
 (defun restore-session! (id)
   (let* ((s (load-session id)) (msgs (:messages s)))
@@ -581,7 +581,7 @@
   (if (not *config-watcher*) #f
     (let ((evs (try (fs/watch-events *config-watcher*) (catch e '()))))
       (any (lambda (ev)
-             (any (lambda (p) (string/ends-with? p "init.sema")) (get ev :paths '())))
+             (any #(string/ends-with? % "init.sema") (get ev :paths '())))
            evs))))
 
 (defun warn-keymap-conflicts! ()

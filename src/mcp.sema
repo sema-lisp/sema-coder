@@ -75,16 +75,16 @@
     (if (not rec)
       :no-such
       (begin
-        (mcp-set! name (lambda (r) (assoc r :status :connecting :error #f)))
+        (mcp-set! name #(assoc % :status :connecting :error #f))
         (let ((result (try {:ok (mcp/connect (:opts rec))} (catch e {:err e}))))
           (if (:ok result)
             (let ((h (:ok result)))
-              (mcp-set! name (lambda (r) (assoc r :status :connected :handle h
-                                                :tools (mcp/tools->sema h) :error #f)))
+              (mcp-set! name #(assoc % :status :connected :handle h
+                                     :tools (mcp/tools->sema h) :error #f))
               :connected)
             (let* ((errmsg (format "~a" (:err result)))
                    (status (if (auth-error? errmsg) :needs-auth :error)))
-              (mcp-set! name (lambda (r) (assoc r :status status :error errmsg)))
+              (mcp-set! name #(assoc % :status status :error errmsg))
               status)))))))
 
 (defun mcp-disconnect! (name)
@@ -92,12 +92,12 @@
   (let ((rec (mcp-get name)))
     (when (and rec (:handle rec))
       (try (mcp/close (:handle rec)) (catch e nil))))
-  (mcp-set! name (lambda (r) (assoc r :status :idle :handle #f :tools '() :error #f))))
+  (mcp-set! name #(assoc % :status :idle :handle #f :tools '() :error #f)))
 
 (defun all-mcp-tools ()
   "Every tool from currently-connected servers, flattened."
   (apply append
-    (map (lambda (r) (if (equal? (:status r) :connected) (:tools r) '()))
+    (map #(if (equal? (:status %) :connected) (:tools %) '())
          (mcp-records))))
 
 (defun mcp-autostart! ()
@@ -114,4 +114,4 @@
 
 (defun mcp-needs-auth ()
   "Names of servers whose last connect failed needing authentication."
-  (map :name (filter (lambda (r) (equal? (:status r) :needs-auth)) (mcp-records))))
+  (map :name (filter #(equal? (:status %) :needs-auth) (mcp-records))))

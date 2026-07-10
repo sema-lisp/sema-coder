@@ -103,7 +103,7 @@
 
 (defun unregister-command! (name)
   (set! *commands* (dissoc *commands* name))
-  (set! *command-order* (filter (lambda (n) (not (= n name))) *command-order*)))
+  (set! *command-order* (filter #(not (= % name)) *command-order*)))
 
 (defun reconcile-commands! (cmds)
   "Replace the config-owned command set with CMDS (list of command records).
@@ -179,7 +179,7 @@
 
 (register-command! "tools" "List the agent's tools"
   (lambda (state args)
-    (for-each (lambda (n) (emit :line (format "    ~a" (accent n)))) (map tool/name (agent-tools)))
+    (for-each #(emit :line (format "    ~a" (accent %))) (map tool/name (agent-tools)))
     state))
 
 (register-command! "mcp" "Manage MCP servers (opens the modal; ⌃O in the TUI)"

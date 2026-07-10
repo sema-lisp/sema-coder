@@ -96,12 +96,12 @@
 (defun render-table (header sep-line body width)
   (let* ((headers (map md-inline (split-cells header)))
          (aligns  (map cell-align (split-cells sep-line)))
-         (rows    (map (lambda (l) (map md-inline (split-cells l))) body))
+         (rows    (map #(map md-inline (split-cells %)) body))
          (ncol    (length headers))
          (widths  (col-widths (cons headers rows) ncol)))
     (append
       (list (clip-styled (render-table-row headers widths aligns bright) width))
-      (list (clip-styled (faint (string/join (map (lambda (w) (string/repeat "─" w)) widths) "─┼─")) width))
+      (list (clip-styled (faint (string/join (map #(string/repeat "─" %) widths) "─┼─")) width))
       (map (lambda (r) (clip-styled (render-table-row r widths aligns (lambda (x) x)) width)) rows))))
 
 (defun span-table-rows (lines)
@@ -125,7 +125,7 @@
   (let ((wrapped (string/word-wrap text (max 4 (- width (string/width prefix))))))
     (if (null? wrapped) (list prefix)
       (cons (string/append prefix (car wrapped))
-            (map (lambda (l) (string/append indent l)) (cdr wrapped))))))
+            (map #(string/append indent %) (cdr wrapped))))))
 
 (defun md-task (text)
   "If TEXT is a task item, {:glyph … :text rest}; else #f."
@@ -146,7 +146,7 @@
         (list (heading (nth (:groups m) 1)))))
     ((regex/match #"^>\s?(.*)$" line)
       (let ((m (regex/match #"^>\s?(.*)$" line)))
-        (map (lambda (l) (string/append (faint "▏ ") l))
+        (map #(string/append (faint "▏ ") %)
              (string/word-wrap (md-inline (nth (:groups m) 0)) (max 4 (- width 2))))))
     ((regex/match #"^(\s*)[-*+]\s+(.+)$" line)
       (let* ((m (regex/match #"^(\s*)[-*+]\s+(.+)$" line))

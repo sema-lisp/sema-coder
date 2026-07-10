@@ -12,7 +12,7 @@
 
 (defun session-title (messages)
   "First user message, one line, truncated — the human-readable label."
-  (let ((u (filter (lambda (m) (= (get m :role "") "user")) messages)))
+  (let ((u (filter #(= (get % :role "") "user") messages)))
     (if (null? u) "(no messages)"
       (truncate-str (string/replace (string/trim (get (car u) :content "")) "\n" " ") 56))))
 
@@ -26,7 +26,7 @@
         (string/join (cons (json/encode meta) (map json/encode messages)) "\n")))))
 
 (defun read-lines (path)
-  (filter (lambda (l) (not (= (string/trim l) ""))) (string/split (file/read path) "\n")))
+  (filter #(not (= (string/trim %) "")) (string/split (file/read path) "\n")))
 
 (defun session-meta-of (path)
   "Parse a session file's meta line, adding :count. #f on a malformed file."
@@ -40,10 +40,10 @@
   (let ((dir (sessions-dir)))
     (if (not (file/exists? dir)) '()
       (->> (file/list dir)
-           (filter (lambda (f) (string/ends-with? f ".jsonl")))
-           (map (lambda (f) (session-meta-of (if (string/contains? f "/") f (path/join dir f)))))
+           (filter #(string/ends-with? % ".jsonl"))
+           (map #(session-meta-of (if (string/contains? % "/") % (path/join dir %))))
            (filter (lambda (m) m))
-           (sort-by (lambda (m) (- (get m :created 0))))))))
+           (sort-by #(- (get % :created 0)))))))
 
 (defun load-session (id)
   "Read a session → {:meta … :messages (…)}."

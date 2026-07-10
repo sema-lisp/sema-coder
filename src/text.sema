@@ -89,7 +89,7 @@
       (->> lines
            (zip (range 0 (length lines)))
            ;; zip yields 2-element lists (i line), not cons pairs — index with nth.
-           (map (lambda (p) (format "~a\t~a" (+ 1 (nth p 0)) (nth p 1)))))
+           (map #(format "~a\t~a" (+ 1 (nth % 0)) (nth % 1))))
       "\n")))
 
 ;; ── Indexed iteration ────────────────────────────────────────────

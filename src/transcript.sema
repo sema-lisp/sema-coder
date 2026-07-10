@@ -42,11 +42,11 @@
 (defun append-assistant! (delta)
   (let ((lb (last-block)))
     (if (and lb (kind? lb :assistant))
-      (update-last! (lambda (b) (assoc b :text (string/append (:text b) delta))))
+      (update-last! #(assoc % :text (string/append (:text %) delta)))
       (add-block! {:kind :assistant :text delta}))))
 
 (defun set-last-tool-done! (ms result err)
-  (update-last! (lambda (b) (assoc b :state :done :ms ms :result result :error err))))
+  (update-last! #(assoc % :state :done :ms ms :result result :error err)))
 
 ;; ── Block → styled lines ─────────────────────────────────────────────────────
 
@@ -97,7 +97,7 @@
       ;; Preformatted output (command stdout, pretty JSON): preserve internal
       ;; whitespace — split on newlines only, clip each line to width instead of
       ;; reflowing (word-wrap would collapse the spaces columns depend on).
-      (append (map (lambda (l) (fit-line l w)) (string/split (:text b) "\n"))
+      (append (map #(fit-line % w) (string/split (:text b) "\n"))
               (list "")))
     ((kind? b :tool)
       (let* ((tool (:tool b)) (arg (clip-width (get b :arg "") (max 4 (- w 18)))))
@@ -109,20 +109,20 @@
                                    (accent-dim (term/style tool :bold)) " " (muted arg)
                                    " " (faint (string/append (number->string (get b :ms 0)) "ms"))))
             (tool-result-lines b w)))))
-    ((kind? b :info)  (map (lambda (l) (indent (muted l))) (wrap-text (:text b) w)))
-    ((kind? b :ok)    (map (lambda (l) (indent (ok l))) (wrap-text (:text b) w)))
-    ((kind? b :warn)  (map (lambda (l) (indent (warn l))) (wrap-text (:text b) w)))
+    ((kind? b :info)  (map #(indent (muted %)) (wrap-text (:text b) w)))
+    ((kind? b :ok)    (map #(indent (ok %)) (wrap-text (:text b) w)))
+    ((kind? b :warn)  (map #(indent (warn %)) (wrap-text (:text b) w)))
     ;; Pre-styled chrome (help rows, /tools): keep its ANSI and column padding
     ;; intact — split on newlines only, never word-wrap; fit-line guards the
     ;; rare too-narrow-terminal overflow.
-    ((kind? b :line)  (map (lambda (l) (fit-line l w)) (string/split (:text b) "\n")))
-    ((kind? b :error) (map (lambda (l) (indent (bad l))) (wrap-text (string/append "error: " (:text b)) w)))
+    ((kind? b :line)  (map #(fit-line % w) (string/split (:text b) "\n")))
+    ((kind? b :error) (map #(indent (bad %)) (wrap-text (string/append "error: " (:text b)) w)))
     (else '())))
 
 (defun transcript-lines (w)
   (when (or *tlines-dirty* (not (= w *tlines-w*)))
     (set! *tlines* (->> (transcript-blocks)
-                        (map (lambda (b) (block-lines b w)))
+                        (map #(block-lines % w))
                         (apply append)))
     (set! *tlines-w* w)
     (set! *tlines-dirty* #f))
