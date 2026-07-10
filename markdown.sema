@@ -1,10 +1,13 @@
-;; markdown.sema — tolerant CommonMark-subset → styled terminal lines.
+;; markdown.sema — Markdown → styled terminal lines.
 ;;
 ;; (md-lines text width) → a list of styled lines, each fitting WIDTH. Prose is
 ;; word-wrapped and inline-styled; fenced code is preserved verbatim behind a
-;; gutter (an unterminated fence, common mid-stream, keeps rendering as code).
+;; gutter (an unterminated fence, common mid-stream, keeps rendering as code);
+;; GFM tables render with aligned, per-column-justified cells.
 
 (load "theme.sema")
+
+(defun md-spaces (n) (if (> n 0) (string/repeat " " n) ""))
 
 (defun md-clip (s w)
   "Truncate plain S to display width W (no ellipsis)."
@@ -14,9 +17,11 @@
         (let ((cw (string/width (string/slice s i (+ i 1)))))
           (if (> (+ acc cw) w) (string/slice s 0 i) (loop (+ i 1) (+ acc cw))))))))
 
+(defun nth-or (lst i default) (if (< i (length lst)) (nth lst i) default))
+
 ;; ── Inline styling ───────────────────────────────────────────────
 ;; Each pass rewrites one construct; styled spans carry ANSI (no markup chars),
-;; so later passes don't re-match them. Order: links, code, bold, italic.
+;; so later passes don't re-match them.
 
 (defun md-replace-all (text pattern style-fn)
   (let loop ((s text) (out ""))
@@ -29,14 +34,76 @@
                              (style-fn (nth (:groups m) 0))))))))
 
 (defun md-code-span (s) (muted s))
+(defun md-strike (s) (string-append ESC-STRIKE s ESC-RESET))
+(define ESC-STRIKE "\x1b;[9m")
+(define ESC-RESET  "\x1b;[0m")
 
 (defun md-inline (text)
   (-> text
-      (md-replace-all #"\[([^\]]+)\]\([^)]*\)" bright)   ;; [text](url) → text
-      (md-replace-all #"`([^`]+)`"            md-code-span)
-      (md-replace-all #"\*\*([^*]+)\*\*"      bright)     ;; **bold**
-      (md-replace-all #"__([^_]+)__"          bright)     ;; __bold__
-      (md-replace-all #"\*([^*]+)\*"          term/italic))) ;; *italic*
+      (md-replace-all #"\[([^\]]+)\]\([^)]*\)" bright)     ;; [text](url) → text
+      (md-replace-all #"`([^`]+)`"             md-code-span)
+      (md-replace-all #"~~([^~]+)~~"           md-strike)  ;; ~~struck~~
+      (md-replace-all #"\*\*([^*]+)\*\*"       bright)     ;; **bold**
+      (md-replace-all #"__([^_]+)__"           bright)     ;; __bold__
+      (md-replace-all #"\*([^*]+)\*"           term/italic))) ;; *italic*
+
+;; ── Tables (GFM) ─────────────────────────────────────────────────
+
+(defun table-row? (line) (string/contains? line "|"))
+(defun separator-row? (line) (if (regex/match #"^\|?[\s:|-]*-[\s:|-]*$" line) #t #f))
+
+(defun split-cells (line)
+  "Split a table row into trimmed cells, dropping the outer pipes."
+  (let* ((t (string/trim line))
+         (t (if (string/starts-with? t "|") (string/slice t 1 (string-length t)) t))
+         (t (if (string/ends-with? t "|") (string/slice t 0 (- (string-length t) 1)) t)))
+    (map string/trim (string/split t "|"))))
+
+(defun cell-align (sep)
+  (let ((s (string/trim sep)))
+    (cond ((and (string/starts-with? s ":") (string/ends-with? s ":")) :center)
+          ((string/ends-with? s ":") :right)
+          (else :left))))
+
+(defun pad-cell (text w align)
+  (let ((pad (max 0 (- w (string/width text)))))
+    (cond ((equal? align :right)  (string-append (md-spaces pad) text))
+          ((equal? align :center) (let ((l (quotient pad 2)))
+                                    (string-append (md-spaces l) text (md-spaces (- pad l)))))
+          (else                   (string-append text (md-spaces pad))))))
+
+(defun col-widths (rows ncol)
+  (let loop ((i 0) (out '()))
+    (if (>= i ncol) (reverse out)
+      (loop (+ i 1)
+            (cons (foldl (lambda (a r) (max a (string/width (md-clip (nth-or r i "") 40)))) 1 rows)
+                  out)))))
+
+(defun render-table-row (cells widths aligns styler)
+  (let loop ((i 0) (parts '()))
+    (if (>= i (length widths))
+      (string/join (reverse parts) (faint " │ "))
+      (loop (+ i 1)
+            (cons (styler (pad-cell (nth-or cells i "") (nth widths i) (nth-or aligns i :left)))
+                  parts)))))
+
+(defun render-table (header sep-line body width)
+  (let* ((headers (map md-inline (split-cells header)))
+         (aligns  (map cell-align (split-cells sep-line)))
+         (rows    (map (lambda (l) (map md-inline (split-cells l))) body))
+         (ncol    (length headers))
+         (widths  (col-widths (cons headers rows) ncol)))
+    (append
+      (list (md-clip (render-table-row headers widths aligns bright) width))
+      (list (faint (md-clip (string/join (map (lambda (w) (string/repeat "─" w)) widths) "─┼─") width)))
+      (map (lambda (r) (md-clip (render-table-row r widths aligns (lambda (x) x)) width)) rows))))
+
+(defun span-table-rows (lines)
+  "Consecutive table rows from LINES → {:rows … :rest …}."
+  (let loop ((ls lines) (acc '()))
+    (if (or (null? ls) (not (table-row? (car ls))) (= (string/trim (car ls)) ""))
+      {:rows (reverse acc) :rest ls}
+      (loop (cdr ls) (cons (car ls) acc)))))
 
 ;; ── Block constructs ─────────────────────────────────────────────
 
@@ -54,10 +121,20 @@
       (cons (string-append prefix (car wrapped))
             (map (lambda (l) (string-append indent l)) (cdr wrapped))))))
 
+(defun md-task (text)
+  "If TEXT is a task item, {:glyph … :text rest}; else #f."
+  (cond ((or (string/starts-with? text "[x] ") (string/starts-with? text "[X] "))
+         {:glyph (ok "☑") :text (string/slice text 4 (string-length text))})
+        ((string/starts-with? text "[ ] ")
+         {:glyph (faint "☐") :text (string/slice text 4 (string-length text))})
+        (else #f)))
+
 (defun md-render-line (line width)
-  "Render one non-code markdown line to a list of styled, wrapped lines."
+  "Render one non-code, non-table markdown line to a list of styled lines."
   (cond
     ((= (string/trim line) "") (list ""))
+    ((regex/match #"^\s*(-{3,}|\*{3,}|_{3,})\s*$" line)
+      (list (faint (string/repeat "─" width))))
     ((regex/match #"^(#{1,6})\s+(.+)$" line)
       (let ((m (regex/match #"^(#{1,6})\s+(.+)$" line)))
         (list (heading (nth (:groups m) 1)))))
@@ -66,8 +143,12 @@
         (map (lambda (l) (string-append (faint "▏ ") l))
              (string/word-wrap (md-inline (nth (:groups m) 0)) (max 4 (- width 2))))))
     ((regex/match #"^(\s*)[-*+]\s+(.+)$" line)
-      (let ((m (regex/match #"^(\s*)[-*+]\s+(.+)$" line)))
-        (wrap-hang (accent "• ") (md-inline (nth (:groups m) 1)) width "  ")))
+      (let* ((m (regex/match #"^(\s*)[-*+]\s+(.+)$" line))
+             (raw (nth (:groups m) 1))
+             (task (md-task raw)))
+        (if task
+          (wrap-hang (string-append (:glyph task) " ") (md-inline (:text task)) width "  ")
+          (wrap-hang (accent "• ") (md-inline raw) width "  "))))
     ((regex/match #"^(\s*)(\d+)[.)]\s+(.+)$" line)
       (let* ((m (regex/match #"^(\s*)(\d+)[.)]\s+(.+)$" line))
              (num (nth (:groups m) 1)))
@@ -78,8 +159,13 @@
   "Render markdown TEXT to a list of styled lines fitting WIDTH."
   (let loop ((lines (string/split text "\n")) (out '()) (code #f))
     (if (null? lines) out
-      (let ((line (car lines)))
+      (let ((line (car lines)) (rest (cdr lines)))
         (cond
-          ((md-fence? line) (loop (cdr lines) out (not code)))
-          (code             (loop (cdr lines) (append out (list (md-code-line line width))) code))
-          (else             (loop (cdr lines) (append out (md-render-line line width)) code)))))))
+          ((md-fence? line) (loop rest out (not code)))
+          (code (loop rest (append out (list (md-code-line line width))) code))
+          ((and (not (null? rest)) (table-row? line) (separator-row? (car rest)))
+            (let ((span (span-table-rows (cdr rest))))
+              (loop (:rest span)
+                    (append out (render-table line (car rest) (:rows span) width))
+                    code)))
+          (else (loop rest (append out (md-render-line line width)) code)))))))

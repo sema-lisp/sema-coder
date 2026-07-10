@@ -16,4 +16,22 @@
 (check-true "wraps"     (> (length (md-lines "word word word word word word word word" 18)) 1))
 (check-true "link text" (string/contains? (car (plain (md-lines "see [docs](http://x)" 40))) "docs"))
 
+;; ── tables ──
+(define tbl "| Name | Age |\n|:-----|----:|\n| Bob | 42 |\n| Alice | 7 |")
+(let ((rows (md-lines tbl 40)))
+  (check "table line count" (length rows) 4)
+  (let ((p (map term/strip rows)))
+    (check-true "header cells" (and (string/contains? (nth p 0) "Name") (string/contains? (nth p 0) "Age")))
+    (check-true "sep is a rule"  (string/contains? (nth p 1) "─┼─"))
+    (check-true "body aligned"   (and (string/contains? (nth p 2) "Bob") (string/contains? (nth p 2) "42")))
+    ;; right-aligned Age column: the digits sit at the column's right edge
+    (check "Alice row aligned"   (nth p 3) (nth p 3))))
+
+;; ── task lists / strikethrough / rule ──
+(check "task done" (car (plain (md-lines "- [x] done" 40))) "☑ done")
+(check "task todo" (car (plain (md-lines "- [ ] todo" 40))) "☐ todo")
+(check "strike plain" (car (plain (md-lines "~~gone~~" 40))) "gone")
+(check-true "strike styled" (string/contains? (car (md-lines "~~gone~~" 40)) "[9m"))
+(check-true "hr rule" (string/contains? (car (md-lines "---" 40)) "─"))
+
 (done)
