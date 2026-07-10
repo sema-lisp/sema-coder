@@ -163,7 +163,7 @@
 
 (register-command! "tools" "List the agent's tools"
   (lambda (state args)
-    (for-each (lambda (n) (emit :line (format "    ~a" (accent n)))) tool-names)
+    (for-each (lambda (n) (emit :line (format "    ~a" (accent n)))) (tool-names))
     state))
 
 (register-command! "cwd" "Show the working directory"

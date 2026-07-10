@@ -146,7 +146,5 @@
 (defun all-tools ()
   (list read-file write-file edit-file bash grep find-files list-dir))
 
-;; Tool values are opaque (no name accessor), so /tools and the command
-;; palette keep this parallel list — update it alongside all-tools.
-(define tool-names
-  (list "read-file" "write-file" "edit-file" "bash" "grep" "find-files" "list-dir"))
+;; Derived from the tools themselves — no hand-synced list to drift.
+(defun tool-names () (map tool/name (all-tools)))
