@@ -46,6 +46,9 @@ sema-coder/
 ├── commands.sema   Slash-command registry + built-ins
 ├── tools.sema      7 LLM-callable tools
 ├── agent.sema      System prompt + agent construction
+├── mcp.sema        MCP client runtime (connect, tool-merge, autostart)
+├── session.sema    Session persistence — conversations as JSONL
+├── markdown.sema   Markdown → styled terminal lines
 ├── display.sema    Output sink (emit) + tool-call rendering
 ├── tui.sema        Full-screen TUI — frame-diffed, async agent turns
 └── util.sema       Path safety + string helpers
@@ -63,8 +66,17 @@ input, so scrolling, resize, and type-ahead all work while tokens stream in, and
 
 ## Slash commands
 
-Built-ins: `/help`, `/model [name]`, `/clear`, `/tools`, `/cwd`, `/config`,
-`/reload`, `/quit`, `/exit`. In the TUI, type `/` to open a fuzzy command palette.
+Built-ins: `/help`, `/model [name]`, `/clear`, `/tools`, `/mcp`, `/resume`,
+`/cwd`, `/config`, `/reload`, `/quit`, `/exit`. In the TUI, type `/` to open a
+fuzzy command palette.
+
+## Sessions
+
+Every turn is written to `<config-dir>/sema/sema-code/sessions/<id>.jsonl` — a
+meta line plus one message per line, in the exact `agent/run` shape (tool calls
+and results included), so a conversation resumes verbatim. `/resume` (or `⌃R`)
+opens a picker of past sessions, newest first: `↑↓` to move, `Enter` to preview,
+`r` to restore the conversation into the current session and keep going.
 
 ### Adding commands — two ways
 

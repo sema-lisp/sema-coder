@@ -1,0 +1,41 @@
+(load "harness.sema")
+(load "../session.sema")
+
+(define tmp (path/join (sys/temp-dir) (string-append "sema-coder-sess-" (number->string (sys/pid)))))
+
+(define msgs
+  (list
+    {:role "user" :content "add 21 and 21"}
+    {:role "assistant" :content ""
+     :tool-calls (list {:id "c1" :name "calc" :arguments {:a 21 :b 21}})}
+    {:role "tool" :content "42" :tool-call-id "c1" :tool-name "calc"}
+    {:role "assistant" :content "21 plus 21 is 42."}))
+
+(parameterize ((config-dir-override tmp))
+  (save-session! "sess1" 1700000000 "claude-opus-4-8" msgs)
+
+  (let ((rows (list-sessions)))
+    (check "one session listed" (length rows) 1)
+    (let ((m (car rows)))
+      (check "title from first user msg" (:title m) "add 21 and 21")
+      (check "model preserved"           (:model m) "claude-opus-4-8")
+      (check "created preserved"         (:created m) 1700000000)
+      (check "message count"             (:count m) 4)))
+
+  (let ((loaded (load-session "sess1")))
+    (check "loaded message count" (length (:messages loaded)) 4)
+    (let ((a (nth (:messages loaded) 1)))
+      (check "assistant role"     (:role a) "assistant")
+      (check "tool-call name"     (:name (car (:tool-calls a))) "calc")
+      (check "tool-call arg a"    (:a (:arguments (car (:tool-calls a)))) 21))
+    (let ((tm (nth (:messages loaded) 2)))
+      (check "tool result content" (:content tm) "42")
+      (check "tool-call-id linked" (:tool-call-id tm) "c1")))
+
+  ;; empty message list writes nothing
+  (save-session! "empty" 1700000001 "m" '())
+  (check "empty not persisted" (length (list-sessions)) 1)
+
+  (file/delete (session-path "sess1")))
+
+(done)

@@ -34,6 +34,7 @@
 
 (define default-keymap
   {:mcp        "ctrl-o"
+   :resume     "ctrl-r"
    :palette    "ctrl-k"
    :quit       "ctrl-d"
    :interrupt  "ctrl-c"
@@ -90,6 +91,8 @@
 (define *config-watcher* #f)  ;; fs/watch handle on the config dir
 (define *config-error* #f)    ;; string while the last reload failed (persistent banner)
 (define *reload-at* 0)        ;; debounce: reload once the change settles (0 = idle)
+(define *session-id* #f)      ;; current session's file id (persisted after each turn)
+(define *session-created* 0)  ;; its creation timestamp (ms)
 
 ;; The key loop must read the quit flag through a function call: a direct
 ;; global read inside a recursive loop in a `load`ed unit never observes a
@@ -408,6 +411,9 @@
          (box (if (equal? (:view *overlay*) :tools) (mcp-tools-rows bw) (mcp-list-rows bw))))
     (map (lambda (r) (center-h r bw)) box)))
 
+(defun overlay-rows ()
+  (if (equal? (:kind *overlay*) :resume) (resume-modal-rows) (mcp-modal-rows)))
+
 (defun center-h (row bw)
   (string-append (string/repeat " " (max 0 (quotient (- *cols* bw) 2))) row))
 
@@ -449,7 +455,136 @@
     (else nil)))
 
 (defun handle-overlay-key (k)
-  (if (equal? (:view *overlay*) :tools) (mcp-tools-key k) (mcp-list-key k)))
+  (cond
+    ((equal? (:kind *overlay*) :resume) (handle-resume-key k))
+    ((equal? (:view *overlay*) :tools)  (mcp-tools-key k))
+    (else                               (mcp-list-key k))))
+
+;; ── Resume modal (session history; single-slot overlay) ──────────────────────
+
+(defun open-resume-modal! ()
+  (set! *overlay* {:kind :resume :view :list :sel 0 :dscroll 0 :sessions (list-sessions)}))
+
+(defun resume-sel-session ()
+  (let ((ss (:sessions *overlay*)) (i (:sel *overlay*)))
+    (if (and (> (length ss) 0) (< i (length ss))) (nth ss i) #f)))
+
+(defun pad-width (s w)
+  "Pad plain S with spaces to display width W (no truncation)."
+  (let ((n (string/width s)))
+    (if (< n w) (string-append s (string/repeat " " (- w n))) s)))
+
+(defun window-list (lst sel maxrows)
+  "A MAXROWS-long window of LST that keeps index SEL visible → {:items :start}."
+  (let* ((n (length lst))
+         (start (max 0 (min (max 0 (- sel (quotient maxrows 2))) (max 0 (- n maxrows))))))
+    {:items (take (min maxrows (max 0 (- n start))) (drop start lst)) :start start}))
+
+(defun session-model-label (m)
+  (let ((md (:model m))) (if (or (not md) (= md "")) "auto" md)))
+
+(defun resume-row-text (m sel? inner)
+  (let* ((meta   (string-append (number->string (:count m)) " msgs · " (session-model-label m)))
+         (titlew (max 8 (- inner 4 (string/width meta) 2)))
+         (title  (pad-width (clip-width (:title m) titlew) titlew)))
+    (string-append (if sel? (accent "▸ ") "  ") (bright title) "  " (muted meta))))
+
+(defun resume-list-rows (bw)
+  (let* ((inner (max 8 (- bw 4)))
+         (sessions (:sessions *overlay*))
+         (sel (:sel *overlay*))
+         (win (window-list sessions sel 12))
+         (start (:start win))
+         (rows (if (= (length sessions) 0)
+                 (list (box-row (muted "No saved sessions yet — they're written after each turn") inner))
+                 (enumerate-map (lambda (i m) (box-row (resume-row-text m (= (+ i start) sel) inner) inner))
+                                (:items win)))))
+    (append
+      (list (box-top " Resume session " bw))
+      rows
+      (list (box-sep bw))
+      (list (box-row (faint "↑↓ · enter view · r restore · Esc") inner))
+      (list (box-bot bw)))))
+
+(defun session-first-line (s)
+  (let ((parts (filter (lambda (l) (not (= (string/trim l) ""))) (string/split s "\n"))))
+    (if (null? parts) "" (string/trim (car parts)))))
+
+(defun msg-role-label (role)
+  (cond ((= role "user")      (accent "▸ you "))
+        ((= role "assistant") (ok "● sema"))
+        ((= role "tool")      (faint "   tool"))
+        (else                 (muted role))))
+
+(defun msg-preview-text (m)
+  (let ((role (get m :role "")) (calls (get m :tool-calls '())))
+    (cond
+      ((= role "tool")
+        (string-append "→ " (get m :tool-name "") ": " (session-first-line (get m :content ""))))
+      ((and (= role "assistant") (> (length calls) 0) (= (string/trim (get m :content "")) ""))
+        (string-append "→ " (string/join (map (lambda (tc) (get tc :name "")) calls) ", ")))
+      (else (session-first-line (get m :content ""))))))
+
+(defun msg-preview-row (m inner)
+  (let* ((label (msg-role-label (get m :role "")))
+         (avail (max 4 (- inner (string/width (term/strip label)) 1))))
+    (string-append label " " (muted (clip-width (msg-preview-text m) avail)))))
+
+(define RESUME-DETAIL-ROWS 14)   ;; visible message-preview lines in the detail view
+
+(defun resume-detail-rows (bw)
+  ;; One preview line per message, so dscroll is a direct top offset (clamped).
+  (let* ((inner (max 8 (- bw 4)))
+         (msgs (:detail *overlay*))
+         (lines (map (lambda (m) (msg-preview-row m inner)) msgs))
+         (start (max 0 (min (:dscroll *overlay*) (max 0 (- (length lines) RESUME-DETAIL-ROWS)))))
+         (win (take (min RESUME-DETAIL-ROWS (max 0 (- (length lines) start))) (drop start lines)))
+         (sel (resume-sel-session)))
+    (append
+      (list (box-top (string-append " " (if sel (clip-width (:title sel) 30) "session") " ") bw))
+      (if (null? lines)
+        (list (box-row (muted "empty session") inner))
+        (map (lambda (l) (box-row l inner)) win))
+      (list (box-sep bw))
+      (list (box-row (faint "↑↓ scroll · enter/r restore · Esc back") inner))
+      (list (box-bot bw)))))
+
+(defun resume-modal-rows ()
+  (let* ((bw  (min (max 40 (- *cols* 6)) 72))
+         (box (if (equal? (:view *overlay*) :detail) (resume-detail-rows bw) (resume-list-rows bw))))
+    (map (lambda (r) (center-h r bw)) box)))
+
+(defun resume-open-detail! ()
+  (let ((m (resume-sel-session)))
+    (when m
+      (let ((msgs (try (:messages (load-session (:id m))) (catch e '()))))
+        (overlay-merge! {:view :detail :dscroll 0 :detail msgs})))))
+
+(defun resume-restore-selected! ()
+  (let ((m (resume-sel-session)))
+    (when m (restore-session! (:id m)) (close-overlay!))))
+
+(defun resume-list-key (k)
+  (let ((n (length (:sessions *overlay*))))
+    (cond
+      ((key-name= k :up)   (overlay-merge! {:sel (max 0 (- (:sel *overlay*) 1))}))
+      ((key-name= k :down) (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel *overlay*) 1))}))
+      ((or (key-name= k :esc) (key-ctrl= k (action-ctrl-char :resume))) (close-overlay!))
+      ((key-name= k :enter) (resume-open-detail!))
+      ((key-char= k "r")    (resume-restore-selected!))
+      (else nil))))
+
+(defun resume-detail-key (k)
+  (let ((maxd (max 0 (- (length (:detail *overlay*)) RESUME-DETAIL-ROWS))))
+    (cond
+      ((key-name= k :esc)  (overlay-merge! {:view :list}))
+      ((key-name= k :up)   (overlay-merge! {:dscroll (max 0 (- (:dscroll *overlay*) 1))}))
+      ((key-name= k :down) (overlay-merge! {:dscroll (min maxd (+ (:dscroll *overlay*) 1))}))
+      ((or (key-name= k :enter) (key-char= k "r")) (resume-restore-selected!))
+      (else nil))))
+
+(defun handle-resume-key (k)
+  (if (equal? (:view *overlay*) :detail) (resume-detail-key k) (resume-list-key k)))
 
 ;; ── Frame assembly ───────────────────────────────────────────────────────────
 
@@ -557,7 +692,7 @@
                  tlines))
          (rows (append (list (header-line)) body (list (prompt-line)) (list (status-line))))
          (rows (fit-rows rows *rows*))
-         (rows (if (overlay-active?) (overlay-center rows (mcp-modal-rows)) rows)))
+         (rows (if (overlay-active?) (overlay-center rows (overlay-rows)) rows)))
     ;; Normalize to exactly *rows* padded strings.
     (map (lambda (s) (pad-to s *cols*)) rows)))
 
@@ -675,8 +810,64 @@
       (await pump)   ;; drain the remaining buffer at the typewriter pace
       (set! *turn* #f)
       (set! *busy* #f)
-      (when result (set! *messages* (:messages result)))
+      (when result (set! *messages* (:messages result)) (persist-session!))
       (render!))))
+
+;; ── Session persistence + restore ────────────────────────────────────────────
+;; Every turn writes the whole conversation to <config>/sessions/<id>.jsonl (the
+;; exact agent/run :messages shape), so /resume can reload it and continue.
+
+(defun new-session! ()
+  (set! *session-id* (number->string (time-ms)))
+  (set! *session-created* (time-ms)))
+
+(defun persist-session! ()
+  (when *session-id*
+    (try (save-session! *session-id* *session-created* (effective-model) *messages*)
+      (catch e nil))))
+
+(defun tool-results-index (messages)
+  "tool-call-id → result content, gathered from the tool-role messages."
+  (foldl (lambda (idx m)
+           (if (= (get m :role "") "tool")
+             (assoc idx (get m :tool-call-id "") (get m :content ""))
+             idx))
+         {} messages))
+
+(defun message->blocks (m idx)
+  "One stored message → transcript blocks. Tool-role messages are folded into
+   the assistant tool-call blocks (via IDX), so they emit nothing themselves."
+  (let ((role (get m :role "")))
+    (cond
+      ((= role "user") (list {:kind :user :text (get m :content "")}))
+      ((= role "assistant")
+        (append
+          (if (= (string/trim (get m :content "")) "") '()
+            (list {:kind :assistant :text (get m :content "")}))
+          (map (lambda (tc)
+                 (let ((a (get tc :arguments {})))
+                   {:kind :tool :tool (get tc :name "")
+                    :arg (tool-arg (get tc :name "") (if (map? a) a {}))
+                    :state :done :ms 0
+                    :result (get idx (get tc :id "") "") :error #f}))
+               (get m :tool-calls '()))))
+      (else '()))))
+
+(defun messages->blocks (messages)
+  "Rebuild the transcript from stored MESSAGES for a resumed session."
+  (let ((idx (tool-results-index messages)))
+    (apply append (map (lambda (m) (message->blocks m idx)) messages))))
+
+(defun restore-session! (id)
+  (let* ((s (load-session id)) (msgs (:messages s)))
+    (set! *messages* msgs)
+    (set! *session-id* id)
+    (set! *session-created* (get (:meta s) :created (time-ms)))
+    (clear-transcript!)
+    (for-each add-block! (messages->blocks msgs))
+    (add-block! {:kind :info :text (format "resumed “~a” · ~a messages"
+                                     (get (:meta s) :title id) (length msgs))})
+    (set! *scroll* 0)))
 
 ;; ── Commands (dispatched through the shared registry) ────────────────────────
 ;; The TUI parameterizes the emit sink so registry handlers — including any
@@ -763,6 +954,7 @@
       ((equal? action :quit)       (unless *busy* (set! *should-quit* #t)))
       ((equal? action :palette)    (set! *input* "/") (set! *cursor* 1) (set! *psel* 0))
       ((equal? action :mcp)        (open-mcp-modal!))
+      ((equal? action :resume)     (open-resume-modal!))
       ((equal? action :clear-line) (clear-input!))
       ((equal? action :line-start) (set! *cursor* 0))
       ((equal? action :line-end)   (set! *cursor* (string-length *input*)))
@@ -872,6 +1064,7 @@
 (defun tui-run (cwd model cfg agent)
   (set! *cwd* cwd) (set! *model* model) (set! *config* cfg) (set! *agent* agent)
   (set! *tui-active* #t)
+  (new-session!)
   (recompute-size!)
   (sys/on-signal :winch (lambda () (set! *resize-pending* #t)))
   ;; The guards restore raw mode, the alt screen, the cursor, and mouse reporting
@@ -882,8 +1075,8 @@
       (term/with-mouse
         (term/set-title "(sema) coder")
         (add-block! {:kind :info :text (format "(sema) coder — ~a · ~a" cwd (if (= model "") "auto" model))})
-        (add-block! {:kind :info :text (format "type / for commands · ~a MCP · ~a palette · ~a quit"
-                                         (key-hint :mcp) (key-hint :palette) (key-hint :quit))})
+        (add-block! {:kind :info :text (format "type / for commands · ~a MCP · ~a resume · ~a palette · ~a quit"
+                                         (key-hint :mcp) (key-hint :resume) (key-hint :palette) (key-hint :quit))})
         (let ((na (mcp-needs-auth)))
           (unless (null? na)
             (add-block! {:kind :warn :text (format "~a MCP server(s) need auth: ~a — ~a to sign in"
