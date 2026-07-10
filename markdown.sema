@@ -92,17 +92,24 @@
           (else :left))))
 
 (defun pad-cell (text w align)
-  (let ((pad (max 0 (- w (string/width text)))))
-    (cond ((equal? align :right)  (string-append (md-spaces pad) text))
-          ((equal? align :center) (let ((l (quotient pad 2)))
-                                    (string-append (md-spaces l) text (md-spaces (- pad l)))))
-          (else                   (string-append text (md-spaces pad))))))
+  ;; Truncate an over-wide cell to the column width (ANSI-safe) so it can never
+  ;; overflow into the next column; otherwise pad per the column's alignment.
+  (if (> (string/width text) w)
+    (clip-styled text w)
+    (let ((pad (max 0 (- w (string/width text)))))
+      (cond ((equal? align :right)  (string-append (md-spaces pad) text))
+            ((equal? align :center) (let ((l (quotient pad 2)))
+                                      (string-append (md-spaces l) text (md-spaces (- pad l)))))
+            (else                   (string-append text (md-spaces pad)))))))
+
+(define MD-MAX-COL 60)   ;; a single very-long cell can't blow the table out past this
 
 (defun col-widths (rows ncol)
   (let loop ((i 0) (out '()))
     (if (>= i ncol) (reverse out)
       (loop (+ i 1)
-            (cons (foldl (lambda (a r) (max a (string/width (md-clip (nth-or r i "") 40)))) 1 rows)
+            (cons (min MD-MAX-COL
+                       (foldl (lambda (a r) (max a (string/width (nth-or r i "")))) 1 rows))
                   out)))))
 
 (defun render-table-row (cells widths aligns styler)

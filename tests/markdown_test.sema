@@ -47,4 +47,13 @@
 (check-true "emoji table"  (> (length (md-lines "| A | B |\n|---|---|\n| ✅ x | **y** ⚠️ |" 40)) 2))
 (check "cjk inline"        (term/strip (md-inline "**日本語** text")) "日本語 text")
 
+;; ── column alignment: every row renders to the same width (no overflow) ──
+(let ((ws (map string/width
+                (md-lines (string-append
+                            "| ID | Name | Desc |\n|----|------|------|\n"
+                            "| 1 | Alice | short |\n"
+                            "| 2 | Björn Ångström | a very long description that definitely exceeds the sixty character column cap for sure |\n"
+                            "| 3 | 李明 | 短い |") 200))))
+  (check-true "rows equal width" (null? (filter (lambda (w) (not (= w (car ws)))) ws))))
+
 (done)
