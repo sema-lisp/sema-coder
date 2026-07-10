@@ -62,17 +62,19 @@
     (define cfg   (boot-config!))    ;; ensure + load init.sema, reconcile commands
     (define cwd   (sys/cwd))
     (define model (:model cli))
-    (define agent (create-agent cwd model cfg))
+    ;; NB: not `agent` — that would shadow the (agent {…}) builtin constructor
+    ;; create-agent calls, breaking every later rebuild (/model, /reload).
+    (define agent-inst (create-agent cwd model cfg))
 
     ;; One-shot mode — prose to stdout, nothing else.
     (when (:prompt cli)
-      (let ((result (run-turn agent (:prompt cli) '() on-tool-call)))
+      (let ((result (run-turn agent-inst (:prompt cli) '() on-tool-call)))
         (println (:response result))
         (exit 0)))
 
     ;; Interactive, on a TTY → the full-screen TUI.
     (when (sys/tty)
-      (tui-run cwd model cfg agent)
+      (tui-run cwd model cfg agent-inst)
       (exit 0))
 
     ;; Not a TTY (piped/dumb terminal) → the plain line-based REPL below.
@@ -80,7 +82,7 @@
     (show-welcome cwd model)
 
     (define state
-      {:messages '() :model model :cwd cwd :agent agent :config cfg})
+      {:messages '() :model model :cwd cwd :agent agent-inst :config cfg})
 
     (defun handle-input (input)
       (cond

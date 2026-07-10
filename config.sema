@@ -11,7 +11,9 @@
 ;; A parameter so tests (and a future --config flag) can redirect the dir.
 (define config-dir-override (make-parameter #f))
 (defun config-dir ()
-  (or (config-dir-override) (path/join (sys/config-dir) "sema" "sema-code")))
+  (or (config-dir-override)
+      (let ((e (env "SEMA_CODER_CONFIG_DIR"))) (if (and e (not (= e ""))) e #f))
+      (path/join (sys/config-dir) "sema" "sema-code")))
 (defun config-path () (path/join (config-dir) "init.sema"))
 
 (define default-config

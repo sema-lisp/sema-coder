@@ -44,6 +44,9 @@
 (define *interrupt* #f)     ;; the user asked to cancel the current turn
 (define *should-quit* #f)
 (define *last-frame* '())   ;; previous frame's rows, for diffing
+(define *config-watcher* #f)  ;; fs/watch handle on the config dir
+(define *config-error* #f)    ;; string while the last reload failed (persistent banner)
+(define *reload-at* 0)        ;; debounce: reload once the change settles (0 = idle)
 
 ;; The key loop must read the quit flag through a function call: a direct
 ;; global read inside a recursive loop in a `load`ed unit never observes a
@@ -267,6 +270,10 @@
                           (if (>= k 1000) "1.0M" (format "~ak" k))))
         (else           (number->string n))))
 
+(defun effective-model ()
+  "The session override if set, else the config's model (so a reload shows)."
+  (if (not (= *model* "")) *model* (get *config* :model "")))
+
 (defun header-line ()
   ;; Token counts come from llm/session-usage — the cumulative sum across every
   ;; provider round (llm/last-usage would report only a turn's final round).
@@ -274,7 +281,7 @@
          (cost  (get u :cost-usd 0.0))
          (right (muted (string/join
                          (append
-                           (list (if (= *model* "") "auto" *model*)
+                           (list (let ((m (effective-model))) (if (= m "") "auto" m))
                                  (format "↑~a ↓~a"
                                    (fmt-count (get u :prompt-tokens 0))
                                    (fmt-count (get u :completion-tokens 0))))
@@ -290,12 +297,13 @@
 (defun spinner-frame () (nth spinner-frames (mod (quotient (time-ms) 80) 10)))
 
 (defun status-line ()
-  ;; Deliberately minimal: a spinner while a turn is in flight, a scroll
-  ;; indicator when the user is off the tail, otherwise nothing.
-  (indent (faint (cond
-    (*busy*          (string-append (spinner-frame) " thinking · ctrl-c interrupts"))
-    ((> *scroll* 0)  (format "↕ scrolled +~a" *scroll*))
-    (else            "")))))
+  ;; A persistent config-error banner (until the next clean reload), else a
+  ;; spinner while a turn runs, else a scroll indicator, else nothing.
+  (indent (cond
+    (*config-error* (bad "⚠ config error — using last good (fix init.sema)"))
+    (*busy*         (faint (string-append (spinner-frame) " thinking · ctrl-c interrupts")))
+    ((> *scroll* 0) (faint (format "↕ scrolled +~a" *scroll*)))
+    (else           ""))))
 
 (defun prompt-view ()
   "Window the input so the caret is always visible (input starts at column 4).
@@ -583,6 +591,42 @@
   (sys/check-signals)
   (when *resize-pending* (recompute-size!) (full-repaint!)))
 
+;; ── Config hot-reload (watch the dir, debounce, reconcile) ────────────────────
+;; Watch the config *directory* (basename-filter init.sema) so atomic-rename
+;; saves are caught cross-platform, and debounce the event burst a save fires.
+
+(defun start-config-watch! ()
+  (set! *config-watcher* (try (fs/watch (config-dir) {}) (catch e #f))))
+
+(defun config-touched? ()
+  (if (not *config-watcher*) #f
+    (let ((evs (try (fs/watch-events *config-watcher*) (catch e '()))))
+      (any (lambda (ev)
+             (any (lambda (p) (string/ends-with? p "init.sema")) (get ev :paths '())))
+           evs))))
+
+(defun reload-config! ()
+  (ensure-config!)
+  (let ((r (load-config (config-path))))
+    (if (:ok r)
+      (let ((cfg (:ok r)))
+        (set! *config-error* #f)
+        (reconcile-commands! (:commands cfg))
+        (set! *config* cfg)
+        (set! *agent* (create-agent *cwd* *model* cfg))
+        (add-block! {:kind :ok :text (format "config reloaded · model → ~a"
+                                        (if (= (:model cfg) "") "auto" (:model cfg)))}))
+      (set! *config-error* (format "~a" (:error r)))))
+  (render!))
+
+(defun poll-config! ()
+  ;; A save fires a burst (create + several modifies) and can be mid-write, so
+  ;; arm a deadline on any touch and reload only once it settles.
+  (when (config-touched?) (set! *reload-at* (+ (time-ms) 150)))
+  (when (and (> *reload-at* 0) (>= (time-ms) *reload-at*))
+    (set! *reload-at* 0)
+    (reload-config!)))
+
 ;; ── Entry point ──────────────────────────────────────────────────────────────
 
 (defun tui-run (cwd model cfg agent)
@@ -598,9 +642,11 @@
         (term/set-title "(sema) coder")
         (add-block! {:kind :info :text (format "(sema) coder — ~a · ~a" cwd (if (= model "") "auto" model))})
         (add-block! {:kind :info :text "type / for commands, ⌃K for the palette, ⌃D to quit"})
+        (start-config-watch!)
         (full-repaint!)
         (let loop ()
           (check-resize!)
+          (poll-config!)
           (let ((k (io/read-key-timeout 250)))
             (when k (handle-key k) (render!)))
           (unless (should-quit?) (loop))))))
