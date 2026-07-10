@@ -1,0 +1,24 @@
+(load "harness.sema")
+(load "../config.sema")
+
+;; Point the config dir at a temp location, generate the default, and confirm
+;; it round-trips through the pure loader with the sema autostart server present.
+(define d "/tmp/sc-cfg-default-test")
+(shell "rm" "-rf" d)
+
+(parameterize ((config-dir-override d))
+  (check "path under override" (config-path) (path/join d "init.sema"))
+  (check-true "not there yet" (not (file/exists? (config-path))))
+  (ensure-config!)
+  (check-true "file created" (file/exists? (config-path)))
+  ;; idempotent: a second call doesn't clobber
+  (ensure-config!)
+  (let ((r (load-config (config-path))))
+    (check-true "default loads ok" (:ok r))
+    (let ((srv (car (:mcp-servers (:ok r)))))
+      (check "first server is sema" (:name srv) "sema")
+      (check "sema autostarts" (:autostart srv) #t)
+      (check "sema is stdio" (:transport srv) "stdio"))
+    (check "has the test command" (:name (car (:commands (:ok r)))) "test")))
+
+(done)

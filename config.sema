@@ -8,7 +8,10 @@
 
 (load "util.sema")
 
-(defun config-dir ()  (path/join (sys/config-dir) "sema" "sema-code"))
+;; A parameter so tests (and a future --config flag) can redirect the dir.
+(define config-dir-override (make-parameter #f))
+(defun config-dir ()
+  (or (config-dir-override) (path/join (sys/config-dir) "sema" "sema-code")))
 (defun config-path () (path/join (config-dir) "init.sema"))
 
 (define default-config
@@ -53,3 +56,41 @@
         {:ok *pending-config*}
         {:error "init.sema did not call (configure! …)"}))
     (catch e {:error e})))
+
+;; ── First-run default (annotated so humans + agents copy correct syntax) ──
+
+(define default-init-source
+";; init.sema — Sema Coder config (Lisp data, hot-reloaded on save).
+;; Edit in any editor; declarations are values the app reconciles to.
+
+(configure!
+  (coder-config
+    {:model      \"\"                 ; \"\" = auto-detect from API keys; or \"claude-sonnet-5\"
+     :max-turns  50
+
+     ;; ── MCP servers — manage in the /mcp modal (⌃O). Each is a value. ──
+     :mcp-servers
+     (list
+       ;; Sema's own MCP server: gives the agent eval + docs into Sema itself.
+       ;; On by default — comment out this line to disable it.
+       (mcp-server \"sema\" {:command \"sema\" :args [\"mcp\" \"--include\" \"eval,docs,docs_search\"]
+                           :autostart #t})
+       ;; (mcp-server \"fs\"    {:command \"npx\" :args [\"-y\" \"@modelcontextprotocol/server-filesystem\" \".\"]})
+       ;; (mcp-server \"asana\" {:url \"https://mcp.asana.com/mcp\"})   ; OAuth when you connect
+       )   ; only add servers you trust — they run real commands / reach real services
+
+     ;; ── Slash commands — argv (no shell), or a Lisp handler. ──
+     :commands
+     (list
+       (command \"test\" {:desc \"run tests\" :run [\"make\" \"test\"]})
+       ;; (command \"log\" {:desc \"git log\" :run [\"git\" \"log\" \"--oneline\" \"-n\" :args]})
+       )}))
+")
+
+(defun ensure-config! ()
+  "Write the annotated default init.sema if none exists. Returns the path."
+  (let ((path (config-path)))
+    (unless (file/exists? path)
+      (file/mkdir (config-dir))
+      (file/write path default-init-source))
+    path))
