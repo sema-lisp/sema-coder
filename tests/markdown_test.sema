@@ -1,0 +1,19 @@
+(load "harness.sema")
+(load "../markdown.sema")
+
+(defun plain (lines) (map term/strip lines))
+
+(check "heading text"   (plain (md-lines "# Title" 40)) (list "Title"))
+(check "bold plain"     (plain (md-lines "a **b** c" 40)) (list "a b c"))
+(check-true "bold styled" (not (= (car (md-lines "**b**" 40)) "b")))
+(check "code plain"     (plain (md-lines "run `foo` now" 40)) (list "run foo now"))
+(check "bullet"         (plain (md-lines "- item" 40)) (list "• item"))
+(check "ordered"        (plain (md-lines "1. first" 40)) (list "1. first"))
+(check "quote"          (plain (md-lines "> quoted" 40)) (list "▏ quoted"))
+(check "code fence"     (plain (md-lines "```\ncode line\n```" 40)) (list "│ code line"))
+(check "open fence"     (plain (md-lines "```\nx = 1" 40)) (list "│ x = 1"))
+(check "blank kept"     (plain (md-lines "a\n\nb" 40)) (list "a" "" "b"))
+(check-true "wraps"     (> (length (md-lines "word word word word word word word word" 18)) 1))
+(check-true "link text" (string/contains? (car (plain (md-lines "see [docs](http://x)" 40))) "docs"))
+
+(done)

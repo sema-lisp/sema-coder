@@ -18,6 +18,7 @@
 ;; stream in) and Ctrl-C cancels the turn task cleanly via async/cancel.
 
 (load "commands.sema")   ;; brings in theme, config, agent, tools, display, util
+(load "markdown.sema")   ;; assistant-message rendering
 
 ;; ── Terminal control as strings (emitted through one stream) ─────────────────
 
@@ -27,6 +28,7 @@
 (define SHOW-CURSOR (string-append ESC "[?25h" ESC "[6 q"))  ;; show + steady bar (no blink)
 (define HIDE-CURSOR (string-append ESC "[?25l"))
 (define RESET-CURSOR (string-append ESC "[0 q"))            ;; restore terminal default on exit
+(define RESET-SGR (string-append ESC "[0m"))               ;; close any open color/style
 
 ;; ── Keymap — global shortcuts, rebindable via (coder-config {:keys {…}}) ──
 
@@ -128,9 +130,13 @@
 ;; ── Small helpers ────────────────────────────────────────────────────────────
 
 (defun pad-to (s w)
-  "Pad a (possibly styled) string with spaces to visible width W (no truncation)."
+  "Pad a (possibly styled) string to visible width W, resetting SGR before the
+   padding so an unclosed style (e.g. markdown crossing a wrap) can't bleed into
+   the padding or the next row."
   (let ((n (string/width s)))
-    (if (< n w) (string-append s (string/repeat " " (- w n))) s)))
+    (if (< n w)
+      (string-append s RESET-SGR (string/repeat " " (- w n)))
+      (string-append s RESET-SGR))))
 
 (defun clamp-plain (s w)
   "Truncate PLAIN text to width W, adding an ellipsis when cut."
@@ -192,11 +198,10 @@
              (enumerate (wrap-text (:text b) (- w 2))))
         (list "")))
     ((kind? b :assistant)
-      ;; Prose — reflow to the content width. An empty assistant block (the
-      ;; pre-first-token streaming target, or a post-tool round with no text)
-      ;; renders nothing.
+      ;; Markdown-rendered. An empty assistant block (the pre-first-token
+      ;; streaming target, or a post-tool round with no text) renders nothing.
       (if (= (string/trim (:text b)) "") '()
-        (append (map indent (wrap-text (:text b) w)) (list ""))))
+        (append (map indent (md-lines (:text b) w)) (list ""))))
     ((kind? b :raw)
       ;; Preformatted output (command stdout, pretty JSON): preserve internal
       ;; whitespace — split on newlines only, clip each line to width instead of

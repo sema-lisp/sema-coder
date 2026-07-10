@@ -1,0 +1,85 @@
+;; markdown.sema — tolerant CommonMark-subset → styled terminal lines.
+;;
+;; (md-lines text width) → a list of styled lines, each fitting WIDTH. Prose is
+;; word-wrapped and inline-styled; fenced code is preserved verbatim behind a
+;; gutter (an unterminated fence, common mid-stream, keeps rendering as code).
+
+(load "theme.sema")
+
+(defun md-clip (s w)
+  "Truncate plain S to display width W (no ellipsis)."
+  (if (<= (string/width s) w) s
+    (let loop ((i 0) (acc 0))
+      (if (>= i (string-length s)) s
+        (let ((cw (string/width (string/slice s i (+ i 1)))))
+          (if (> (+ acc cw) w) (string/slice s 0 i) (loop (+ i 1) (+ acc cw))))))))
+
+;; ── Inline styling ───────────────────────────────────────────────
+;; Each pass rewrites one construct; styled spans carry ANSI (no markup chars),
+;; so later passes don't re-match them. Order: links, code, bold, italic.
+
+(defun md-replace-all (text pattern style-fn)
+  (let loop ((s text) (out ""))
+    (let ((m (regex/match pattern s)))
+      (if (not m)
+        (string-append out s)
+        (loop (string/slice s (:end m) (string-length s))
+              (string-append out
+                             (string/slice s 0 (:start m))
+                             (style-fn (nth (:groups m) 0))))))))
+
+(defun md-code-span (s) (muted s))
+
+(defun md-inline (text)
+  (-> text
+      (md-replace-all #"\[([^\]]+)\]\([^)]*\)" bright)   ;; [text](url) → text
+      (md-replace-all #"`([^`]+)`"            md-code-span)
+      (md-replace-all #"\*\*([^*]+)\*\*"      bright)     ;; **bold**
+      (md-replace-all #"__([^_]+)__"          bright)     ;; __bold__
+      (md-replace-all #"\*([^*]+)\*"          term/italic))) ;; *italic*
+
+;; ── Block constructs ─────────────────────────────────────────────
+
+(defun md-fence? (line)
+  (let ((t (string/trim-left line)))
+    (or (string/starts-with? t "```") (string/starts-with? t "~~~"))))
+
+(defun md-code-line (line width)
+  (string-append (faint "│ ") (muted (md-clip line (max 0 (- width 2))))))
+
+(defun wrap-hang (prefix text width indent)
+  "First line = PREFIX + wrapped text; continuations get INDENT."
+  (let ((wrapped (string/word-wrap text (max 4 (- width (string/width prefix))))))
+    (if (null? wrapped) (list prefix)
+      (cons (string-append prefix (car wrapped))
+            (map (lambda (l) (string-append indent l)) (cdr wrapped))))))
+
+(defun md-render-line (line width)
+  "Render one non-code markdown line to a list of styled, wrapped lines."
+  (cond
+    ((= (string/trim line) "") (list ""))
+    ((regex/match #"^(#{1,6})\s+(.+)$" line)
+      (let ((m (regex/match #"^(#{1,6})\s+(.+)$" line)))
+        (list (heading (nth (:groups m) 1)))))
+    ((regex/match #"^>\s?(.*)$" line)
+      (let ((m (regex/match #"^>\s?(.*)$" line)))
+        (map (lambda (l) (string-append (faint "▏ ") l))
+             (string/word-wrap (md-inline (nth (:groups m) 0)) (max 4 (- width 2))))))
+    ((regex/match #"^(\s*)[-*+]\s+(.+)$" line)
+      (let ((m (regex/match #"^(\s*)[-*+]\s+(.+)$" line)))
+        (wrap-hang (accent "• ") (md-inline (nth (:groups m) 1)) width "  ")))
+    ((regex/match #"^(\s*)(\d+)[.)]\s+(.+)$" line)
+      (let* ((m (regex/match #"^(\s*)(\d+)[.)]\s+(.+)$" line))
+             (num (nth (:groups m) 1)))
+        (wrap-hang (accent (string-append num ". ")) (md-inline (nth (:groups m) 2)) width "   ")))
+    (else (string/word-wrap (md-inline line) width))))
+
+(defun md-lines (text width)
+  "Render markdown TEXT to a list of styled lines fitting WIDTH."
+  (let loop ((lines (string/split text "\n")) (out '()) (code #f))
+    (if (null? lines) out
+      (let ((line (car lines)))
+        (cond
+          ((md-fence? line) (loop (cdr lines) out (not code)))
+          (code             (loop (cdr lines) (append out (list (md-code-line line width))) code))
+          (else             (loop (cdr lines) (append out (md-render-line line width)) code)))))))
