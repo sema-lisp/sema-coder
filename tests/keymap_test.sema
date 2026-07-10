@@ -1,0 +1,21 @@
+(load "harness.sema")
+(load "../tui.sema")
+
+;; defaults
+(set! *config* {})
+(check "default mcp"        (key-for :mcp) "ctrl-o")
+(check "default hint"       (key-hint :mcp) "⌃O")
+(check "action lookup"      (keymap-action "ctrl-o") :mcp)
+(check "ctrl-char"          (action-ctrl-char :mcp) "o")
+(check "palette hint"       (key-hint :palette) "⌃K")
+
+;; override via config :keys
+(set! *config* {:keys {:mcp "ctrl-p"}})
+(check "rebound key"        (key-for :mcp) "ctrl-p")
+(check "rebound hint"       (key-hint :mcp) "⌃P")
+(check "rebound lookup"     (keymap-action "ctrl-p") :mcp)
+(check "old binding gone"   (keymap-action "ctrl-o") #f)
+(check "others unaffected"  (key-hint :quit) "⌃D")
+
+(set! *config* {})
+(done)

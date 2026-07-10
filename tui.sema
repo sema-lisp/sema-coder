@@ -28,6 +28,42 @@
 (define HIDE-CURSOR (string-append ESC "[?25l"))
 (define RESET-CURSOR (string-append ESC "[0 q"))            ;; restore terminal default on exit
 
+;; ── Keymap — global shortcuts, rebindable via (coder-config {:keys {…}}) ──
+
+(define default-keymap
+  {:mcp        "ctrl-o"
+   :palette    "ctrl-k"
+   :quit       "ctrl-d"
+   :interrupt  "ctrl-c"
+   :clear-line "ctrl-u"
+   :line-start "ctrl-a"
+   :line-end   "ctrl-e"
+   :repaint    "ctrl-l"})
+
+(defun active-keymap () (merge default-keymap (get *config* :keys {})))
+
+(defun keymap-action (keystr)
+  "Which action is bound to KEYSTR (e.g. \"ctrl-o\"), or #f."
+  (let ((km (active-keymap)))
+    (let loop ((ks (keys km)))
+      (cond ((null? ks) #f)
+            ((= (get km (car ks)) keystr) (car ks))
+            (else (loop (cdr ks)))))))
+
+(defun key-for (action) (get (active-keymap) action ""))
+
+(defun action-ctrl-char (action)
+  "The letter of ACTION's ctrl binding (\"o\" for \"ctrl-o\"), or \"\"."
+  (let ((k (key-for action)))
+    (if (string/starts-with? k "ctrl-") (string/slice k 5 (string-length k)) "")))
+
+(defun key-hint (action)
+  "Display form of ACTION's binding, e.g. :mcp → \"⌃O\"."
+  (let ((k (key-for action)))
+    (if (string/starts-with? k "ctrl-")
+      (string-append "⌃" (string/upper (string/slice k 5 (string-length k))))
+      k)))
+
 ;; ── Mutable UI state ─────────────────────────────────────────────────────────
 
 (define *rows* 24)
@@ -379,7 +415,7 @@
     (cond
       ((key-name= k :up)     (overlay-merge! {:sel (max 0 (- (:sel *overlay*) 1))}))
       ((key-name= k :down)   (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel *overlay*) 1))}))
-      ((or (key-name= k :esc) (key-ctrl= k "o")) (close-overlay!))
+      ((or (key-name= k :esc) (key-ctrl= k (action-ctrl-char :mcp))) (close-overlay!))
       ((or (key-char= k "c") (key-char= k "r")) (mcp-connect-selected!))
       ((key-char= k "d")     (mcp-disconnect-selected!))
       ((or (key-char= k "t") (key-name= k :enter)) (overlay-merge! {:view :tools :tsel 0}))
@@ -671,20 +707,21 @@
           (run-agent-turn! text))))))
 
 (defun handle-ctrl (ch)
-  (cond
-    ((= ch "c")
-      (cond
-        (*busy* (set! *interrupt* #t) (when *turn* (async/cancel *turn*)))
-        ((> (string-length *input*) 0) (clear-input!))
-        (else (set! *should-quit* #t))))
-    ((= ch "d") (unless *busy* (set! *should-quit* #t)))
-    ((= ch "k") (set! *input* "/") (set! *cursor* 1) (set! *psel* 0))
-    ((= ch "u") (clear-input!))
-    ((= ch "a") (set! *cursor* 0))
-    ((= ch "e") (set! *cursor* (string-length *input*)))
-    ((= ch "l") (full-repaint!))
-    ((= ch "o") (open-mcp-modal!))
-    (else nil)))
+  (let ((action (keymap-action (string-append "ctrl-" ch))))
+    (cond
+      ((equal? action :interrupt)
+        (cond
+          (*busy* (set! *interrupt* #t) (when *turn* (async/cancel *turn*)))
+          ((> (string-length *input*) 0) (clear-input!))
+          (else (set! *should-quit* #t))))
+      ((equal? action :quit)       (unless *busy* (set! *should-quit* #t)))
+      ((equal? action :palette)    (set! *input* "/") (set! *cursor* 1) (set! *psel* 0))
+      ((equal? action :mcp)        (open-mcp-modal!))
+      ((equal? action :clear-line) (clear-input!))
+      ((equal? action :line-start) (set! *cursor* 0))
+      ((equal? action :line-end)   (set! *cursor* (string-length *input*)))
+      ((equal? action :repaint)    (full-repaint!))
+      (else nil))))
 
 (defun handle-named (name)
   (cond
@@ -799,7 +836,8 @@
       (term/with-mouse
         (term/set-title "(sema) coder")
         (add-block! {:kind :info :text (format "(sema) coder — ~a · ~a" cwd (if (= model "") "auto" model))})
-        (add-block! {:kind :info :text "type / for commands, ⌃K for the palette, ⌃D to quit"})
+        (add-block! {:kind :info :text (format "type / for commands · ~a MCP · ~a palette · ~a quit"
+                                         (key-hint :mcp) (key-hint :palette) (key-hint :quit))})
         (start-config-watch!)
         (full-repaint!)
         (let loop ()

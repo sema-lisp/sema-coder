@@ -21,7 +21,8 @@
    :max-turns      50
    :context-budget 80000
    :mcp-servers    '()
-   :commands       '()})
+   :commands       '()
+   :keys           {}})    ;; action → key overrides (e.g. {:mcp "ctrl-p"})
 
 ;; ── Constructors: return values, never mutate ────────────────────
 
@@ -86,7 +87,12 @@
      (list
        (command \"test\" {:desc \"run tests\" :run [\"make\" \"test\"]})
        ;; (command \"log\" {:desc \"git log\" :run [\"git\" \"log\" \"--oneline\" \"-n\" :args]})
-       )}))
+       )
+
+     ;; ── Keybindings — rebind any action (defaults shown). ──
+     ;; actions: :mcp :palette :quit :interrupt :clear-line :line-start :line-end :repaint
+     :keys {}   ;; e.g. {:mcp \"ctrl-p\" :palette \"ctrl-space\"}
+     }))
 ")
 
 (defun ensure-config! ()
