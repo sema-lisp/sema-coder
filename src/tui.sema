@@ -364,38 +364,6 @@
     (try (save-session! *session-id* *session-created* (effective-model) *messages*)
       (catch e nil))))
 
-(defun tool-results-index (messages)
-  "tool-call-id → result content, gathered from the tool-role messages."
-  (foldl (lambda (idx m)
-           (if (= (get m :role "") "tool")
-             (assoc idx (get m :tool-call-id "") (get m :content ""))
-             idx))
-         {} messages))
-
-(defun message->blocks (m idx)
-  "One stored message → transcript blocks. Tool-role messages are folded into
-   the assistant tool-call blocks (via IDX), so they emit nothing themselves."
-  (let ((role (get m :role "")))
-    (cond
-      ((= role "user") (list {:kind :user :text (get m :content "")}))
-      ((= role "assistant")
-        (append
-          (if (= (string/trim (get m :content "")) "") '()
-            (list {:kind :assistant :text (get m :content "")}))
-          (map (lambda (tc)
-                 (let ((a (get tc :arguments {})))
-                   {:kind :tool :tool (get tc :name "")
-                    :arg (tool-arg (get tc :name "") (if (map? a) a {}))
-                    :state :done :ms 0
-                    :result (get idx (get tc :id "") "") :error #f}))
-               (get m :tool-calls '()))))
-      (else '()))))
-
-(defun messages->blocks (messages)
-  "Rebuild the transcript from stored MESSAGES for a resumed session."
-  (let ((idx (tool-results-index messages)))
-    (apply append (map #(message->blocks % idx) messages))))
-
 (defun restore-session! (id)
   (let (({:keys [meta messages]} (load-session id)))
     (set! *messages* messages)

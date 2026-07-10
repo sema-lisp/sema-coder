@@ -5,7 +5,8 @@
 ;; with tool-calls and tool results — so a restored session resumes verbatim).
 
 (load "config.sema")
-(load "text.sema")   ;; truncate-str for session titles
+(load "text.sema")      ;; truncate-str for session titles
+(load "display.sema")   ;; tool-arg for rebuilding tool blocks
 
 (defun sessions-dir () (path/join (config-dir) "sessions"))
 (defun session-path (id) (path/join (sessions-dir) (string/append id ".jsonl")))
@@ -50,3 +51,36 @@
   (let ((lines (read-lines (session-path id))))
     {:meta (json/decode (car lines))
      :messages (map json/decode (cdr lines))}))
+
+;; ── Stored messages → transcript blocks (pure; the TUI renders them) ─────────
+
+(defun tool-results-index (messages)
+  "tool-call-id → result content, gathered from the tool-role messages."
+  (foldl (lambda (idx m)
+           (if (= (get m :role "") "tool")
+             (assoc idx (get m :tool-call-id "") (get m :content ""))
+             idx))
+         {} messages))
+
+(defun message->blocks (m idx)
+  "One stored message → transcript blocks. Tool-role messages are folded into
+   the assistant tool-call blocks (via IDX), so they emit nothing themselves."
+  (match (get m :role "")
+    ("user" (list {:kind :user :text (get m :content "")}))
+    ("assistant"
+      (append
+        (if (= (string/trim (get m :content "")) "") '()
+          (list {:kind :assistant :text (get m :content "")}))
+        (map (lambda (tc)
+               (let ((a (get tc :arguments {})))
+                 {:kind :tool :tool (get tc :name "")
+                  :arg (tool-arg (get tc :name "") (if (map? a) a {}))
+                  :state :done :ms 0
+                  :result (get idx (get tc :id "") "") :error #f}))
+             (get m :tool-calls '()))))
+    (_ '())))
+
+(defun messages->blocks (messages)
+  "Rebuild the transcript from stored MESSAGES for a resumed session."
+  (let ((idx (tool-results-index messages)))
+    (apply append (map #(message->blocks % idx) messages))))

@@ -104,11 +104,10 @@
   (let* ((inner (max 8 (- bw 4)))
          (srv (mcp-sel-server))
          (names (if (and srv (equal? (:status srv) :connected)) (map tool/name (:tools srv)) '()))
-         (tsel (:tsel *overlay*))
-         (shown (take (min 10 (length names)) (drop (max 0 (- tsel 9)) names)))
+         (win (window-list names (:tsel *overlay*) 10))
          (rows (if (null? names)
                  (list (box-row (muted "not connected — no tools") inner))
-                 (map #(box-row (string/append "  " (accent %)) inner) shown))))
+                 (map #(box-row (string/append "  " (accent %)) inner) (:items win)))))
     (append
       (list (box-top (string/append " " (if srv (:name srv) "?") " · tools ") bw))
       rows

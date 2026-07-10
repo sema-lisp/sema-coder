@@ -13,6 +13,7 @@
 ;; Users can ALSO define commands declaratively in init.sema without touching
 ;; this file — see the `:commands` list of (command name spec) records below.
 
+(load "util.sema")     ;; sh-quote (open-config!)
 (load "display.sema")
 (load "config.sema")
 (load "agent.sema")
