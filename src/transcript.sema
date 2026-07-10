@@ -12,32 +12,42 @@
 (load "markdown.sema")
 
 ;; ── Block storage + mutation ─────────────────────────────────────────────────
+;; All transcript state lives in one stable container, mutated in place and
+;; never rebound: rebinding a module global with set! can serve stale values
+;; to readers in other top-level forms. Slots: 0 blocks (mutable-array,
+;; oldest → newest) · 1 cached rendered lines · 2 cache width · 3 cache dirty.
 
-(define *transcript* (mutable-array/new 64))   ;; blocks, oldest → newest
+(define *tstate* (mutable-array/new 4 #f))
+(mutable-array/set! *tstate* 0 (mutable-array/new 64))
+(mutable-array/set! *tstate* 1 '())
+(mutable-array/set! *tstate* 2 -1)
+(mutable-array/set! *tstate* 3 #t)
 
-(define *tlines* '())
-(define *tlines-w* -1)
-(define *tlines-dirty* #t)
-(defun mark-tdirty! () (set! *tlines-dirty* #t))
+(defun tblocks () (mutable-array/get *tstate* 0))
+(defun mark-tdirty! () (mutable-array/set! *tstate* 3 #t))
 
-(defun add-block! (b) (mutable-array/push! *transcript* b) (mark-tdirty!))
+(defun add-block! (b) (mutable-array/push! (tblocks) b) (mark-tdirty!))
 
-(defun clear-transcript! () (set! *transcript* (mutable-array/new 64)) (mark-tdirty!))
+(defun clear-transcript! ()
+  (mutable-array/set! *tstate* 0 (mutable-array/new 64))
+  (mark-tdirty!))
 
-(defun transcript-blocks () (mutable-array/->vector *transcript*))
+(defun transcript-blocks () (mutable-array/->vector (tblocks)))
 
 (defun kind? (b k) (equal? (get b :kind :none) k))
 
 (defun update-last! (f)
-  (let ((n (mutable-array/length *transcript*)))
+  (let* ((blocks (tblocks))
+         (n (mutable-array/length blocks)))
     (when (> n 0)
-      (mutable-array/set! *transcript* (- n 1)
-        (f (mutable-array/get *transcript* (- n 1))))
+      (mutable-array/set! blocks (- n 1)
+        (f (mutable-array/get blocks (- n 1))))
       (mark-tdirty!))))
 
 (defun last-block ()
-  (let ((n (mutable-array/length *transcript*)))
-    (if (> n 0) (mutable-array/get *transcript* (- n 1)) #f)))
+  (let* ((blocks (tblocks))
+         (n (mutable-array/length blocks)))
+    (if (> n 0) (mutable-array/get blocks (- n 1)) #f)))
 
 (defun append-assistant! (delta)
   (let ((lb (last-block)))
@@ -125,10 +135,10 @@
     (_ '())))
 
 (defun transcript-lines (w)
-  (when (or *tlines-dirty* (not (= w *tlines-w*)))
-    (set! *tlines* (->> (transcript-blocks)
-                        (map #(block-lines % w))
-                        (apply append)))
-    (set! *tlines-w* w)
-    (set! *tlines-dirty* #f))
-  *tlines*)
+  (when (or (mutable-array/get *tstate* 3) (not (= w (mutable-array/get *tstate* 2))))
+    (mutable-array/set! *tstate* 1 (->> (transcript-blocks)
+                                        (map #(block-lines % w))
+                                        (apply append)))
+    (mutable-array/set! *tstate* 2 w)
+    (mutable-array/set! *tstate* 3 #f))
+  (mutable-array/get *tstate* 1))

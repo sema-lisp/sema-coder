@@ -3,8 +3,9 @@
 ;; renderers and their key handlers.
 ;;
 ;; Reads the TUI globals (*cols*, *agent*, …) defined in tui.sema — all load
-;; units share one global env, and every read here happens inside a function
-;; invoked per-frame, so cross-unit set!s are always observed.
+;; units share one global env. The overlay's own state lives in a stable
+;; container mutated in place, never rebound: rebinding a module global with
+;; set! can serve stale values to readers in other top-level forms.
 
 (load "theme.sema")
 (load "text.sema")
@@ -12,11 +13,14 @@
 (load "mcp.sema")
 (load "session.sema")
 
-(define *overlay* #f)   ;; #f | {:kind :mcp|:resume :view … :sel N …}
+(define *overlay-box* (mutable-array/new 1 #f))   ;; slot 0: #f | {:kind :mcp|:resume :view … :sel N …}
 
-(defun overlay-active? () (if *overlay* #t #f))
-(defun close-overlay! () (set! *overlay* #f))
-(defun overlay-merge! (m) (set! *overlay* (merge *overlay* m)))
+(defun overlay () (mutable-array/get *overlay-box* 0))
+(defun set-overlay! (v) (mutable-array/set! *overlay-box* 0 v))
+
+(defun overlay-active? () (if (overlay) #t #f))
+(defun close-overlay! () (set-overlay! #f))
+(defun overlay-merge! (m) (set-overlay! (merge (overlay) m)))
 
 ;; ── Bordered box helpers (clip content to the inner width, ANSI-safe) ──
 
@@ -50,10 +54,10 @@
 
 ;; ── MCP management modal ─────────────────────────────────────────────────────
 
-(defun open-mcp-modal! () (set! *overlay* {:kind :mcp :view :list :sel 0 :tsel 0}))
+(defun open-mcp-modal! () (set-overlay! {:kind :mcp :view :list :sel 0 :tsel 0}))
 
 (defun mcp-sel-server ()
-  (let ((v (mcp-records)) (i (:sel *overlay*)))
+  (let ((v (mcp-records)) (i (:sel (overlay))))
     (if (and (> (length v) 0) (< i (length v))) (nth v i) #f)))
 
 (defun rebuild-agent-with-mcp! ()
@@ -88,7 +92,7 @@
 (defun mcp-list-rows (bw)
   (let* ((inner (max 8 (- bw 4)))
          (servers (mcp-records))
-         (sel (:sel *overlay*))
+         (sel (:sel (overlay)))
          (rows (if (= (length servers) 0)
                  (list (box-row (muted "No MCP servers — add one in init.sema (press e)") inner))
                  (enumerate-map (lambda (i rec) (box-row (mcp-row-text rec (= i sel)) inner))
@@ -100,11 +104,16 @@
       (list (box-row (faint "↑↓ · c connect · d disconnect · t tools · e edit · Esc") inner))
       (list (box-bot bw)))))
 
+(defun mcp-sel-tools ()
+  "Tool names of the selected server, when connected."
+  (let ((srv (mcp-sel-server)))
+    (if (and srv (equal? (:status srv) :connected)) (map tool/name (:tools srv)) '())))
+
 (defun mcp-tools-rows (bw)
   (let* ((inner (max 8 (- bw 4)))
          (srv (mcp-sel-server))
-         (names (if (and srv (equal? (:status srv) :connected)) (map tool/name (:tools srv)) '()))
-         (win (window-list names (:tsel *overlay*) 10))
+         (names (mcp-sel-tools))
+         (win (window-list names (:tsel (overlay)) 10))
          (rows (if (null? names)
                  (list (box-row (muted "not connected — no tools") inner))
                  (map #(box-row (string/append "  " (accent %)) inner) (:items win)))))
@@ -117,7 +126,7 @@
 
 (defun mcp-modal-rows ()
   (let* ((bw  (min (max 40 (- *cols* 6)) 72))
-         (box (if (equal? (:view *overlay*) :tools) (mcp-tools-rows bw) (mcp-list-rows bw))))
+         (box (if (equal? (:view (overlay)) :tools) (mcp-tools-rows bw) (mcp-list-rows bw))))
     (map #(center-h % bw) box)))
 
 (defun mcp-connect-selected! ()
@@ -131,8 +140,8 @@
 (defun mcp-list-key (k)
   (let ((n (length (mcp-records))))
     (cond
-      ((key-name= k :up)     (overlay-merge! {:sel (max 0 (- (:sel *overlay*) 1))}))
-      ((key-name= k :down)   (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel *overlay*) 1))}))
+      ((key-name= k :up)     (overlay-merge! {:sel (max 0 (- (:sel (overlay)) 1))}))
+      ((key-name= k :down)   (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel (overlay)) 1))}))
       ((or (key-name= k :esc) (key-ctrl= k (action-ctrl-char :mcp))) (close-overlay!))
       ((or (key-char= k "c") (key-char= k "r")) (mcp-connect-selected!))
       ((key-char= k "d")     (mcp-disconnect-selected!))
@@ -145,17 +154,18 @@
 (defun mcp-tools-key (k)
   (cond
     ((key-name= k :esc)  (overlay-merge! {:view :list}))
-    ((key-name= k :up)   (overlay-merge! {:tsel (max 0 (- (:tsel *overlay*) 1))}))
-    ((key-name= k :down) (overlay-merge! {:tsel (+ (:tsel *overlay*) 1)}))
+    ((key-name= k :up)   (overlay-merge! {:tsel (max 0 (- (:tsel (overlay)) 1))}))
+    ((key-name= k :down) (overlay-merge! {:tsel (min (max 0 (- (length (mcp-sel-tools)) 1))
+                                                     (+ (:tsel (overlay)) 1))}))
     (else nil)))
 
 ;; ── Resume modal (session history) ───────────────────────────────────────────
 
 (defun open-resume-modal! ()
-  (set! *overlay* {:kind :resume :view :list :sel 0 :dscroll 0 :sessions (list-sessions)}))
+  (set-overlay! {:kind :resume :view :list :sel 0 :dscroll 0 :sessions (list-sessions)}))
 
 (defun resume-sel-session ()
-  (let ((ss (:sessions *overlay*)) (i (:sel *overlay*)))
+  (let ((ss (:sessions (overlay))) (i (:sel (overlay))))
     (if (and (> (length ss) 0) (< i (length ss))) (nth ss i) #f)))
 
 (defun session-model-label (m)
@@ -169,8 +179,8 @@
 
 (defun resume-list-rows (bw)
   (let* ((inner (max 8 (- bw 4)))
-         (sessions (:sessions *overlay*))
-         (sel (:sel *overlay*))
+         (sessions (:sessions (overlay)))
+         (sel (:sel (overlay)))
          (win (window-list sessions sel 12))
          (start (:start win))
          (rows (if (= (length sessions) 0)
@@ -214,9 +224,9 @@
 (defun resume-detail-rows (bw)
   ;; One preview line per message, so dscroll is a direct top offset (clamped).
   (let* ((inner (max 8 (- bw 4)))
-         (msgs (:detail *overlay*))
+         (msgs (:detail (overlay)))
          (lines (map #(msg-preview-row % inner) msgs))
-         (start (max 0 (min (:dscroll *overlay*) (max 0 (- (length lines) RESUME-DETAIL-ROWS)))))
+         (start (max 0 (min (:dscroll (overlay)) (max 0 (- (length lines) RESUME-DETAIL-ROWS)))))
          (win (take (min RESUME-DETAIL-ROWS (max 0 (- (length lines) start))) (drop start lines)))
          (sel (resume-sel-session)))
     (append
@@ -230,7 +240,7 @@
 
 (defun resume-modal-rows ()
   (let* ((bw  (min (max 40 (- *cols* 6)) 72))
-         (box (if (equal? (:view *overlay*) :detail) (resume-detail-rows bw) (resume-list-rows bw))))
+         (box (if (equal? (:view (overlay)) :detail) (resume-detail-rows bw) (resume-list-rows bw))))
     (map #(center-h % bw) box)))
 
 (defun resume-open-detail! ()
@@ -243,34 +253,34 @@
     (restore-session! (:id m)) (close-overlay!)))
 
 (defun resume-list-key (k)
-  (let ((n (length (:sessions *overlay*))))
+  (let ((n (length (:sessions (overlay)))))
     (cond
-      ((key-name= k :up)   (overlay-merge! {:sel (max 0 (- (:sel *overlay*) 1))}))
-      ((key-name= k :down) (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel *overlay*) 1))}))
+      ((key-name= k :up)   (overlay-merge! {:sel (max 0 (- (:sel (overlay)) 1))}))
+      ((key-name= k :down) (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel (overlay)) 1))}))
       ((or (key-name= k :esc) (key-ctrl= k (action-ctrl-char :resume))) (close-overlay!))
       ((key-name= k :enter) (resume-open-detail!))
       ((key-char= k "r")    (resume-restore-selected!))
       (else nil))))
 
 (defun resume-detail-key (k)
-  (let ((maxd (max 0 (- (length (:detail *overlay*)) RESUME-DETAIL-ROWS))))
+  (let ((maxd (max 0 (- (length (:detail (overlay))) RESUME-DETAIL-ROWS))))
     (cond
       ((key-name= k :esc)  (overlay-merge! {:view :list}))
-      ((key-name= k :up)   (overlay-merge! {:dscroll (max 0 (- (:dscroll *overlay*) 1))}))
-      ((key-name= k :down) (overlay-merge! {:dscroll (min maxd (+ (:dscroll *overlay*) 1))}))
+      ((key-name= k :up)   (overlay-merge! {:dscroll (max 0 (- (:dscroll (overlay)) 1))}))
+      ((key-name= k :down) (overlay-merge! {:dscroll (min maxd (+ (:dscroll (overlay)) 1))}))
       ((or (key-name= k :enter) (key-char= k "r")) (resume-restore-selected!))
       (else nil))))
 
 (defun handle-resume-key (k)
-  (if (equal? (:view *overlay*) :detail) (resume-detail-key k) (resume-list-key k)))
+  (if (equal? (:view (overlay)) :detail) (resume-detail-key k) (resume-list-key k)))
 
 ;; ── Dispatch ──
 
 (defun overlay-rows ()
-  (if (equal? (:kind *overlay*) :resume) (resume-modal-rows) (mcp-modal-rows)))
+  (if (equal? (:kind (overlay)) :resume) (resume-modal-rows) (mcp-modal-rows)))
 
 (defun handle-overlay-key (k)
   (cond
-    ((equal? (:kind *overlay*) :resume) (handle-resume-key k))
-    ((equal? (:view *overlay*) :tools)  (mcp-tools-key k))
+    ((equal? (:kind (overlay)) :resume) (handle-resume-key k))
+    ((equal? (:view (overlay)) :tools)  (mcp-tools-key k))
     (else                               (mcp-list-key k))))

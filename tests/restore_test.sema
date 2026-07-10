@@ -1,0 +1,34 @@
+(load "harness.sema")
+(load "../src/session.sema")
+
+;; Stored-message → transcript-block rebuilding (pure; drives /resume).
+
+(define msgs
+  (list {:role "user" :content "hi"}
+        {:role "assistant" :content ""
+         :tool-calls (list {:id "t1" :name "read-file" :arguments {:path "a.txt"}})}
+        {:role "tool" :tool-call-id "t1" :tool-name "read-file" :content "file body"}
+        {:role "assistant" :content "done"}))
+
+(define idx (tool-results-index msgs))
+(check "index maps call id to result" (get idx "t1") "file body")
+(check "index ignores non-tool roles" (length (keys idx)) 1)
+
+(define blocks (messages->blocks msgs))
+;; user → 1 block; assistant-with-calls (blank text) → 1 tool block;
+;; tool role → folded, emits nothing; final assistant → 1 block.
+(check "block kinds" (map #(get % :kind) blocks) (list :user :tool :assistant))
+(check "tool result folded in"  (:result (nth blocks 1)) "file body")
+(check "tool arg extracted"     (:arg (nth blocks 1)) "a.txt")
+(check "tool renders as done"   (:state (nth blocks 1)) :done)
+(check "assistant text kept"    (:text (nth blocks 2)) "done")
+
+;; assistant with BOTH text and tool calls yields text block then tool block
+(define both
+  (messages->blocks
+    (list {:role "assistant" :content "thinking"
+           :tool-calls (list {:id "x" :name "bash" :arguments {:command "ls"}})})))
+(check "text+calls order" (map #(get % :kind) both) (list :assistant :tool))
+(check "missing result defaults empty" (:result (nth both 1)) "")
+
+(done)

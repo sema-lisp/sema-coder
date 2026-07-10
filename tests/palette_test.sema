@@ -1,0 +1,32 @@
+(load "harness.sema")
+(load "../src/tui.sema")
+
+;; ── fuzzy-score ──
+(check "empty query scores 0"   (fuzzy-score "" "model") 0)
+(check-true "exact match scores" (> (fuzzy-score "model" "model") 0))
+(check-true "subsequence"        (> (fuzzy-score "mdl" "model") 0))
+(check "non-subsequence is #f"   (fuzzy-score "xyz" "model") #f)
+(check-true "case-insensitive"   (> (fuzzy-score "MoD" "model") 0))
+(check-true "prefix beats scattered"
+  (> (fuzzy-score "he" "help") (fuzzy-score "he" "theme")))
+
+;; ── palette-matches (drives the / popup) ──
+(set! *config* {})
+(set! *input* "/mod")
+(check "unique match" (map :name (palette-matches)) (list "model"))
+(set! *input* "/")
+(check-true "empty query lists everything"
+  (>= (length (palette-matches)) (length *command-order*)))
+(set! *input* "/zzzznope")
+(check "no matches" (palette-matches) '())
+(set! *input* "")
+
+;; ── window-list (modal scrolling) ──
+(define xs (list "a" "b" "c" "d" "e"))
+(check "top of list"    (window-list xs 0 3) {:items (list "a" "b" "c") :start 0})
+(check "bottom clamps"  (window-list xs 4 3) {:items (list "c" "d" "e") :start 2})
+(check "sel centered"   (window-list xs 2 3) {:items (list "b" "c" "d") :start 1})
+(check "short list"     (window-list (list "a") 0 3) {:items (list "a") :start 0})
+(check "empty list"     (window-list '() 0 3) {:items '() :start 0})
+
+(done)
