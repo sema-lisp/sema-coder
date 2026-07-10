@@ -1,0 +1,51 @@
+;; cli.sema — command-line argument parsing + usage text.
+;;
+;; (parse-cli) → {:model "" :prompt #f|"…" :help #t|#f :version #t|#f}.
+;; A malformed or unknown option prints an error and exits — a typo'd flag
+;; must not quietly start an interactive session.
+
+(defun cli-args ()
+  "User arguments: everything after the first \"--\" in the raw argv
+   (`sema coder.sema -- <args…>`). No \"--\" means no user args — the raw
+   argv also carries the interpreter and script path, which are not ours."
+  (let loop ((rem (sys/args)))
+    (cond ((null? rem) '())
+          ((= (car rem) "--") (cdr rem))
+          (else (loop (cdr rem))))))
+
+(defun parse-cli ()
+  (let ((result {:model "" :prompt #f :help #f :version #f}))
+    (let loop ((rem (cli-args)))
+      (if (null? rem)
+        result
+        (let ((arg (car rem)) (rest (cdr rem)))
+          (cond
+            ((member arg (list "-h" "--help"))
+              (set! result (assoc result :help #t)) (loop rest))
+            ((member arg (list "-V" "--version"))
+              (set! result (assoc result :version #t)) (loop rest))
+            ((member arg (list "-m" "--model"))
+              (if (null? rest)
+                (begin (io/println-error "Error: --model requires a value") (exit 1))
+                (begin (set! result (assoc result :model (car rest))) (loop (cdr rest)))))
+            ((member arg (list "-p" "--print"))
+              (if (null? rest)
+                (begin (io/println-error "Error: --print requires a value") (exit 1))
+                (begin (set! result (assoc result :prompt (car rest))) (loop (cdr rest)))))
+            (else
+              (io/println-error (format "Error: unknown option: ~a (try --help)" arg))
+              (exit 1))))))))
+
+(defun show-usage ()
+  (println "Sema Coder — a terminal coding agent written in Sema")
+  (println "")
+  (println "Usage: ./coder.sema [-- options]   (or: sema coder.sema)")
+  (println "")
+  (println "Options:")
+  (println "  -m, --model <name>    Override the model")
+  (println "  -p, --print <prompt>  One-shot: run prompt, print result, exit")
+  (println "  -V, --version         Print the version")
+  (println "  -h, --help            Show this help")
+  (println "")
+  (println "Config: <config-dir>/sema/sema-coder/init.sema")
+  (println "Keys: ANTHROPIC_API_KEY or OPENAI_API_KEY"))

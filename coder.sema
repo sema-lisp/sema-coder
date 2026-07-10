@@ -1,73 +1,23 @@
 #!/usr/bin/env sema
 ;; ── Sema Coder — a terminal coding agent written in Sema ──
 ;;
-;; Entry point: parse args, load config, build the agent, run the TUI/REPL.
+;; Entry point: parse args, load config, build the agent, hand off to the
+;; TUI (on a TTY), one-shot mode (-p), or the plain line REPL (piped stdin).
 ;; The modules live in src/ (load resolves relative to this file).
 ;;
 ;;   ./coder.sema                 ;; interactive (chmod +x, or: sema coder.sema)
 ;;   ./coder.sema -- -p "..."     ;; one-shot
 ;;   ./coder.sema -- -m <model>   ;; override model
 
+(load "src/cli.sema")
 (load "src/banner.sema")
 (load "src/tui.sema")   ;; brings in commands, agent, tools, mcp, session, …
 
 (define VERSION "0.2.0")
 
-;; ── CLI parsing ──────────────────────────────────────────────────
-
-(defun cli-args ()
-  "User arguments: everything after the first \"--\" in the raw argv
-   (`sema coder.sema -- <args…>`). No \"--\" means no user args — the raw
-   argv also carries the interpreter and script path, which are not ours."
-  (let loop ((rem (sys/args)))
-    (cond ((null? rem) '())
-          ((= (car rem) "--") (cdr rem))
-          (else (loop (cdr rem))))))
-
-(defun parse-args (args)
-  (let ((result {:model "" :prompt #f :help #f :version #f}))
-    (let loop ((rem args))
-      (if (null? rem)
-        result
-        (let ((arg (car rem)) (rest (cdr rem)))
-          (cond
-            ((member arg (list "-h" "--help"))
-              (set! result (assoc result :help #t)) (loop rest))
-            ((member arg (list "-V" "--version"))
-              (set! result (assoc result :version #t)) (loop rest))
-            ((member arg (list "-m" "--model"))
-              (if (null? rest)
-                (begin (io/println-error "Error: --model requires a value") (exit 1))
-                (begin (set! result (assoc result :model (car rest))) (loop (cdr rest)))))
-            ((member arg (list "-p" "--print"))
-              (if (null? rest)
-                (begin (io/println-error "Error: --print requires a value") (exit 1))
-                (begin (set! result (assoc result :prompt (car rest))) (loop (cdr rest)))))
-            (else
-              ;; An unknown flag is an error, not a silent no-op — a typo'd
-              ;; option must not quietly start an interactive session.
-              (io/println-error (format "Error: unknown option: ~a (try --help)" arg))
-              (exit 1))))))))
-
-(defun show-usage ()
-  (println "Sema Coder — a terminal coding agent written in Sema")
-  (println "")
-  (println "Usage: ./coder.sema [-- options]   (or: sema coder.sema)")
-  (println "")
-  (println "Options:")
-  (println "  -m, --model <name>    Override the model")
-  (println "  -p, --print <prompt>  One-shot: run prompt, print result, exit")
-  (println "  -V, --version         Print the version")
-  (println "  -h, --help            Show this help")
-  (println "")
-  (println "Config: <config-dir>/sema/sema-coder/init.sema")
-  (println "Keys: ANTHROPIC_API_KEY or OPENAI_API_KEY"))
-
-;; ── Main ─────────────────────────────────────────────────────────
-
 (try
   (begin
-    (define cli (parse-args (cli-args)))
+    (define cli (parse-cli))
     (when (:help cli) (show-usage) (exit 0))
     (when (:version cli) (println (format "sema-coder ~a" VERSION)) (exit 0))
 

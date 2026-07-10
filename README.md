@@ -52,6 +52,7 @@ sema-coder/
 ├── src/
 │   ├── agent.sema      System prompt + agent construction
 │   ├── banner.sema     Wordmark + welcome (on-brand gold)
+│   ├── cli.sema        Argument parsing + usage text
 │   ├── commands.sema   Slash-command registry + built-ins
 │   ├── config.sema     Config loading (init.sema as Sema data)
 │   ├── display.sema    Output sink (emit) + tool-call rendering
