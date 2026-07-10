@@ -67,7 +67,8 @@ sema-coder/
 │   ├── transcript.sema Transcript blocks → styled lines (cached)
 │   ├── tui.sema        Full-screen TUI — frame-diffed, async agent turns
 │   └── util.sema       Workspace path resolution + shell quoting
-├── tests/              Test suite (tests/run.sema — the runner is Sema too)
+├── test.sema           Test runner (Sema running Sema)
+├── tests/              The test files + harness
 └── docs/               Design notes; dated plans live in docs/plans/
 ```
 
@@ -237,7 +238,7 @@ run it in a workspace you're prepared to let it modify.
 ## Development
 
 ```bash
-./tests/run.sema    # run the test suite (or: jake coder.test)
+./test.sema         # run the test suite (or: jake coder.test)
 ```
 
 The runner is itself Sema — it fans each `tests/*_test.sema` out to a child

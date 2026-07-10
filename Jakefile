@@ -24,4 +24,4 @@ task ask q="":
 @desc "Run the whole tests/*_test.sema suite (the runner is itself Sema)"
 task test:
     @needs sema
-    sema tests/run.sema
+    sema test.sema

@@ -21,4 +21,4 @@ jobs:
         run: sema --version
 
       - name: Run tests
-        run: sema tests/run.sema
+        run: sema test.sema

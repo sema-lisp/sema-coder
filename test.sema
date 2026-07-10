@@ -1,5 +1,5 @@
 #!/usr/bin/env sema
-;; run.sema — sema-coder's test runner, written in Sema: the coding agent's
+;; test.sema — sema-coder's test runner, written in Sema: the coding agent's
 ;; test suite is driven by the language it is built in.
 ;;
 ;; Each tests/*_test.sema runs in a child interpreter (the harness makes a
@@ -7,15 +7,15 @@
 ;; The child's "N checks, M failed" summary line is parsed for the report;
 ;; full child output is shown only for failures.
 
-(load "../src/theme.sema")
+(load "src/theme.sema")
 
 (defun script-dir ()
   (let loop ((rem (sys/args)))
     (cond ((null? rem) ".")
-          ((string/ends-with? (car rem) "run.sema") (path/dir (car rem)))
+          ((string/ends-with? (car rem) "test.sema") (path/dir (car rem)))
           (else (loop (cdr rem))))))
 
-(define tests-dir (script-dir))
+(define tests-dir (path/join (script-dir) "tests"))
 
 (defun test-files ()
   (->> (file/list tests-dir)
