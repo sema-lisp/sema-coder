@@ -1,45 +1,55 @@
-;; config.sema — single-file JSON configuration for Sema Coder
+;; config.sema — configuration as DATA.
 ;;
-;; Lives at  <config-dir>/sema/sema-code/config.json
-;;   Linux:   ~/.config/sema/sema-code/config.json
-;;   macOS:   ~/Library/Application Support/sema/sema-code/config.json
-;;   Windows: %APPDATA%\sema\sema-code\config.json
-;;
-;; sys/config-dir resolves the platform base, so there is no OS branching here.
+;; init.sema is Lisp that calls value-returning constructors (coder-config,
+;; mcp-server, command) and hands the result to (configure! cfg). The loader is
+;; pure: it captures that value and returns {:ok cfg} | {:error e} — it never
+;; mutates the app's active config or prints, so the caller owns recovery policy
+;; and reconciles runtime to the returned value (no accumulators, no reset).
 
 (load "util.sema")
 
-(defun config-dir ()
-  (path/join (sys/config-dir) "sema" "sema-code"))
+(defun config-dir ()  (path/join (sys/config-dir) "sema" "sema-code"))
+(defun config-path () (path/join (config-dir) "init.sema"))
 
-(defun config-path ()
-  (path/join (config-dir) "config.json"))
-
-;; Defaults are the schema. Anything a user omits falls back to these; anything
-;; extra they add (e.g. their own :commands) is preserved on load.
 (define default-config
-  {:model           ""        ;; "" = auto-detect from API keys
-   :max-turns       50        ;; agent tool-loop budget per turn
-   :context-budget  80000     ;; token estimate before a /compact nudge
-   :approve-bash    #t        ;; reserved: prompt before running shell tools
-   :commands        {}})      ;; user-defined slash commands → shell templates
+  {:model          ""        ;; "" = auto-detect from API keys
+   :max-turns      50
+   :context-budget 80000
+   :mcp-servers    '()
+   :commands       '()})
 
-(defun load-config ()
-  "Read config from disk, merging over defaults. Missing file → defaults
-   (and the file is created so users have something to edit)."
-  (let ((path (config-path)))
-    (if (file/exists? path)
-      (try
-        (->> (file/read path) json/decode (merge default-config))
-        (catch e
-          ;; Route through emit (defined in display.sema, loaded first) so a
-          ;; /reload with a broken config doesn't tear the TUI's alt-screen.
-          (emit :error (format "config: ignoring malformed ~a (~a)" path e))
-          default-config))
-      (begin (save-config default-config) default-config))))
+;; ── Constructors: return values, never mutate ────────────────────
 
-(defun save-config (cfg)
-  "Persist config as pretty JSON. file/mkdir creates parents (mkdir -p)."
-  (file/mkdir (config-dir))
-  (file/write (config-path) (json/encode-pretty cfg))
-  cfg)
+(defun mcp-server (name opts)
+  "A server record. OPTS is the mcp/connect map plus the app key :autostart."
+  {:name      name
+   :opts      (dissoc opts :autostart)
+   :autostart (get opts :autostart #f)
+   :transport (if (get opts :url #f) "http" "stdio")})
+
+(defun command (name spec)
+  "A command record. SPEC carries :desc and one of :run (argv) / :do (fn) / :shell."
+  (assoc spec :name name))
+
+(defun coder-config (m)
+  "Assemble the config value, filling any omitted key from the defaults."
+  (merge default-config m))
+
+;; ── Single sink + pure loader ────────────────────────────────────
+;; configure! writes a scratch cell, not the active config, so a load that
+;; throws mid-file can't leave the app's config half-applied.
+
+(define *pending-config* #f)
+
+(defun configure! (cfg) (set! *pending-config* cfg) cfg)
+
+(defun load-config (path)
+  "Read + evaluate PATH, capture the configured value. Pure: {:ok cfg} | {:error e}."
+  (set! *pending-config* #f)
+  (try
+    (begin
+      (load path)
+      (if *pending-config*
+        {:ok *pending-config*}
+        {:error "init.sema did not call (configure! …)"}))
+    (catch e {:error e})))

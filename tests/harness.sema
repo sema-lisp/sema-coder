@@ -1,0 +1,19 @@
+;; harness.sema — tiny test harness. Load it, `check`, then `(done)`.
+;; A test file exits non-zero if any check failed, so tests/run.sh gates on it.
+
+(define *checks* 0)
+(define *fails* 0)
+
+(defun check (label actual expected)
+  (set! *checks* (+ *checks* 1))
+  (if (equal? actual expected)
+    (io/println-error (str "  ok   " label))
+    (begin
+      (set! *fails* (+ *fails* 1))
+      (io/println-error (format "  FAIL ~a — expected ~a, got ~a" label expected actual)))))
+
+(defun check-true (label v) (check label (if v #t #f) #t))
+
+(defun done ()
+  (io/println-error (format "~a checks, ~a failed" *checks* *fails*))
+  (exit (if (> *fails* 0) 1 0)))

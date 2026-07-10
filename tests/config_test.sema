@@ -1,0 +1,27 @@
+(load "harness.sema")
+(load "../config.sema")
+
+;; ── constructors return values ──
+(check "mcp-server record"
+       (mcp-server "sema" {:command "sema" :args ["mcp"] :autostart #t})
+       {:name "sema" :opts {:command "sema" :args ["mcp"]} :autostart #t :transport "stdio"})
+(check "mcp-server http transport" (:transport (mcp-server "a" {:url "http://x"})) "http")
+(check "command argv"
+       (command "test" {:desc "t" :run ["make" "test"]})
+       {:name "test" :desc "t" :run ["make" "test"]})
+(check "coder-config fills defaults" (:context-budget (coder-config {:model "m"})) 80000)
+
+;; ── load-config on a good file → {:ok cfg} ──
+(file/write "/tmp/sc-init-ok.sema"
+  "(configure! (coder-config {:model \"m\" :max-turns 9 :commands (list (command \"t\" {:run [\"echo\"]}))}))")
+(let ((r (load-config "/tmp/sc-init-ok.sema")))
+  (check-true "ok result" (:ok r))
+  (check "model applied" (:model (:ok r)) "m")
+  (check "max-turns applied" (:max-turns (:ok r)) 9)
+  (check "one command" (length (:commands (:ok r))) 1))
+
+;; ── load-config on a broken file → {:error e}, no throw ──
+(file/write "/tmp/sc-init-bad.sema" "(this is (not balanced")
+(check-true "error result" (:error (load-config "/tmp/sc-init-bad.sema")))
+
+(done)

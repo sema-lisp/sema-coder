@@ -1,0 +1,5 @@
+(load "harness.sema")
+(check "equal ints" 1 1)
+(check "equal strings" "a" "a")
+(check-true "truthy" (> 2 1))
+(done)
