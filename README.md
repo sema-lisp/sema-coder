@@ -105,7 +105,7 @@ to print the exact path, or `/config edit` (or `e` in the `⌃O` modal) to open 
 
 A complete `init.sema`:
 
-```scheme
+```sema
 (configure!
   (coder-config
     {:model      ""          ; "" = auto-detect from API keys; or e.g. "claude-sonnet-5"
@@ -146,7 +146,7 @@ Each server is a `(mcp-server "name" opts)` value. `opts` is either a **stdio**
 launcher (`:command` + `:args`) or an **http** endpoint (`:url`), plus the
 optional app key `:autostart`:
 
-```scheme
+```sema
 (mcp-server "fs" {:command "npx" :args ["-y" "@modelcontextprotocol/server-filesystem" "."]})
 (mcp-server "asana" {:url "https://mcp.asana.com/mcp"})   ; OAuth on connect
 ```
@@ -175,7 +175,7 @@ optional `:key` (a keyboard shortcut that fires the command, e.g.
 Config commands hot-reload — removing one from `init.sema` unregisters it. You
 can also register commands at runtime from Sema, after loading `src/commands.sema`:
 
-```scheme
+```sema
 (register-command! "hello" "Say hi"
   (lambda (state args) (emit :info "hi!") state))
 ```
@@ -187,7 +187,7 @@ defaults below → `:key` on command records → the config `:keys` map → runt
 `bind-key!` calls. A key bound to an action that isn't a built-in fires the
 like-named slash command, so all of these bind `⌃T` to `/test`:
 
-```scheme
+```sema
 (command "test" {:desc "run tests" :run ["make" "test"] :key "ctrl-t"})  ; on the command
 :keys {:test "ctrl-t"}                                                   ; in the :keys map
 (bind-key! "ctrl-t" "test")                                              ; from Sema code
