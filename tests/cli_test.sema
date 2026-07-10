@@ -1,0 +1,21 @@
+(load "harness.sema")
+(load "../src/cli.sema")
+
+;; parse-args happy paths (error paths exit the process — covered by the
+;; runner-level behavior, not unit-testable here).
+
+(check "no args → defaults"
+       (parse-args '())
+       {:model "" :prompt #f :help #f :version #f})
+
+(check "model flag"        (:model (parse-args (list "-m" "gpt-x"))) "gpt-x")
+(check "model long flag"   (:model (parse-args (list "--model" "gpt-x"))) "gpt-x")
+(check "print flag"        (:prompt (parse-args (list "-p" "hi there"))) "hi there")
+(check "help flag"         (:help (parse-args (list "--help"))) #t)
+(check "version flag"      (:version (parse-args (list "-V"))) #t)
+
+(let ((r (parse-args (list "-m" "haiku" "-p" "explain"))))
+  (check "combined model"  (:model r) "haiku")
+  (check "combined prompt" (:prompt r) "explain"))
+
+(done)

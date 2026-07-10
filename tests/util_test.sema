@@ -1,0 +1,32 @@
+(load "harness.sema")
+(load "../src/util.sema")
+
+;; ── resolve-path: the file-tool workspace boundary ──
+
+(define root "/tmp/sc-util-test")
+(shell "rm" "-rf" root)
+(file/mkdir root)
+
+(check "relative path resolves under root"
+       (resolve-path root "a.txt") (path/join root "a.txt"))
+(check "absolute path inside root is accepted"
+       (resolve-path root (path/join root "b.txt")) (path/join root "b.txt"))
+(check-true "../ escape throws"
+  (try (begin (resolve-path root "../escape.txt") #f) (catch e #t)))
+(check-true "absolute path outside root throws"
+  (try (begin (resolve-path root "/etc/passwd") #f) (catch e #t)))
+
+(check "resolve-dir: empty means root"  (resolve-dir root "") root)
+(check "resolve-dir: nil means root"    (resolve-dir root nil) root)
+(check "resolve-dir: subdir resolves"   (resolve-dir root "sub") (path/join root "sub"))
+
+;; ── sh-quote: one shell word, no interpretation ──
+
+(check "plain word"      (sh-quote "abc") "'abc'")
+(check "embedded quote"  (sh-quote "a'b") "'a'\\''b'")
+(check "spaces and semicolons survive the shell"
+       (string/trim (:stdout (shell "sh" "-c" (string/append "echo " (sh-quote "a b; rm -rf /")))))
+       "a b; rm -rf /")
+
+(shell "rm" "-rf" root)
+(done)

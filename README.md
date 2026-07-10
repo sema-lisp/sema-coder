@@ -238,13 +238,16 @@ run it in a workspace you're prepared to let it modify.
 ## Development
 
 ```bash
-./test.sema         # run the test suite (or: jake coder.test)
+./test.sema                # run the test suite (or: jake coder.test)
+./test.sema -- markdown    # only files whose name contains a term
 ```
 
 The runner is itself Sema — it fans each `tests/*_test.sema` out to a child
-interpreter and reports per-file checks and timings. Tests sit on a tiny
-`check`/`done` harness (`tests/harness.sema`); each file exits non-zero on
-failure. Design notes are
+interpreter (crashes stay contained, no state leaks between files) and
+reports per-file checks and timings; failing files get their full output.
+Tests sit on a tiny `check`/`check-true`/`check-contains` harness
+(`tests/harness.sema`); each file ends with `(done)`, exiting non-zero on
+failure — that exit code is the whole runner contract. Design notes are
 in `docs/` (dated planning documents are archived under `docs/plans/`;
 `docs/language-friction.md` tracks upstream sema issues this app found, with
 their fix status).

@@ -1,19 +1,38 @@
-;; harness.sema — tiny test harness. Load it, `check`, then `(done)`.
-;; A test file exits non-zero if any check failed, so test.sema gates on it.
+;; harness.sema — the tiny assertion harness every *_test.sema sits on.
+;;
+;; A test file is just a script: it loads this, makes `check` calls, and ends
+;; with (done). done exits non-zero if any check failed — that exit code is
+;; the whole contract with the runner (test.sema at the repo root), which runs
+;; each file in a child interpreter and parses the "N checks, M failed" line
+;; this prints.
+;;
+;;   (check "label" actual expected)     equality (equal?)
+;;   (check-true "label" value)          truthiness
+;;   (check-contains "label" hay needle) substring (both printed on failure)
+;;   (done)                              summary + exit
 
 (define *checks* 0)
 (define *fails* 0)
+
+(defun fail! (label detail)
+  (set! *fails* (+ *fails* 1))
+  (io/println-error f"  FAIL ${label} — ${detail}"))
 
 (defun check (label actual expected)
   (set! *checks* (+ *checks* 1))
   (if (equal? actual expected)
     (io/println-error (str "  ok   " label))
-    (begin
-      (set! *fails* (+ *fails* 1))
-      (io/println-error (format "  FAIL ~a — expected ~a, got ~a" label expected actual)))))
+    (fail! label f"expected ${expected}, got ${actual}")))
 
-(defun check-true (label v) (check label (if v #t #f) #t))
+(defun check-true (label v)
+  (check label (if v #t #f) #t))
+
+(defun check-contains (label haystack needle)
+  (set! *checks* (+ *checks* 1))
+  (if (string/contains? haystack needle)
+    (io/println-error (str "  ok   " label))
+    (fail! label f"“${needle}” not found in “${haystack}”")))
 
 (defun done ()
-  (io/println-error (format "~a checks, ~a failed" *checks* *fails*))
+  (io/println-error f"${*checks*} checks, ${*fails*} failed")
   (exit (if (> *fails* 0) 1 0)))

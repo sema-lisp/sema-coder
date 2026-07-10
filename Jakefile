@@ -21,7 +21,7 @@ task ask q="":
     ./coder.sema -- -p "{{q}}"
 
 @group coder
-@desc "Run the whole tests/*_test.sema suite (the runner is itself Sema)"
-task test:
+@desc "Run the test suite (the runner is itself Sema): jake coder.test [filter='markdown keymap']"
+task test filter="":
     @needs sema
-    sema test.sema
+    sema test.sema -- {{filter}}

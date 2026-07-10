@@ -1,0 +1,28 @@
+(load "harness.sema")
+(load "../src/display.sema")
+
+;; ── tool-arg: which single argument a tool call shows inline ──
+
+(check "file tools show :path"    (tool-arg "read-file" {:path "src/a.sema"}) "src/a.sema")
+(check "write shows :path"        (tool-arg "write-file" {:path "x" :content "..."}) "x")
+(check "bash shows :command"      (tool-arg "bash" {:command "ls -la"}) "ls -la")
+(check-true "bash truncates long commands"
+  (<= (string/length (tool-arg "bash" {:command (string/repeat "x" 100)})) 61))
+(check "grep shows :pattern"      (tool-arg "grep" {:pattern "defun" :path "."}) "defun")
+(check "unknown tool: first scalar arg"
+       (tool-arg "mcp_thing" {:query "hello"}) "hello")
+(check "unknown tool skips non-scalars"
+       (tool-arg "mcp_thing" {:opts {:a 1} :name "n"}) "n")
+(check "no scalar args → empty"   (tool-arg "mcp_thing" {:opts {:a 1}}) "")
+(check "non-map args → empty"     (tool-arg "mcp_thing" nil) "")
+
+;; ── emit: the parameterized sink routes by kind ──
+
+(define *seen* '())
+(parameterize ((current-emit (lambda (kind text) (set! *seen* (cons (list kind text) *seen*)))))
+  (emit :info "hello")
+  (emit :error "boom"))
+(check "emit routes through the bound sink"
+       (reverse *seen*) (list (list :info "hello") (list :error "boom")))
+
+(done)

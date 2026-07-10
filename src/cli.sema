@@ -13,9 +13,11 @@
           ((= (car rem) "--") (cdr rem))
           (else (loop (cdr rem))))))
 
-(defun parse-cli ()
+(defun parse-args (args)
+  "Parse the user's ARGS list → an options map. Split from parse-cli so it's
+   testable without a real argv."
   (let ((result {:model "" :prompt #f :help #f :version #f}))
-    (let loop ((rem (cli-args)))
+    (let loop ((rem args))
       (if (null? rem)
         result
         (let ((arg (car rem)) (rest (cdr rem)))
@@ -35,6 +37,8 @@
             (else
               (io/println-error f"Error: unknown option: ${arg} (try --help)")
               (exit 1))))))))
+
+(defun parse-cli () (parse-args (cli-args)))
 
 (defun show-usage ()
   (println "Sema Coder — a terminal coding agent written in Sema")

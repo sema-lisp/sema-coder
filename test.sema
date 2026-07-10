@@ -2,12 +2,26 @@
 ;; test.sema — sema-coder's test runner, written in Sema: the coding agent's
 ;; test suite is driven by the language it is built in.
 ;;
-;; Each tests/*_test.sema runs in a child interpreter (the harness makes a
-;; failing file exit non-zero, and a crashed file can't take the runner down).
-;; The child's "N checks, M failed" summary line is parsed for the report;
-;; full child output is shown only for failures.
+;; Usage:
+;;   ./test.sema                    run the whole suite
+;;   ./test.sema -- markdown text   run only files whose name contains a term
+;;   jake coder.test                same, from the repo or workspace root
+;;
+;; How it works:
+;;   - A test is any tests/*_test.sema. Each loads tests/harness.sema, makes
+;;     `check` calls, and ends with (done) — exiting non-zero on any failure.
+;;   - Every file runs in a CHILD interpreter: a crash (or the harness's own
+;;     exit) can't take the runner down, and no state leaks between files.
+;;   - The child's exit code is the pass/fail truth; its "N checks, M failed"
+;;     line is parsed for the per-file report. Full child output is shown
+;;     only for failing files, so a green run stays quiet.
+;;   - Exits 0 iff every selected file passed (CI gates on this).
 
 (load "src/theme.sema")
+
+;; ── Discovery ────────────────────────────────────────────────────
+;; Paths resolve relative to this script (found via argv), not the cwd, so
+;; the runner works from anywhere — repo root, workspace root, or elsewhere.
 
 (defun script-dir ()
   (let loop ((rem (sys/args)))
@@ -17,16 +31,31 @@
 
 (define tests-dir (path/join (script-dir) "tests"))
 
-(defun test-files ()
-  (->> (file/list tests-dir)
-       (filter #(string/ends-with? % "_test.sema"))
-       (map #(if (string/contains? % "/") % (path/join tests-dir %)))
-       (sort)))
+(defun name-filters ()
+  "Everything after \"--\" in argv: substring filters on test names."
+  (let loop ((rem (sys/args)))
+    (cond ((null? rem) '())
+          ((= (car rem) "--") (cdr rem))
+          (else (loop (cdr rem))))))
+
+(define filters (name-filters))
+
+(defun wanted? (name)
+  (or (null? filters) (any #(string/contains? name %) filters)))
 
 (defun test-name (path)
   (let* ((parts (string/split path "/"))
          (base  (nth parts (- (length parts) 1))))
     (string/replace base "_test.sema" "")))
+
+(defun test-files ()
+  (->> (file/list tests-dir)
+       (filter #(string/ends-with? % "_test.sema"))
+       (map #(if (string/contains? % "/") % (path/join tests-dir %)))
+       (filter #(wanted? (test-name %)))
+       (sort)))
+
+;; ── Running one file ─────────────────────────────────────────────
 
 (defun parse-summary (err)
   "The harness's closing line → {:checks N :fails M}, or #f on a crash."
@@ -46,12 +75,14 @@
      :summary (parse-summary err)
      :output  err}))
 
+;; ── Report ───────────────────────────────────────────────────────
+
 (defun report-row (r)
   (let* ((glyph  (if (:ok r) (ok "✔") (bad "✖")))
          (name   (string/pad-right (:name r) 19))
          (detail (if-let (s (:summary r))
                    (muted f"${(:checks s)} checks")
-                   (bad "crashed")))
+                   (bad "crashed")))                 ;; no summary line at all
          (time   (faint f"${(:ms r)}ms")))
     (io/println-error f"   ${glyph} ${(if (:ok r) (bright name) (bad name))} ${detail}  ${time}")))
 
@@ -68,10 +99,18 @@
 (io/println-error "")
 (io/println-error (string/append "   " (wordmark-with "tests")))
 (io/println-error (faint f"   ; ${(epigraph)}"))
+(unless (null? filters)
+  (io/println-error (muted f"   filter: ${(string/join filters ", ")}")))
 (io/println-error "")
 
+(define files (test-files))
+(when (null? files)
+  (io/println-error (bad f"   no tests match — see tests/*_test.sema"))
+  (io/println-error "")
+  (exit 1))
+
 (define t0 (time-ms))
-(define results (map run-one (test-files)))
+(define results (map run-one files))
 (define elapsed (- (time-ms) t0))
 
 (for-each report-row results)
