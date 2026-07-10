@@ -1,0 +1,89 @@
+;; display.sema — terminal output for Sema Coder
+;;
+;; Agent prose goes to stdout (so `-p` one-shot output is pipeable); all chrome
+;; (banner, prompts, tool lines, errors) goes to stderr. Styling flows through
+;; theme.sema so the palette stays in one place.
+
+(load "theme.sema")
+(load "util.sema")
+
+;; ── Output sink (parameterized so the TUI can reroute it) ────────
+;;
+;; Slash-command handlers write through `emit`, never directly to the screen.
+;; The default sink prints REPL-style (chrome → stderr, content → stdout);
+;; the TUI rebinds `current-emit` with `parameterize` to turn the same calls
+;; into transcript blocks — one registry drives both front-ends.
+;;
+;; Kinds: :info :ok :error — semantic one-liners, styled by the sink;
+;;        :line  — a pre-styled chrome line (e.g. /help rows), passed through;
+;;        :raw   — plain content (command output, JSON) → stdout, pipeable;
+;;        :clear — reset the view (a no-op in a scrolling terminal).
+
+(define current-emit
+  (make-parameter
+    (lambda (kind text)
+      (cond
+        ((equal? kind :info)  (show-info text))
+        ((equal? kind :ok)    (show-ok text))
+        ((equal? kind :error) (show-error text))
+        ((equal? kind :line)  (io/println-error text))
+        ((equal? kind :raw)   (println text))
+        (else nil)))))
+
+(defun emit (kind text) ((current-emit) kind text))
+
+;; ── Prompt ───────────────────────────────────────────────────────
+
+(defun show-prompt ()
+  (io/print-error (accent (term/style (string/append " " prompt-glyph " ") :bold))))
+
+;; ── Messages ─────────────────────────────────────────────────────
+
+(defun show-response (text)
+  (println "")
+  (println text)
+  (println ""))
+
+(defun show-info (text)  (io/println-error (muted  (format "  ~a" text))))
+(defun show-error (text) (io/println-error (bad    (format "  error: ~a" text))))
+(defun show-ok (text)    (io/println-error (ok     (format "  ~a" text))))
+
+;; ── Tool-call rendering (agent/run :on-tool-call hook) ───────────
+
+(define active-spinner #f)
+(define active-tool "")
+(define active-arg "")
+
+(defun tool-arg (tool args)
+  "Pick the most useful single arg to show inline for a tool call."
+  (cond
+    ((member tool (list "read-file" "write-file" "edit-file" "list-dir"))
+      (get args :path ""))
+    ((equal? tool "bash")        (truncate-str (get args :command "") 60))
+    ((member tool (list "grep" "find-files")) (get args :pattern ""))
+    (else "")))
+
+(defun tool-result-line (tool arg ms)
+  "The settled line shown after a tool call completes: ✔ tool arg Nms."
+  (format "  ~a ~a ~a ~a"
+    (ok "✔")
+    (accent-dim (term/style tool :bold))
+    (muted arg)
+    (faint (format "~ams" ms))))
+
+(defun on-tool-call (event)
+  (let ((evt  (:event event))
+        (tool (:tool event))
+        (args (:args event)))
+    (cond
+      ((= evt "start")
+        (set! active-tool tool)
+        (set! active-arg (tool-arg tool (if (map? args) args {})))
+        (set! active-spinner
+          (term/spinner-start (muted (format "~a ~a" tool active-arg)))))
+      ((= evt "end")
+        (when active-spinner
+          (term/spinner-stop active-spinner {})
+          (set! active-spinner #f))
+        (io/println-error
+          (tool-result-line active-tool active-arg (get event :duration-ms 0)))))))

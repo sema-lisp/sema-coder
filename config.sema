@@ -1,0 +1,45 @@
+;; config.sema — single-file JSON configuration for Sema Coder
+;;
+;; Lives at  <config-dir>/sema/sema-code/config.json
+;;   Linux:   ~/.config/sema/sema-code/config.json
+;;   macOS:   ~/Library/Application Support/sema/sema-code/config.json
+;;   Windows: %APPDATA%\sema\sema-code\config.json
+;;
+;; sys/config-dir resolves the platform base, so there is no OS branching here.
+
+(load "util.sema")
+
+(defun config-dir ()
+  (path/join (sys/config-dir) "sema" "sema-code"))
+
+(defun config-path ()
+  (path/join (config-dir) "config.json"))
+
+;; Defaults are the schema. Anything a user omits falls back to these; anything
+;; extra they add (e.g. their own :commands) is preserved on load.
+(define default-config
+  {:model           ""        ;; "" = auto-detect from API keys
+   :max-turns       50        ;; agent tool-loop budget per turn
+   :context-budget  80000     ;; token estimate before a /compact nudge
+   :approve-bash    #t        ;; reserved: prompt before running shell tools
+   :commands        {}})      ;; user-defined slash commands → shell templates
+
+(defun load-config ()
+  "Read config from disk, merging over defaults. Missing file → defaults
+   (and the file is created so users have something to edit)."
+  (let ((path (config-path)))
+    (if (file/exists? path)
+      (try
+        (->> (file/read path) json/decode (merge default-config))
+        (catch e
+          ;; Route through emit (defined in display.sema, loaded first) so a
+          ;; /reload with a broken config doesn't tear the TUI's alt-screen.
+          (emit :error (format "config: ignoring malformed ~a (~a)" path e))
+          default-config))
+      (begin (save-config default-config) default-config))))
+
+(defun save-config (cfg)
+  "Persist config as pretty JSON. file/mkdir creates parents (mkdir -p)."
+  (file/mkdir (config-dir))
+  (file/write (config-path) (json/encode-pretty cfg))
+  cfg)

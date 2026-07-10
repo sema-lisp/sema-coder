@@ -1,0 +1,62 @@
+;; util.sema — path resolution, safety, and small string helpers
+;;
+;; Path safety leans on the host primitive (path/within?) rather than ad-hoc
+;; string checks: it canonicalizes symlinks, so it catches `../` AND symlink
+;; escapes that a substring test would miss.
+
+;; ── Workspace root (the sandbox boundary) ───────────────────────
+
+(define workspace-root ".")
+(defun set-workspace-root! (path) (set! workspace-root path))
+
+(defun resolve-path (root path)
+  "Resolve PATH against ROOT and assert the result stays inside root.
+   Absolute paths are fine as long as they land inside the workspace —
+   the system prompt announces an absolute cwd, so models often send them."
+  (let ((joined (if (path/absolute? path) path (path/join root path))))
+    (unless (path/within? root joined)
+      (error (format "Path escapes workspace: ~a" path)))
+    joined))
+
+(defun resolve-dir (root path)
+  "Like resolve-path, but nil/empty (an omitted tool arg) means root itself."
+  (if (or (nil? path) (= path "")) root (resolve-path root path)))
+
+;; ── String helpers ──────────────────────────────────────────────
+
+(defun truncate-str (s max-len)
+  (if (> (string/length s) max-len)
+    (string/append (string/slice s 0 max-len) "…")
+    s))
+
+(defun truncate-lines (text n)
+  "Cap TEXT at N lines, noting how much was cut."
+  (let ((lines (string/split text "\n")))
+    (if (<= (length lines) n)
+      text
+      (string/append
+        (string/join (take n lines) "\n")
+        (format "\n\n[truncated — showing first ~a of ~a lines]" n (length lines))))))
+
+(defun lines->numbered (text)
+  "Prepend 1-indexed line numbers (tab-separated) to each line."
+  (let ((lines (string/split text "\n")))
+    (string/join
+      (->> lines
+           (zip (range 0 (length lines)))
+           ;; zip yields 2-element lists (i line), not cons pairs — index with nth.
+           (map (lambda (p) (format "~a\t~a" (+ 1 (nth p 0)) (nth p 1)))))
+      "\n")))
+
+;; ── Shell safety ─────────────────────────────────────────────────
+
+(defun sh-quote (s)
+  "Quote S as one sh word: wrap in single quotes, escaping embedded quotes."
+  (string/append "'" (string/replace s "'" "'\\''") "'"))
+
+(define banned-patterns
+  '("rm -rf /" "rm -rf ~" "mkfs" "dd if=" "> /dev/sd" ":(){" "format c:"))
+
+(defun banned-command? (cmd)
+  "Return #t if cmd contains a known-dangerous shell pattern."
+  (any (lambda (pat) (string/contains? cmd pat)) banned-patterns))
