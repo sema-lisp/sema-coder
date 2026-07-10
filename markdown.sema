@@ -19,6 +19,26 @@
 
 (defun nth-or (lst i default) (if (< i (length lst)) (nth lst i) default))
 
+(define MD-ESC "\x1b;")
+
+(defun ansi-escape-end (s i)
+  "Index just past the ANSI escape (ESC [ … letter) starting at S[i]."
+  (let loop ((j (+ i 2)))
+    (if (>= j (string-length s)) j
+      (if (regex/match #"[A-Za-z]" (string/slice s j (+ j 1))) (+ j 1) (loop (+ j 1))))))
+
+(defun clip-styled (s w)
+  "Clip a possibly-styled S to display width W without ever cutting an ANSI
+   escape, closing any open style at the cut (safe under terminal resize)."
+  (if (<= (string/width s) w) s
+    (let loop ((i 0) (col 0))
+      (if (>= i (string-length s)) s
+        (if (= (string/slice s i (+ i 1)) MD-ESC)
+          (loop (ansi-escape-end s i) col)
+          (let ((cw (string/width (string/slice s i (+ i 1)))))
+            (if (> (+ col cw) w) (string-append (string/slice s 0 i) "\x1b;[0m")
+              (loop (+ i 1) (+ col cw)))))))))
+
 ;; ── Inline styling ───────────────────────────────────────────────
 ;; Each pass rewrites one construct; styled spans carry ANSI (no markup chars),
 ;; so later passes don't re-match them.
@@ -94,9 +114,9 @@
          (ncol    (length headers))
          (widths  (col-widths (cons headers rows) ncol)))
     (append
-      (list (md-clip (render-table-row headers widths aligns bright) width))
-      (list (faint (md-clip (string/join (map (lambda (w) (string/repeat "─" w)) widths) "─┼─") width)))
-      (map (lambda (r) (md-clip (render-table-row r widths aligns (lambda (x) x)) width)) rows))))
+      (list (clip-styled (render-table-row headers widths aligns bright) width))
+      (list (clip-styled (faint (string/join (map (lambda (w) (string/repeat "─" w)) widths) "─┼─")) width))
+      (map (lambda (r) (clip-styled (render-table-row r widths aligns (lambda (x) x)) width)) rows))))
 
 (defun span-table-rows (lines)
   "Consecutive table rows from LINES → {:rows … :rest …}."

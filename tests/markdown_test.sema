@@ -34,4 +34,12 @@
 (check-true "strike styled" (string/contains? (car (md-lines "~~gone~~" 40)) "[9m"))
 (check-true "hr rule" (string/contains? (car (md-lines "---" 40)) "─"))
 
+;; ── resize hardening: ANSI-safe clip never cuts an escape ──
+(check "clip-styled width" (string/width (clip-styled (bright "hello world") 5)) 5)
+(check "clip-styled text"  (term/strip (clip-styled (bright "hello world") 5)) "hello")
+(check-true "narrow table fits"
+  (null? (filter (lambda (r) (> (string/width r) 8))
+                 (map (lambda (r) (clip-styled r 8))
+                      (md-lines "| **Alpha** | Beta |\n|----|----|\n| one | two |" 60)))))
+
 (done)
