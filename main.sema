@@ -59,7 +59,7 @@
       (io/println-error "Error: No API key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.")
       (exit 1))
 
-    (define cfg   (load-config))
+    (define cfg   (boot-config!))    ;; ensure + load init.sema, reconcile commands
     (define cwd   (sys/cwd))
     (define model (:model cli))
     (define agent (create-agent cwd model cfg))

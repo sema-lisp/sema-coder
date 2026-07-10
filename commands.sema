@@ -39,20 +39,14 @@
        :args (string/trim (string/slice trimmed sp (string/length trimmed)))}
       {:name (string/slice trimmed 1 (string/length trimmed)) :args ""})))
 
-(defun user-command (cfg name)
-  "Look up a config-defined shell command by name; nil if absent."
-  (get (get cfg :commands {}) (string->keyword name) nil))
-
 (defun dispatch-command (cmd state)
-  (let* ((name (:name cmd))
-         (args (:args cmd))
-         (spec (get *commands* name nil))
-         (shell-tmpl (user-command (:config state) name)))
-    (cond
-      (spec ((:handler spec) state args))
-      (shell-tmpl (run-user-command shell-tmpl args) state)
-      (else
-        (emit :error (format "unknown command: /~a (try /help)" name))
+  ;; Config-declared commands are registered into *commands* by reconcile, so the
+  ;; one registry answers everything.
+  (let ((spec (get *commands* (:name cmd) nil)))
+    (if spec
+      ((:handler spec) state (:args cmd))
+      (begin
+        (emit :error (format "unknown command: /~a (try /help)" (:name cmd)))
         state))))
 
 (defun run-user-command (template args)
@@ -117,6 +111,24 @@
       (register-command! (:name spec) (get spec :desc "") (config-command-handler spec)))
     cmds))
 
+(defun boot-config! ()
+  "Ensure init.sema exists, load it, reconcile config-owned commands; return the
+   config value (defaults + an emitted error on a broken file)."
+  (ensure-config!)
+  (let* ((r   (load-config (config-path)))
+         (cfg (if (:ok r) (:ok r)
+                (begin (emit :error (format "config: ~a — using defaults" (:error r)))
+                       default-config))))
+    (reconcile-commands! (:commands cfg))
+    cfg))
+
+(defun open-config! ()
+  "Best-effort open init.sema in the OS default handler (detaches; GUI editors)."
+  (let ((path (config-path)) (p (sys/platform)))
+    (cond ((= p "macos")   (shell "open" path))
+          ((= p "windows") (shell "cmd" "/c" "start" "" path))
+          (else            (shell "xdg-open" path)))))
+
 ;; ── Built-in commands ────────────────────────────────────────────
 
 (defun help-row (name desc)
@@ -132,13 +144,6 @@
       (lambda (name)
         (emit :line (help-row name (get (get *commands* name {}) :desc ""))))
       *command-order*)
-    (let ((user-cmds (get (:config state) :commands {})))
-      (unless (null? (keys user-cmds))
-        (emit :line "")
-        (emit :line (heading "  From config"))
-        (for-each
-          (lambda (k) (emit :line (help-row (keyword->string k) (get user-cmds k ""))))
-          (keys user-cmds))))
     (emit :line "")
     state))
 
@@ -169,15 +174,18 @@
 (register-command! "cwd" "Show the working directory"
   (lambda (state args) (emit :info (:cwd state)) state))
 
-(register-command! "config" "Show config path and current values"
+(register-command! "config" "Show the config path (/config edit opens it)"
   (lambda (state args)
-    (emit :info (format "config: ~a" (config-path)))
-    (emit :raw (json/encode-pretty (:config state)))
+    (if (= args "edit")
+      (begin (open-config!) (emit :info (format "opening ~a" (config-path))))
+      (begin
+        (emit :info (format "config: ~a" (config-path)))
+        (emit :info "edit it in any pane — changes hot-reload on save")))
     state))
 
 (register-command! "reload" "Reload config from disk and rebuild the agent"
   (lambda (state args)
-    (let ((cfg (load-config)))
+    (let ((cfg (boot-config!)))
       (emit :ok "config reloaded")
       (assoc state
         :config cfg

@@ -184,12 +184,9 @@
     (if sp (string/slice rest 0 sp) rest)))
 
 (defun all-command-entries ()
-  "Every command as {:name :desc}: built-in registry order + config-defined."
-  (append
-    (map (lambda (n) {:name n :desc (get (get *commands* n {}) :desc "")}) *command-order*)
-    (map (lambda (k) {:name (keyword->string k)
-                      :desc (get (get *config* :commands {}) k "")})
-         (keys (get *config* :commands {})))))
+  "Every command as {:name :desc}, in registration order. Config-declared
+   commands are already in the registry (reconciled at boot/reload)."
+  (map (lambda (n) {:name n :desc (get (get *commands* n {}) :desc "")}) *command-order*))
 
 (defun fuzzy-score (query item)
   "Subsequence score (case-insensitive); #f if QUERY isn't a subsequence of ITEM."
