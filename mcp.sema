@@ -1,0 +1,98 @@
+;; mcp.sema — MCP server runtime: records, sync connect, reconcile, tool-merge.
+;;
+;; Records live in a mutable-array mutated in place (status/handle/tools), and are
+;; read only through the accessors below — so the pump loop sees fresh state
+;; despite #82 (a direct global read inside a recursive loop would go stale).
+;;
+;; Connect is SYNCHRONOUS: mcp/connect blocks the scheduler (issue #96), so an
+;; (async …) wrapper would freeze the UI for the whole connect. stdio connects
+;; are ~10ms; a remote/OAuth connect must suspend the TUI (see the modal).
+
+(load "config.sema")
+
+(define *mcp* (mutable-array/new 8))
+
+(defun mcp-reset! () (set! *mcp* (mutable-array/new 8)))
+
+(defun mcp-records () (mutable-array/->vector *mcp*))
+
+(defun mcp-find (name)
+  "Index of the record named NAME, or #f."
+  (let ((n (mutable-array/length *mcp*)))
+    (let loop ((i 0))
+      (cond ((>= i n) #f)
+            ((= (:name (mutable-array/get *mcp* i)) name) i)
+            (else (loop (+ i 1)))))))
+
+(defun mcp-get (name)
+  (let ((i (mcp-find name))) (if i (mutable-array/get *mcp* i) #f)))
+
+(defun mcp-set! (name f)
+  "Replace the record named NAME with (f record) IN PLACE."
+  (let ((i (mcp-find name)))
+    (when i (mutable-array/set! *mcp* i (f (mutable-array/get *mcp* i))))))
+
+(defun server->record (srv)
+  {:name      (:name srv)
+   :opts      (:opts srv)
+   :autostart (:autostart srv)
+   :transport (:transport srv)
+   :status    :idle
+   :handle    #f
+   :tools     '()
+   :error     #f})
+
+(defun reconcile-servers! (servers)
+  "Reconcile records against the config's server list: keep existing (preserving
+   any live connection), add new (idle), close + drop removed."
+  (let ((declared (map :name servers)))
+    (for-each
+      (lambda (rec)
+        (when (and (not (member (:name rec) declared)) (:handle rec))
+          (try (mcp/close (:handle rec)) (catch e nil))))
+      (mcp-records))
+    (let ((next (mutable-array/new 8)))
+      (for-each
+        (lambda (srv)
+          (let ((existing (mcp-get (:name srv))))
+            (mutable-array/push! next
+              (if existing
+                (assoc existing :opts (:opts srv) :autostart (:autostart srv)
+                                :transport (:transport srv))
+                (server->record srv)))))
+        servers)
+      (set! *mcp* next))))
+
+;; ── Connect / disconnect (synchronous) ───────────────────────────
+
+(defun mcp-connect! (name)
+  "Connect the server NAME synchronously; update status/handle/tools in place.
+   Returns the resulting status keyword."
+  (let ((rec (mcp-get name)))
+    (if (not rec)
+      :no-such
+      (begin
+        (mcp-set! name (lambda (r) (assoc r :status :connecting :error #f)))
+        (let ((result (try {:ok (mcp/connect (:opts rec))} (catch e {:err e}))))
+          (if (:ok result)
+            (let ((h (:ok result)))
+              (mcp-set! name (lambda (r) (assoc r :status :connected :handle h
+                                                :tools (mcp/tools->sema h) :error #f)))
+              :connected)
+            (begin
+              (mcp-set! name (lambda (r) (assoc r :status :error
+                                                :error (format "~a" (:err result)))))
+              :error)))))))
+
+(defun mcp-disconnect! (name)
+  "Close the server NAME's connection and clear its tools."
+  (let ((rec (mcp-get name)))
+    (when (and rec (:handle rec))
+      (try (mcp/close (:handle rec)) (catch e nil))))
+  (mcp-set! name (lambda (r) (assoc r :status :idle :handle #f :tools '() :error #f))))
+
+(defun all-mcp-tools ()
+  "Every tool from currently-connected servers, flattened."
+  (apply append
+    (map (lambda (r) (if (equal? (:status r) :connected) (:tools r) '()))
+         (mcp-records))))

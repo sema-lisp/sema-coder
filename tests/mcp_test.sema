@@ -1,0 +1,27 @@
+(load "harness.sema")
+(load "../mcp.sema")
+
+;; ── Task 1: reconcile records against config server declarations ──
+(mcp-reset!)
+(reconcile-servers! (list (mcp-server "a" {:command "x"})
+                          (mcp-server "b" {:url "http://y"})))
+(check "two records"   (map :name (mcp-records)) (list "a" "b"))
+(check "a idle"        (:status (mcp-get "a")) :idle)
+(check "b http"        (:transport (mcp-get "b")) "http")
+(reconcile-servers! (list (mcp-server "a" {:command "x"})))
+(check "b dropped"     (mcp-get "b") #f)
+(check "a kept idle"   (:status (mcp-get "a")) :idle)
+
+;; ── Task 2: connect / disconnect + tool-merge (keyless — real `sema mcp`) ──
+(mcp-reset!)
+(reconcile-servers! (list (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))
+(check "connect →connected"  (mcp-connect! "sema") :connected)
+(check "status connected"    (:status (mcp-get "sema")) :connected)
+(check "2 tools on record"   (length (:tools (mcp-get "sema"))) 2)
+(check "all-mcp-tools = 2"    (length (all-mcp-tools)) 2)
+(check "tool names"           (sort (map tool/name (all-mcp-tools))) (list "docs" "eval"))
+(mcp-disconnect! "sema")
+(check "disconnected idle"    (:status (mcp-get "sema")) :idle)
+(check "no tools after"       (length (all-mcp-tools)) 0)
+
+(done)

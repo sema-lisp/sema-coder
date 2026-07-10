@@ -2,6 +2,12 @@
 
 (load "util.sema")
 (load "tools.sema")
+(load "mcp.sema")
+
+(defun agent-tools ()
+  "The agent's full tool set: the app's own tools plus every connected MCP
+   server's tools. Rebuild the agent (create-agent) to pick up a change."
+  (append (all-tools) (all-mcp-tools)))
 
 (defun build-system-prompt (cwd platform)
   (string/join
@@ -36,7 +42,7 @@ Platform: ~a" cwd platform))
     ;; each time. (agent {…}) is cheap (~1µs) and history lives in :messages.
     (agent
       {:system prompt
-       :tools (all-tools)
+       :tools (agent-tools)
        :max-turns (get cfg :max-turns 50)
        :model chosen})))
 
