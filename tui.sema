@@ -503,7 +503,7 @@
           (let* ((matches (palette-matches))
                  (parsed  (parse-command *input*))
                  ;; If the typed name is itself a command, run it; else run the selection.
-                 (known?  (or (get *commands* (:name parsed) #f) (user-command *config* (:name parsed))))
+                 (known?  (get *commands* (:name parsed) #f))
                  (chosen  (cond (known? *input*)
                                 ((> (length matches) 0)
                                  (string-append "/" (:name (nth matches (min *psel* (- (length matches) 1))))
