@@ -1,0 +1,93 @@
+#!/usr/bin/env sema
+;; run.sema — sema-coder's test runner, written in Sema: the coding agent's
+;; test suite is driven by the language it is built in.
+;;
+;; Each tests/*_test.sema runs in a child interpreter (the harness makes a
+;; failing file exit non-zero, and a crashed file can't take the runner down).
+;; The child's "N checks, M failed" summary line is parsed for the report;
+;; full child output is shown only for failures.
+
+(load "../src/theme.sema")
+
+(defun script-dir ()
+  (let loop ((rem (sys/args)))
+    (cond ((null? rem) ".")
+          ((string/ends-with? (car rem) "run.sema") (path/dir (car rem)))
+          (else (loop (cdr rem))))))
+
+(define tests-dir (script-dir))
+
+(defun test-files ()
+  (->> (file/list tests-dir)
+       (filter #(string/ends-with? % "_test.sema"))
+       (map #(if (string/contains? % "/") % (path/join tests-dir %)))
+       (sort)))
+
+(defun test-name (path)
+  (let* ((parts (string/split path "/"))
+         (base  (nth parts (- (length parts) 1))))
+    (string/replace base "_test.sema" "")))
+
+(defun parse-summary (err)
+  "The harness's closing line → {:checks N :fails M}, or #f on a crash."
+  (if-let (m (regex/match #"(\d+) checks, (\d+) failed" err))
+    {:checks (string->number (nth (:groups m) 0))
+     :fails  (string->number (nth (:groups m) 1))}
+    #f))
+
+(defun run-one (path)
+  (let* ((t0  (time-ms))
+         (res (shell "sema" path))
+         (ms  (- (time-ms) t0))
+         (err (get res :stderr "")))
+    {:name    (test-name path)
+     :ms      ms
+     :ok      (= (get res :exit-code 1) 0)
+     :summary (parse-summary err)
+     :output  err}))
+
+(defun report-row (r)
+  (let* ((glyph  (if (:ok r) (ok "✔") (bad "✖")))
+         (name   (string/pad-right (:name r) 19))
+         (detail (if-let (s (:summary r))
+                   (muted f"${(:checks s)} checks")
+                   (bad "crashed")))
+         (time   (faint f"${(:ms r)}ms")))
+    (io/println-error f"   ${glyph} ${(if (:ok r) (bright name) (bad name))} ${detail}  ${time}")))
+
+(defun report-failure (r)
+  (io/println-error "")
+  (io/println-error (bad f"   ── ${(:name r)} ──"))
+  (for-each
+    #(io/println-error (string/append "   " %))
+    (filter #(not (= (string/trim %) "")) (string/split (:output r) "\n")))
+  (io/println-error ""))
+
+;; ── Run ──────────────────────────────────────────────────────────
+
+(io/println-error "")
+(io/println-error (string/append "   " (wordmark-with "tests")))
+(io/println-error (faint f"   ; ${(epigraph)}"))
+(io/println-error "")
+
+(define t0 (time-ms))
+(define results (map run-one (test-files)))
+(define elapsed (- (time-ms) t0))
+
+(for-each report-row results)
+
+(define failed  (filter #(not (:ok %)) results))
+(define checks  (foldl (lambda (n r) (+ n (get (get r :summary {}) :checks 0))) 0 results))
+
+(for-each report-failure failed)
+
+(io/println-error "")
+(io/println-error
+  (if (null? failed)
+    (string/append "   " (ok f"(✔ all green)")
+                   (muted f" · ${(length results)} files · ${checks} checks · ${(/ elapsed 1000.0)}s"))
+    (string/append "   " (bad f"(✖ ${(length failed)} of ${(length results)} files failed)")
+                   (muted f" · ${checks} checks · ${(/ elapsed 1000.0)}s"))))
+(io/println-error "")
+
+(exit (if (null? failed) 0 1))

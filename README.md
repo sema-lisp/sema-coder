@@ -67,7 +67,7 @@ sema-coder/
 │   ├── transcript.sema Transcript blocks → styled lines (cached)
 │   ├── tui.sema        Full-screen TUI — frame-diffed, async agent turns
 │   └── util.sema       Workspace path resolution + shell quoting
-├── tests/              Test suite (tests/run.sh runs it)
+├── tests/              Test suite (tests/run.sema — the runner is Sema too)
 └── docs/               Design notes; dated plans live in docs/plans/
 ```
 
@@ -237,11 +237,13 @@ run it in a workspace you're prepared to let it modify.
 ## Development
 
 ```bash
-./tests/run.sh    # run the test suite (needs sema on PATH)
+./tests/run.sema    # run the test suite (or: jake coder.test)
 ```
 
-Tests live in `tests/*_test.sema` on a tiny `check`/`done` harness
-(`tests/harness.sema`); each file exits non-zero on failure. Design notes are
+The runner is itself Sema — it fans each `tests/*_test.sema` out to a child
+interpreter and reports per-file checks and timings. Tests sit on a tiny
+`check`/`done` harness (`tests/harness.sema`); each file exits non-zero on
+failure. Design notes are
 in `docs/` (dated planning documents are archived under `docs/plans/`;
 `docs/language-friction.md` tracks upstream sema issues this app found, with
 their fix status).

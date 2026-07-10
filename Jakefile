@@ -21,7 +21,7 @@ task ask q="":
     ./coder.sema -- -p "{{q}}"
 
 @group coder
-@desc "Run the whole tests/*_test.sema suite (fails on the first failure)"
+@desc "Run the whole tests/*_test.sema suite (the runner is itself Sema)"
 task test:
     @needs sema
-    ./tests/run.sh
+    sema tests/run.sema

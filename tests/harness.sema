@@ -1,5 +1,5 @@
 ;; harness.sema — tiny test harness. Load it, `check`, then `(done)`.
-;; A test file exits non-zero if any check failed, so tests/run.sh gates on it.
+;; A test file exits non-zero if any check failed, so tests/run.sema gates on it.
 
 (define *checks* 0)
 (define *fails* 0)
