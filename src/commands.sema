@@ -133,11 +133,18 @@
     cfg))
 
 (defun open-config! ()
-  "Best-effort open init.sema in the OS default handler (detaches; GUI editors)."
-  (let ((path (config-path)) (p (sys/platform)))
-    (cond ((= p "macos")   (shell "open" path))
-          ((= p "windows") (shell "cmd" "/c" "start" "" path))
-          (else            (shell "xdg-open" path)))))
+  "Open init.sema in a GUI editor (detached — a terminal $EDITOR can't take
+   over the TUI's tty). macOS uses `open -t` (the default text editor) because
+   nothing claims the .sema extension, so a plain `open` fails. Returns #t if
+   the opener reported success."
+  (let* ((path (config-path))
+         (res  (try
+                 (match (sys/platform)
+                   ("macos"   (shell "open" "-t" path))
+                   ("windows" (shell "cmd" "/c" "start" "" path))
+                   (_         (shell "xdg-open" path)))
+                 (catch e {:exit-code 1}))))
+    (= (get res :exit-code 1) 0)))
 
 ;; ── Built-in commands ────────────────────────────────────────────
 
@@ -214,7 +221,9 @@
 (register-command! "config" "Show the config path (/config edit opens it)"
   (lambda (state args)
     (if (= args "edit")
-      (begin (open-config!) (emit :info f"opening ${(config-path)}"))
+      (if (open-config!)
+        (emit :info f"opening ${(config-path)}")
+        (emit :error f"couldn't open an editor — edit ${(config-path)} manually"))
       (begin
         (emit :info f"config: ${(config-path)}")
         (emit :info "edit it in any pane — changes hot-reload on save")))

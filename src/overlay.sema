@@ -138,7 +138,9 @@
       ((or (key-char= k "c") (key-char= k "r")) (mcp-connect-selected!))
       ((key-char= k "d")     (mcp-disconnect-selected!))
       ((or (key-char= k "t") (key-name= k :enter)) (overlay-merge! {:view :tools :tsel 0}))
-      ((key-char= k "e")     (open-config!))
+      ((key-char= k "e")
+        (unless (open-config!)
+          (add-block! {:kind :error :text f"couldn't open an editor — edit ${(config-path)} manually"})))
       (else nil))))
 
 (defun mcp-tools-key (k)
