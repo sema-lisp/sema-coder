@@ -90,7 +90,7 @@
        )
 
      ;; ── Keybindings — rebind any action (defaults shown). ──
-     ;; actions: :mcp :palette :quit :interrupt :clear-line :line-start :line-end :repaint
+     ;; actions: :mcp :resume :palette :quit :interrupt :clear-line :line-start :line-end :repaint
      :keys {}   ;; e.g. {:mcp \"ctrl-p\" :palette \"ctrl-space\"}
      }))
 ")

@@ -16,6 +16,7 @@
 (load "display.sema")
 (load "config.sema")
 (load "agent.sema")
+(load "session.sema")
 
 ;; ── Registry ─────────────────────────────────────────────────────
 
@@ -186,6 +187,19 @@
                                      (string/pad-right (:transport r) 6)
                                      (:status r))))
             servers))))
+    state))
+
+(register-command! "resume" "Resume a past session (opens the modal; ⌃R in the TUI)"
+  (lambda (state args)
+    (if *tui-active*
+      (open-resume-modal!)
+      (let ((ss (list-sessions)))
+        (if (= (length ss) 0)
+          (emit :info "no saved sessions yet")
+          (for-each
+            (lambda (m) (emit :line (format "    ~a  ~a msgs  ~a"
+                                     (string/pad-right (:title m) 40) (:count m) (:id m))))
+            ss))))
     state))
 
 (register-command! "cwd" "Show the working directory"

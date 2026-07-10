@@ -37,14 +37,14 @@
 (defun show-usage ()
   (println "Sema Coder — a terminal coding agent written in Sema")
   (println "")
-  (println "Usage: sema examples/sema-coder/main.sema [-- options]")
+  (println "Usage: ./main.sema [-- options]   (or: sema main.sema)")
   (println "")
   (println "Options:")
   (println "  -m, --model <name>    Override the model")
   (println "  -p, --print <prompt>  One-shot: run prompt, print result, exit")
   (println "  -h, --help            Show this help")
   (println "")
-  (println "Config: <config-dir>/sema/sema-code/config.json")
+  (println "Config: <config-dir>/sema/sema-code/init.sema")
   (println "Keys: ANTHROPIC_API_KEY or OPENAI_API_KEY"))
 
 ;; ── Main ─────────────────────────────────────────────────────────

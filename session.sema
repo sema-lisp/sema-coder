@@ -1,0 +1,51 @@
+;; session.sema — persist + restore conversations as JSONL.
+;;
+;; A session file is <sessions-dir>/<id>.jsonl: line 1 is a meta object, then one
+;; message per line (the exact agent/run :messages shape — user/assistant/tool
+;; with tool-calls and tool results — so a restored session resumes verbatim).
+
+(load "config.sema")
+
+(defun sessions-dir () (path/join (config-dir) "sessions"))
+(defun session-path (id) (path/join (sessions-dir) (string-append id ".jsonl")))
+
+(defun session-title (messages)
+  "First user message, one line, truncated — the human-readable label."
+  (let ((u (filter (lambda (m) (= (get m :role "") "user")) messages)))
+    (if (null? u) "(no messages)"
+      (truncate-str (string/replace (string/trim (get (car u) :content "")) "\n" " ") 56))))
+
+(defun save-session! (id created model messages)
+  "Write the session as JSONL (meta line + one message per line). No-op if empty."
+  (when (> (length messages) 0)
+    (file/mkdir (sessions-dir))
+    (let ((meta {:kind "meta" :id id :created created :model model
+                 :title (session-title messages)}))
+      (file/write (session-path id)
+        (string/join (cons (json/encode meta) (map json/encode messages)) "\n")))))
+
+(defun read-lines (path)
+  (filter (lambda (l) (not (= (string/trim l) ""))) (string/split (file/read path) "\n")))
+
+(defun session-meta-of (path)
+  "Parse a session file's meta line, adding :count. #f on a malformed file."
+  (try
+    (let ((lines (read-lines path)))
+      (assoc (json/decode (car lines)) :count (- (length lines) 1)))
+    (catch e #f)))
+
+(defun list-sessions ()
+  "All saved sessions as meta maps ({:id :title :model :created :count …}), newest first."
+  (let ((dir (sessions-dir)))
+    (if (not (file/exists? dir)) '()
+      (->> (file/list dir)
+           (filter (lambda (f) (string/ends-with? f ".jsonl")))
+           (map (lambda (f) (session-meta-of (if (string/contains? f "/") f (path/join dir f)))))
+           (filter (lambda (m) m))
+           (sort-by (lambda (m) (- (get m :created 0))))))))
+
+(defun load-session (id)
+  "Read a session → {:meta … :messages (…)}."
+  (let ((lines (read-lines (session-path id))))
+    {:meta (json/decode (car lines))
+     :messages (map json/decode (cdr lines))}))
