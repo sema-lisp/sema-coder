@@ -85,12 +85,15 @@ input, so scrolling, resize, and type-ahead all work while tokens stream in, and
 
 ## Slash commands
 
-Built-ins: `/help`, `/model [name]`, `/clear`, `/tools`, `/mcp`, `/resume`,
-`/cwd`, `/config`, `/reload`, `/quit`, `/exit`. In the TUI, type `/` to open a
-fuzzy command palette; once you type `/model ` the same palette fuzzy-completes
-the **model argument** from the config's `:models` list, shown as
-`Anthropic: Claude Opus 4.6` (Tab inserts the selection, Enter runs it — any
-model id typed by hand still works). Add your own commands in config (see below).
+Built-ins: `/help`, `/model [name]`, `/effort [level]`, `/clear`, `/tools`,
+`/mcp`, `/resume`, `/cwd`, `/config`, `/reload`, `/quit`, `/exit`. In the TUI,
+type `/` to open a fuzzy command palette; once you type `/model ` the same
+palette fuzzy-completes the **model argument** from the config's `:models`
+list, shown as `Anthropic: Claude Opus 4.6` (Tab inserts the selection, Enter
+runs it — any model id typed by hand still works). `/effort` sets Sema's
+portable reasoning-effort level the same way (`none` / `minimal` / `low` /
+`medium` / `high` / `xhigh`; `default` resets) — models without reasoning
+support simply ignore it. Add your own commands in config (see below).
 
 ## Configuration
 
@@ -114,6 +117,7 @@ A complete `init.sema`:
 (configure!
   (coder-config
     {:model      ""          ; "" = auto-detect from API keys; or e.g. "claude-sonnet-5"
+     :effort     ""          ; reasoning effort (none…xhigh); "" = provider default
      :max-turns  50          ; max tool-use rounds in a single turn
      :tool-preview-lines 5   ; result lines shown under each tool call
 
@@ -157,6 +161,7 @@ A complete `init.sema`:
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `:model` | `""` | LLM model; `""` auto-detects from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
+| `:effort` | `""` | Reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`); `""` = provider default |
 | `:max-turns` | `50` | Max agent tool-use rounds per user turn |
 | `:tool-preview-lines` | `5` | Result lines shown under each tool call in the TUI |
 | `:models` | Anthropic + OpenAI flagships | `(provider …)` groups of `(model …)` records driving the `/model` autocomplete |

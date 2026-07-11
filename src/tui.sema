@@ -43,6 +43,7 @@
 (define *cols* 80)
 (define *cwd* ".")
 (define *model* "")
+(define *effort* "")        ;; /effort override; "" = config, then provider default
 (define *agent* #f)
 (define *config* {})
 (define *messages* '())
@@ -199,6 +200,10 @@
   "The session override if set, else the config's model (so a reload shows)."
   (if (not (= *model* "")) *model* (get *config* :model "")))
 
+(defun effective-effort ()
+  "The /effort override if set, else the config's effort (so a reload shows)."
+  (pick-effort *effort* *config*))
+
 (defun header-line ()
   ;; Token counts come from llm/session-usage — the cumulative sum across every
   ;; provider round (llm/last-usage would report only a turn's final round).
@@ -206,8 +211,9 @@
          (cost  (get u :cost-usd 0.0))
          (right (muted (string/join
                          (append
-                           (list (let ((m (effective-model))) (if (= m "") "auto" m))
-                                 f"↑${(fmt-count (get u :prompt-tokens 0))} ↓${(fmt-count (get u :completion-tokens 0))}")
+                           (list (let ((m (effective-model))) (if (= m "") "auto" m)))
+                           (let ((e (effective-effort))) (if (= e "") '() (list f"effort ${e}")))
+                           (list f"↑${(fmt-count (get u :prompt-tokens 0))} ↓${(fmt-count (get u :completion-tokens 0))}")
                            (if (> cost 0.0)
                              (list f"$${(/ (round (* cost 10000)) 10000.0)}")
                              '()))
@@ -380,7 +386,7 @@
   ;; The empty assistant block is the streaming target for :on-text.
   (add-block! {:kind :assistant :text ""})
   (render!)
-  (let* ((turn (async (run-turn-streaming *agent* text *messages* on-tool-cb on-text-cb)))
+  (let* ((turn (async (run-turn-streaming *agent* text *messages* on-tool-cb on-text-cb (effective-effort))))
          (pump (async (pump-input! turn))))
     (set! *turn* turn)
     (let ((result (try (await turn)
@@ -431,11 +437,13 @@
     (add-block! {:kind kind :text text})))
 
 (defun tui-state ()
-  {:messages *messages* :model *model* :cwd *cwd* :agent *agent* :config *config*})
+  {:messages *messages* :model *model* :effort *effort*
+   :cwd *cwd* :agent *agent* :config *config*})
 
 (defun apply-tui-state! (st)
   (set! *messages* (:messages st))
   (set! *model*    (:model st))
+  (set! *effort*   (get st :effort ""))
   (set! *cwd*      (:cwd st))
   (set! *agent*    (:agent st))
   (set! *config*   (:config st)))

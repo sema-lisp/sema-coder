@@ -10,6 +10,14 @@
   (check "explicit model wins" (agent/model b) "claude-haiku-4-5-20251001")
   (check "max-turns from cfg"  (agent/max-turns b) 5))
 
+;; reasoning-effort plumbing (pure helpers; unsupported models no-op the option)
+(check "override wins"     (pick-effort "high" {:effort "low"}) "high")
+(check "config fallback"   (pick-effort "" {:effort "low"}) "low")
+(check "default is empty"  (pick-effort "" {}) "")
+(check "effort merged into opts" (turn-opts {:messages '()} "high")
+       {:messages '() :reasoning-effort "high"})
+(check "no effort, no key" (turn-opts {:messages '()} "") {:messages '()})
+
 ;; tool names are derived from the tools themselves, not a hand-synced list
 (check "tool-names derived" (tool-names) (map tool/name (all-tools)))
 (check "seven tool names"   (length (tool-names)) 7)

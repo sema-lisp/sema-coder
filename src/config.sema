@@ -46,6 +46,7 @@
 
 (define default-config
   {:model              ""        ;; "" = auto-detect from API keys
+   :effort             ""        ;; reasoning effort; "" = provider default (see /effort)
    :max-turns          50
    :tool-preview-lines 5         ;; result lines shown under a tool call in the TUI
    :models             default-models
@@ -106,6 +107,7 @@
 (configure!
   (coder-config
     {:model      \"\"                 ; \"\" = auto-detect from API keys; or \"claude-sonnet-5\"
+     :effort     \"\"                 ; none/minimal/low/medium/high/xhigh; \"\" = provider default
      :max-turns  50
      :tool-preview-lines 5          ; result lines shown under each tool call
 

@@ -10,6 +10,7 @@
        (command "test" {:desc "t" :run ["make" "test"]})
        {:name "test" :desc "t" :run ["make" "test"]})
 (check "coder-config fills defaults" (:max-turns (coder-config {:model "m"})) 50)
+(check "effort defaults to provider default" (:effort (coder-config {})) "")
 
 ;; ── models: constructors + flattening for the /model autocomplete ──
 (check "model record" (model "gpt-5.5" "GPT-5.5") {:id "gpt-5.5" :label "GPT-5.5"})

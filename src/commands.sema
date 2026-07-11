@@ -224,6 +224,40 @@
     (map (lambda (m) {:value (:id m) :label f"${(:provider m)}: ${(:label m)}"})
          (model-entries cfg))))
 
+;; Sema's portable :reasoning-effort levels (llm docs); models without
+;; reasoning support ignore the option, so no per-model gating is needed.
+(define effort-levels (list "none" "minimal" "low" "medium" "high" "xhigh"))
+
+(register-command! "effort" "Show or set reasoning effort: /effort [level|default]"
+  (lambda (state args)
+    ;; Accept ":high" as well as "high" — the docs write levels as keywords.
+    (let ((v (let ((a (string/trim args)))
+               (if (string/starts-with? a ":") (string/slice a 1 (string/length a)) a))))
+      (cond
+        ((= v "")
+          (let ((cur (pick-effort (get state :effort "") (get state :config {}))))
+            (emit :info f"effort: ${(if (= cur "") "default" cur)} · levels: ${(string/join effort-levels ", ")} · /effort default resets"))
+          state)
+        ((= v "default")
+          (emit :ok "reasoning effort → provider default")
+          (assoc state :effort ""))
+        ((member v effort-levels)
+          (emit :ok f"reasoning effort → ${v}")
+          (assoc state :effort v))
+        (else
+          (emit :error f"unknown effort “${v}” (try ${(string/join effort-levels ", ")}, or default)")
+          state)))))
+
+(register-completions! "effort"
+  (lambda (cfg)
+    (list {:value "none"    :label "none — thinking disabled"}
+          {:value "minimal" :label "minimal — barely deliberates"}
+          {:value "low"     :label "low — quick and cheap"}
+          {:value "medium"  :label "medium — balanced"}
+          {:value "high"    :label "high — thorough"}
+          {:value "xhigh"   :label "xhigh — maximum deliberation"}
+          {:value "default" :label "default — back to the provider default"})))
+
 (register-command! "clear" "Clear the conversation history"
   (lambda (state args)
     (emit :clear "")

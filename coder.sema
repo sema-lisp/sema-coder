@@ -37,7 +37,7 @@
 
     ;; One-shot mode — prose to stdout, nothing else.
     (when (:prompt cli)
-      (let ((result (run-turn sema-coder-agent (:prompt cli) '() on-tool-call)))
+      (let ((result (run-turn sema-coder-agent (:prompt cli) '() on-tool-call (get cfg :effort ""))))
         (println (:response result))
         (exit 0)))
 
@@ -54,7 +54,8 @@
         (show-info f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")}")))
 
     (define state
-      {:messages '() :model cli-model :cwd cwd :agent sema-coder-agent :config cfg})
+      {:messages '() :model cli-model :effort ""
+       :cwd cwd :agent sema-coder-agent :config cfg})
 
     (defun handle-input (input)
       (cond
@@ -74,7 +75,8 @@
               (set! state next))))
         (else
           (let ((result (try
-                          (run-turn (:agent state) (string/trim input) (:messages state) on-tool-call)
+                          (run-turn (:agent state) (string/trim input) (:messages state) on-tool-call
+                                    (pick-effort (get state :effort "") (get state :config {})))
                           (catch e
                             (show-error f"agent error: ${(get e :message (str e))}")
                             #f))))
