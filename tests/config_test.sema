@@ -14,6 +14,8 @@
 
 ;; ── models: constructors + flattening for the /model autocomplete ──
 (check "model record" (model "gpt-5.5" "GPT-5.5") {:id "gpt-5.5" :label "GPT-5.5"})
+(check "model opts merged" (model "m" "M" {:effort "high"}) {:id "m" :label "M" :effort "high"})
+(check "opts can't clobber id" (:id (model "m" "M" {:id "evil"})) "m")
 (check "provider record"
        (provider "OpenAI" (list (model "gpt-5.5" "GPT-5.5")))
        {:name "OpenAI" :models (list {:id "gpt-5.5" :label "GPT-5.5"})})
@@ -23,6 +25,12 @@
        (map :id (model-entries {:models (list (provider "P" (list (model "b" "B") (model "a" "A"))))}))
        (list "b" "a"))
 (check "no :models → no entries" (model-entries {}) '())
+(define cfg-me {:models (list (provider "P" (list (model "m1" "M1" {:effort "xhigh"}) (model "m2" "M2"))))})
+(check "model-entry by id"     (:label (model-entry cfg-me "m2")) "M2")
+(check "model-entry missing"   (model-entry cfg-me "nope") #f)
+(check "model-effort declared" (model-effort cfg-me "m1") "xhigh")
+(check "model-effort absent"   (model-effort cfg-me "m2") "")
+(check "model-effort unknown"  (model-effort (coder-config {}) "claude-opus-4-6") "")
 
 ;; ── load-config on a good file → {:ok cfg} ──
 (file/write "/tmp/sc-init-ok.sema"

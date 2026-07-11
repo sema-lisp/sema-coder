@@ -36,6 +36,31 @@
 (check-true "matches by label" (any #(= (:value %) "gpt-5.6-terra") (palette-entries)))
 (set! *input* "/model zzzznope")
 (check "no model matches" (palette-entries) '())
+
+;; ── active-value marker ──
+(set! *model* "claude-sonnet-5")
+(set! *input* "/model ")
+(check "active model marked"
+       (map :value (filter #(get % :active #f) (palette-entries)))
+       (list "claude-sonnet-5"))
+(set! *input* "/effort ")
+(check "default effort marked active"
+       (map :value (filter #(get % :active #f) (palette-entries)))
+       (list "default"))
+(set! *model* "")
+
+;; ── palette-choice / palette-completion (pure Enter/Tab logic) ──
+(set! *input* "/model opus")
+(check "enter runs the selection"  (palette-choice (palette-view) 0 *input*) "/model claude-opus-4-6")
+(check "tab completes selection"   (palette-completion (palette-view) 0) "/model claude-opus-4-6")
+(set! *input* "/model gpt-5.5")
+(check "exact value runs as typed" (palette-choice (palette-view) 0 *input*) "/model gpt-5.5")
+(set! *input* "/model zzz-custom")
+(check "unknown id passes through" (palette-choice (palette-view) 0 *input*) "/model zzz-custom")
+(check "tab with no match is #f"   (if (palette-completion (palette-view) 0) #t #f) #f)
+(set! *input* "/mod")
+(check "command mode enter picks match" (palette-choice (palette-view) 0 *input*) "/model")
+(check "command mode tab appends space" (palette-completion (palette-view) 0) "/model ")
 (set! *input* "/effort ")
 (check "effort levels offered" (length (palette-entries)) 7)
 (set! *input* "/effort xh")

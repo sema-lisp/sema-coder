@@ -17,11 +17,12 @@
     (if (null? u) "(no messages)"
       (truncate-str (string/replace (string/trim (get (car u) :content "")) "\n" " ") 56))))
 
-(defun save-session! (id created model messages)
-  "Write the session as JSONL (meta line + one message per line). No-op if empty."
+(defun save-session! (id created model effort messages)
+  "Write the session as JSONL (meta line + one message per line). No-op if empty.
+   MODEL and EFFORT are the session's effective values, so /resume restores them."
   (when (> (length messages) 0)
     (file/mkdir (sessions-dir))
-    (let ((meta {:kind "meta" :id id :created created :model model
+    (let ((meta {:kind "meta" :id id :created created :model model :effort effort
                  :title (session-title messages)}))
       (file/write (session-path id)
         (string/join (cons (json/encode meta) (map json/encode messages)) "\n")))))

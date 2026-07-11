@@ -3,6 +3,7 @@
 (load "util.sema")
 (load "tools.sema")
 (load "mcp.sema")
+(load "config.sema")   ;; model-effort — per-model :effort defaults
 
 (defun agent-tools ()
   "The agent's full tool set: the app's own tools plus every connected MCP
@@ -46,15 +47,15 @@ Platform: ${platform}
 </environment>")
     "\n\n"))
 
+(defun choose-model (model cfg)
+  "Model precedence: explicit MODEL > config :model > \"\" (auto-detect)."
+  (if (not (= model "")) model (get cfg :model "")))
+
 (defun create-agent (cwd model cfg)
   "Build the coding agent. Model precedence: explicit arg > config > auto."
   (set-workspace-root! cwd)
   (let* ((platform f"${(sys/os)} (${(sys/arch)})")
-         (chosen
-           (cond
-             ((not (= model "")) model)
-             ((not (= (get cfg :model "") "")) (get cfg :model))
-             (else "")))
+         (chosen (choose-model model cfg))
          (prompt (build-system-prompt cwd platform)))
     ;; Anonymous constructor, not defagent — this is called on every model
     ;; switch / config reload / MCP connect, and defagent would rebind a global
@@ -65,10 +66,14 @@ Platform: ${platform}
        :max-turns (get cfg :max-turns 50)
        :model chosen})))
 
-(defun pick-effort (override cfg)
-  "The session's reasoning effort: OVERRIDE (/effort) if non-empty, else the
-   config's :effort. \"\" means the provider default."
-  (if (and override (not (= override ""))) override (get cfg :effort "")))
+(defun pick-effort (override model-id cfg)
+  "Effort precedence: session OVERRIDE (/effort) → the model's own :effort in
+   the config's :models entry for MODEL-ID → the config :effort. \"\" means
+   the provider default."
+  (let ((m-eff (model-effort cfg model-id)))
+    (cond ((and override (not (= override ""))) override)
+          ((not (= m-eff "")) m-eff)
+          (else (get cfg :effort "")))))
 
 (defun turn-opts (opts effort)
   "Merge a non-empty reasoning EFFORT into an agent/run OPTS map. Effort is

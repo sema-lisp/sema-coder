@@ -37,7 +37,8 @@
 
     ;; One-shot mode — prose to stdout, nothing else.
     (when (:prompt cli)
-      (let ((result (run-turn sema-coder-agent (:prompt cli) '() on-tool-call (get cfg :effort ""))))
+      (let ((result (run-turn sema-coder-agent (:prompt cli) '() on-tool-call
+                              (pick-effort "" (choose-model cli-model cfg) cfg))))
         (println (:response result))
         (exit 0)))
 
@@ -76,7 +77,9 @@
         (else
           (let ((result (try
                           (run-turn (:agent state) (string/trim input) (:messages state) on-tool-call
-                                    (pick-effort (get state :effort "") (get state :config {})))
+                                    (let ((c (get state :config {})))
+                                      (pick-effort (get state :effort "")
+                                                   (choose-model (get state :model "") c) c)))
                           (catch e
                             (show-error f"agent error: ${(get e :message (str e))}")
                             #f))))

@@ -126,7 +126,7 @@
           (else b))))
 
 (defun arg-matches (ctx)
-  (->> (command-completions (:cmd ctx) *config*)
+  (->> (command-completions (:cmd ctx) (tui-state))
        (map #(list (arg-score (:query ctx) %) %))
        (filter #(nth % 0))
        (sort-by #(- (nth % 0)))
@@ -143,13 +143,46 @@
 (defun palette-entries ()
   (if-let (pv (palette-view)) (:entries pv) '()))
 
+(defun palette-choice (pv sel input)
+  "The command string Enter should run for palette PV, selection SEL, and the
+   raw INPUT. Pure — on-enter dispatches the result. In argument mode an
+   exactly-typed value (or no match at all, e.g. a custom model id) runs as
+   typed; otherwise the selection runs."
+  (if (equal? (:mode pv) :args)
+    (let* ((entries (:entries pv))
+           (typed   (:query (:ctx pv)))
+           (exact?  (any #(= (:value %) typed) entries)))
+      (if (or exact? (null? entries))
+        input
+        f"/${(:cmd (:ctx pv))} ${(:value (nth entries (min sel (- (length entries) 1))))}"))
+    (let* ((matches (:entries pv))
+           (parsed  (parse-command input))
+           ;; If the typed name is itself a command, run it; else run the selection.
+           (known?  (get *commands* (:name parsed) #f)))
+      (cond (known? input)
+            ((> (length matches) 0)
+             (string/append "/" (:name (nth matches (min sel (- (length matches) 1))))
+                            (if (= (:args parsed) "") "" (string/append " " (:args parsed)))))
+            (else input)))))
+
+(defun palette-completion (pv sel)
+  "The input Tab should complete to for PV/SEL, or #f when nothing matches."
+  (let ((entries (:entries pv)))
+    (when (> (length entries) 0)
+      (let ((e (nth entries (min sel (- (length entries) 1)))))
+        (if (equal? (:mode pv) :args)
+          f"/${(:cmd (:ctx pv))} ${(:value e)}"
+          (string/append "/" (:name e) " "))))))
+
 (defun palette-limit (matches) (min 8 (length matches)))
 
 (defun palette-row (mode e inner)
-  "One palette row as plain text; palette-box styles selection afterwards."
+  "One palette row as plain text; palette-box styles selection afterwards.
+   An :active entry (the value currently in effect) is marked with ●."
   (if (equal? mode :args)
     (string/append (string/pad-right (:label e) 30) " "
-                   (clip-width (:value e) (max 4 (- inner 33))))
+                   (clip-width (:value e) (max 4 (- inner 35)))
+                   (if (get e :active #f) " ●" ""))
     (string/append (string/pad-right (string/append "/" (:name e)) 12) " "
                    (clip-width (:desc e) (max 4 (- inner 15))))))
 
@@ -201,8 +234,9 @@
   (if (not (= *model* "")) *model* (get *config* :model "")))
 
 (defun effective-effort ()
-  "The /effort override if set, else the config's effort (so a reload shows)."
-  (pick-effort *effort* *config*))
+  "The /effort override if set, else the active model's :effort default, else
+   the config's :effort (so a reload shows)."
+  (pick-effort *effort* (effective-model) *config*))
 
 (defun header-line ()
   ;; Token counts come from llm/session-usage — the cumulative sum across every
@@ -414,7 +448,7 @@
 
 (defun persist-session! ()
   (when *session-id*
-    (try (save-session! *session-id* *session-created* (effective-model) *messages*)
+    (try (save-session! *session-id* *session-created* (effective-model) (effective-effort) *messages*)
       (catch e nil))))
 
 (defun restore-session! (id)
@@ -422,9 +456,14 @@
     (set! *messages* messages)
     (set! *session-id* id)
     (set! *session-created* (get meta :created (time-ms)))
+    ;; Resume the session's model + effort too, and rebuild the agent on them —
+    ;; a resumed conversation continues on what it was actually running.
+    (set! *model*  (get meta :model ""))
+    (set! *effort* (get meta :effort ""))
+    (set! *agent*  (create-agent *cwd* *model* *config*))
     (clear-transcript!)
     (for-each add-block! (messages->blocks messages))
-    (add-block! {:kind :info :text f"resumed “${(get meta :title id)}” · ${(length messages)} messages"})
+    (add-block! {:kind :info :text f"resumed “${(get meta :title id)}” · ${(length messages)} messages · ${(let ((m (get meta :model ""))) (if (= m "") "auto" m))}"})
     (set! *scroll* 0)))
 
 ;; ── Commands (dispatched through the shared registry) ────────────────────────
@@ -486,29 +525,9 @@
       (cond
         ((= text "") nil)
         ((palette-open?)
-          (let ((pv (palette-view)))
-            (if (equal? (:mode pv) :args)
-              ;; Argument mode: an exactly-typed value (or no match at all, e.g.
-              ;; a custom model id) runs as typed; otherwise run the selection.
-              (let* ((entries (:entries pv))
-                     (typed   (:query (:ctx pv)))
-                     (exact?  (any #(= (:value %) typed) entries))
-                     (chosen  (if (or exact? (null? entries))
-                                *input*
-                                f"/${(:cmd (:ctx pv))} ${(:value (nth entries (min *psel* (- (length entries) 1))))}")))
-                (clear-input!)
-                (run-command! chosen))
-              (let* ((matches (:entries pv))
-                     (parsed  (parse-command *input*))
-                     ;; If the typed name is itself a command, run it; else run the selection.
-                     (known?  (get *commands* (:name parsed) #f))
-                     (chosen  (cond (known? *input*)
-                                    ((> (length matches) 0)
-                                     (string/append "/" (:name (nth matches (min *psel* (- (length matches) 1))))
-                                                    (if (= (:args parsed) "") "" (string/append " " (:args parsed)))))
-                                    (else *input*))))
-                (clear-input!)
-                (run-command! chosen)))))
+          (let ((chosen (palette-choice (palette-view) *psel* *input*)))
+            (clear-input!)
+            (run-command! chosen)))
         (else
           (add-block! {:kind :user :text text})
           (clear-input!)
@@ -550,16 +569,10 @@
     (:end       (set! *cursor* (string/length *input*)))
     (:tab
       (when (palette-open?)
-        (let* ((pv (palette-view))
-               (entries (:entries pv)))
-          (when (> (length entries) 0)
-            (let ((e (nth entries (min *psel* (- (length entries) 1)))))
-              (set! *input*
-                (if (equal? (:mode pv) :args)
-                  f"/${(:cmd (:ctx pv))} ${(:value e)}"
-                  (string/append "/" (:name e) " ")))
-              (set! *cursor* (string/length *input*))
-              (set! *psel* 0))))))
+        (when-let (s (palette-completion (palette-view) *psel*))
+          (set! *input* s)
+          (set! *cursor* (string/length *input*))
+          (set! *psel* 0))))
     (:up
       (if (palette-open?) (set! *psel* (max 0 (- *psel* 1)))
         (scroll-by! 1)))

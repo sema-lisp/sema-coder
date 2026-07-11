@@ -90,10 +90,14 @@ Built-ins: `/help`, `/model [name]`, `/effort [level]`, `/clear`, `/tools`,
 type `/` to open a fuzzy command palette; once you type `/model ` the same
 palette fuzzy-completes the **model argument** from the config's `:models`
 list, shown as `Anthropic: Claude Opus 4.6` (Tab inserts the selection, Enter
-runs it — any model id typed by hand still works). `/effort` sets Sema's
-portable reasoning-effort level the same way (`none` / `minimal` / `low` /
-`medium` / `high` / `xhigh`; `default` resets) — models without reasoning
-support simply ignore it. Add your own commands in config (see below).
+runs it — any model id typed by hand still works). The active model is marked
+`●` and providers whose API key isn't set are annotated `· no key`. `/effort`
+sets Sema's portable reasoning-effort level the same way (`none` / `minimal` /
+`low` / `medium` / `high` / `xhigh`; `default` resets) — models without
+reasoning support simply ignore it, and a `(model … {:effort "high"})` record
+sets a per-model default. `/resume <id>` restores a saved session directly
+(completing from your session list) and brings back the model and effort it
+ran with. Add your own commands in config (see below).
 
 ## Configuration
 
@@ -122,7 +126,8 @@ A complete `init.sema`:
      :tool-preview-lines 5   ; result lines shown under each tool call
 
      ;; Models offered by the /model autocomplete, grouped by provider.
-     ;; Only a picker list — any model id typed by hand still works.
+     ;; Only a picker list — any model id typed by hand still works. A model
+     ;; may carry per-model defaults: (model id label {:effort "high"}).
      :models
      (list
        (provider "Anthropic"
@@ -210,12 +215,14 @@ can also register commands at runtime from Sema, after loading `src/commands.sem
 ```
 
 A command can also register **argument completions** — the palette switches to
-them once you type `/name ` (this is how `/model` offers the `:models` list):
+them once you type `/name ` (this is how `/model`, `/effort`, `/resume`, and
+`/config` offer theirs). The function receives the live state map (`:config`,
+`:model`, `:effort`, …); an entry with `:active #t` is marked `●` in the palette:
 
 ```sema
 (register-completions! "hello"
-  (lambda (config)
-    (list {:value "world" :label "the whole world"}
+  (lambda (state)
+    (list {:value "world" :label "the whole world" :active #t}
           {:value "mom"   :label "hi mom"})))
 ```
 
