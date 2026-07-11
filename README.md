@@ -87,7 +87,10 @@ input, so scrolling, resize, and type-ahead all work while tokens stream in, and
 
 Built-ins: `/help`, `/model [name]`, `/clear`, `/tools`, `/mcp`, `/resume`,
 `/cwd`, `/config`, `/reload`, `/quit`, `/exit`. In the TUI, type `/` to open a
-fuzzy command palette. Add your own in config (see below).
+fuzzy command palette; once you type `/model ` the same palette fuzzy-completes
+the **model argument** from the config's `:models` list, shown as
+`Anthropic: Claude Opus 4.6` (Tab inserts the selection, Enter runs it — any
+model id typed by hand still works). Add your own commands in config (see below).
 
 ## Configuration
 
@@ -113,6 +116,22 @@ A complete `init.sema`:
     {:model      ""          ; "" = auto-detect from API keys; or e.g. "claude-sonnet-5"
      :max-turns  50          ; max tool-use rounds in a single turn
      :tool-preview-lines 5   ; result lines shown under each tool call
+
+     ;; Models offered by the /model autocomplete, grouped by provider.
+     ;; Only a picker list — any model id typed by hand still works.
+     :models
+     (list
+       (provider "Anthropic"
+         (list
+           (model "claude-opus-4-6"  "Claude Opus 4.6")
+           (model "claude-sonnet-5"  "Claude Sonnet 5")
+           (model "claude-haiku-4-5" "Claude Haiku 4.5")))
+       (provider "OpenAI"
+         (list
+           (model "gpt-5.6-sol"   "GPT-5.6 Sol")
+           (model "gpt-5.6-terra" "GPT-5.6 Terra")
+           (model "gpt-5.6-luna"  "GPT-5.6 Luna")
+           (model "gpt-5.5"       "GPT-5.5"))))
 
      ;; MCP servers — each is a value; manage connections in the /mcp modal (⌃O).
      :mcp-servers
@@ -140,6 +159,7 @@ A complete `init.sema`:
 | `:model` | `""` | LLM model; `""` auto-detects from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
 | `:max-turns` | `50` | Max agent tool-use rounds per user turn |
 | `:tool-preview-lines` | `5` | Result lines shown under each tool call in the TUI |
+| `:models` | Anthropic + OpenAI flagships | `(provider …)` groups of `(model …)` records driving the `/model` autocomplete |
 | `:mcp-servers` | `'()` | List of `(mcp-server …)` records |
 | `:commands` | `'()` | List of `(command …)` records |
 | `:keys` | `{}` | Action → key overrides |
@@ -182,6 +202,16 @@ can also register commands at runtime from Sema, after loading `src/commands.sem
 ```sema
 (register-command! "hello" "Say hi"
   (lambda (state args) (emit :info "hi!") state))
+```
+
+A command can also register **argument completions** — the palette switches to
+them once you type `/name ` (this is how `/model` offers the `:models` list):
+
+```sema
+(register-completions! "hello"
+  (lambda (config)
+    (list {:value "world" :label "the whole world"}
+          {:value "mom"   :label "hi mom"})))
 ```
 
 ### Keybindings

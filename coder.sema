@@ -21,17 +21,19 @@
     (when (:help cli) (show-usage) (exit 0))
     (when (:version cli) (println f"sema-coder ${VERSION}") (exit 0))
 
-    (define provider (llm/auto-configure))
-    (when (nil? provider)
+    ;; not `provider`/`model` — those names would shadow the config constructors
+    ;; init.sema calls on every load/hot-reload (same trap as `agent` below).
+    (define llm-provider (llm/auto-configure))
+    (when (nil? llm-provider)
       (io/println-error "Error: No API key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.")
       (exit 1))
 
-    (define cfg   (boot-config!))    ;; ensure + load init.sema, reconcile commands + servers
-    (define cwd   (sys/cwd))
-    (define model (:model cli))
+    (define cfg       (boot-config!))  ;; ensure + load init.sema, reconcile commands + servers
+    (define cwd       (sys/cwd))
+    (define cli-model (:model cli))
     (mcp-autostart!)                 ;; connect :autostart servers before the agent is built
     ;; not `agent` — that name would shadow the (agent {…}) builtin constructor.
-    (define sema-coder-agent (create-agent cwd model cfg))
+    (define sema-coder-agent (create-agent cwd cli-model cfg))
 
     ;; One-shot mode — prose to stdout, nothing else.
     (when (:prompt cli)
@@ -41,18 +43,18 @@
 
     ;; Interactive, on a TTY → the full-screen TUI.
     (when (sys/tty)
-      (tui-run cwd model cfg sema-coder-agent)
+      (tui-run cwd cli-model cfg sema-coder-agent)
       (exit 0))
 
     ;; Not a TTY (piped/dumb terminal) → the plain line-based REPL below.
     (show-banner VERSION)
-    (show-welcome cwd model)
+    (show-welcome cwd cli-model)
     (let ((na (mcp-needs-auth)))
       (unless (null? na)
         (show-info f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")}")))
 
     (define state
-      {:messages '() :model model :cwd cwd :agent sema-coder-agent :config cfg})
+      {:messages '() :model cli-model :cwd cwd :agent sema-coder-agent :config cfg})
 
     (defun handle-input (input)
       (cond

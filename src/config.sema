@@ -1,7 +1,8 @@
 ;; config.sema — configuration as DATA.
 ;;
 ;; init.sema is Lisp that calls value-returning constructors (coder-config,
-;; mcp-server, command) and hands the result to (configure! cfg). The loader is
+;; mcp-server, command, provider, model) and hands the result to
+;; (configure! cfg). The loader is
 ;; pure: it captures that value and returns {:ok cfg} | {:error e} — it never
 ;; mutates the app's active config or prints, so the caller owns recovery policy
 ;; and reconciles runtime to the returned value (no accumulators, no reset).
@@ -14,15 +15,51 @@
       (path/join (sys/config-dir) "sema" "sema-coder")))
 (defun config-path () (path/join (config-dir) "init.sema"))
 
+;; ── Constructors: return values, never mutate ────────────────────
+
+(defun model (id label)
+  "A selectable model: ID is what the provider API accepts, LABEL is the human
+   name shown by the /model autocomplete."
+  {:id id :label label})
+
+(defun provider (name models)
+  "A provider group for the /model autocomplete: display NAME plus its MODELS
+   (a list of (model …) records)."
+  {:name name :models models})
+
+;; The providers/models offered by the /model autocomplete. Purely a picker
+;; list — any model id typed by hand still works. A config's own :models
+;; replaces this wholesale.
+(define default-models
+  (list
+    (provider "Anthropic"
+      (list
+        (model "claude-opus-4-6"  "Claude Opus 4.6")
+        (model "claude-sonnet-5"  "Claude Sonnet 5")
+        (model "claude-haiku-4-5" "Claude Haiku 4.5")))
+    (provider "OpenAI"
+      (list
+        (model "gpt-5.6-sol"   "GPT-5.6 Sol")
+        (model "gpt-5.6-terra" "GPT-5.6 Terra")
+        (model "gpt-5.6-luna"  "GPT-5.6 Luna")
+        (model "gpt-5.5"       "GPT-5.5")))))
+
 (define default-config
   {:model              ""        ;; "" = auto-detect from API keys
    :max-turns          50
    :tool-preview-lines 5         ;; result lines shown under a tool call in the TUI
+   :models             default-models
    :mcp-servers        '()
    :commands           '()
    :keys               {}})      ;; action → key overrides (e.g. {:mcp "ctrl-p"})
 
-;; ── Constructors: return values, never mutate ────────────────────
+(defun model-entries (cfg)
+  "Flatten the config's :models provider groups into {:id :label :provider}
+   entries, in declaration order."
+  (apply append
+    (map (lambda (p)
+           (map (lambda (m) (assoc m :provider (:name p))) (get p :models '())))
+         (get cfg :models '()))))
 
 (defun mcp-server (name opts)
   "A server record. OPTS is the mcp/connect map plus the app key :autostart."
@@ -71,6 +108,22 @@
     {:model      \"\"                 ; \"\" = auto-detect from API keys; or \"claude-sonnet-5\"
      :max-turns  50
      :tool-preview-lines 5          ; result lines shown under each tool call
+
+     ;; ── Models offered by the /model autocomplete, grouped by provider. ──
+     ;; Only a picker list — any model id typed by hand still works.
+     :models
+     (list
+       (provider \"Anthropic\"
+         (list
+           (model \"claude-opus-4-6\"  \"Claude Opus 4.6\")
+           (model \"claude-sonnet-5\"  \"Claude Sonnet 5\")
+           (model \"claude-haiku-4-5\" \"Claude Haiku 4.5\")))
+       (provider \"OpenAI\"
+         (list
+           (model \"gpt-5.6-sol\"   \"GPT-5.6 Sol\")
+           (model \"gpt-5.6-terra\" \"GPT-5.6 Terra\")
+           (model \"gpt-5.6-luna\"  \"GPT-5.6 Luna\")
+           (model \"gpt-5.5\"       \"GPT-5.5\"))))
 
      ;; ── MCP servers — manage in the /mcp modal (⌃O). Each is a value. ──
      :mcp-servers

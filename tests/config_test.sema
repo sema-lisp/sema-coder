@@ -11,6 +11,18 @@
        {:name "test" :desc "t" :run ["make" "test"]})
 (check "coder-config fills defaults" (:max-turns (coder-config {:model "m"})) 50)
 
+;; ── models: constructors + flattening for the /model autocomplete ──
+(check "model record" (model "gpt-5.5" "GPT-5.5") {:id "gpt-5.5" :label "GPT-5.5"})
+(check "provider record"
+       (provider "OpenAI" (list (model "gpt-5.5" "GPT-5.5")))
+       {:name "OpenAI" :models (list {:id "gpt-5.5" :label "GPT-5.5"})})
+(check "defaults carry the model list" (length (model-entries (coder-config {}))) 7)
+(check "entries carry :provider" (:provider (car (model-entries (coder-config {})))) "Anthropic")
+(check "declaration order preserved"
+       (map :id (model-entries {:models (list (provider "P" (list (model "b" "B") (model "a" "A"))))}))
+       (list "b" "a"))
+(check "no :models → no entries" (model-entries {}) '())
+
 ;; ── load-config on a good file → {:ok cfg} ──
 (file/write "/tmp/sc-init-ok.sema"
   "(configure! (coder-config {:model \"m\" :max-turns 9 :commands (list (command \"t\" {:run [\"echo\"]}))}))")

@@ -31,6 +31,26 @@
   (unless (member name *command-order*)
     (set! *command-order* (append *command-order* (list name)))))
 
+;; ── Argument completions ─────────────────────────────────────────
+;; A command may register a completion source for its argument. The TUI palette
+;; fuzzy-filters these once the input reads "/cmd <partial>"; commands without
+;; a source keep the plain prompt.
+
+(define *command-completions* {})  ;; name(string) → (fn config → ({:value :label} …))
+
+(defun register-completions! (name f)
+  (set! *command-completions* (assoc *command-completions* name f)))
+
+(defun command-has-completions? (name)
+  (if (get *command-completions* name #f) #t #f))
+
+(defun command-completions (name cfg)
+  "Completion entries for /NAME's argument — ({:value … :label …} …), or '().
+   :value is what gets inserted/run; :label is the human line shown."
+  (if-let (f (get *command-completions* name #f))
+    (f cfg)
+    '()))
+
 (defun slash-command? (input)
   (string/starts-with? (string/trim input) "/"))
 
@@ -185,12 +205,24 @@
     (if (= args "")
       (begin
         (emit :info f"model: ${(if (= (:model state) "") "auto" (:model state))}")
+        (for-each
+          (lambda (m) (emit :line (format "    ~a  ~a"
+                                    (accent (string/pad-right (:id m) 22))
+                                    (muted f"${(:provider m)}: ${(:label m)}"))))
+          (model-entries (get state :config {})))
         state)
       (begin
         (emit :ok f"switched to ${args}")
         (assoc state
           :model args
           :agent (create-agent (:cwd state) args (:config state)))))))
+
+;; The /model argument completes from the config's :models provider groups
+;; (see config.sema) — shown in the palette as "Provider: Model Name".
+(register-completions! "model"
+  (lambda (cfg)
+    (map (lambda (m) {:value (:id m) :label f"${(:provider m)}: ${(:label m)}"})
+         (model-entries cfg))))
 
 (register-command! "clear" "Clear the conversation history"
   (lambda (state args)

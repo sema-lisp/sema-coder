@@ -19,6 +19,10 @@
       (check "first server is sema" (:name srv) "sema")
       (check "sema autostarts" (:autostart srv) #t)
       (check "sema is stdio" (:transport srv) "stdio"))
-    (check "has the test command" (:name (car (:commands (:ok r)))) "test")))
+    (check "has the test command" (:name (car (:commands (:ok r)))) "test")
+    (check "has the model picker list" (length (model-entries (:ok r))) 7)
+    (check "first picker entry"
+           (car (model-entries (:ok r)))
+           {:id "claude-opus-4-6" :label "Claude Opus 4.6" :provider "Anthropic"})))
 
 (done)
