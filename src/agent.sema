@@ -51,12 +51,23 @@ Platform: ${platform}
   "Model precedence: explicit MODEL > config :model > \"\" (auto-detect)."
   (if (not (= model "")) model (get cfg :model "")))
 
+(defun sync-provider! (cfg model-id)
+  "Point the llm default provider at the one that owns MODEL-ID per the config's
+   :models groups. The agent value carries no provider — every turn uses the
+   registry default — so an OpenAI id in the picker would otherwise still hit
+   the boot default (Anthropic) and 404. No-op for a hand-typed id we don't know
+   the provider of, or a provider that isn't configured (set-default throws)."
+  (let ((p (model-provider-name cfg model-id)))
+    (when p
+      (try (llm/set-default p) (catch e nil)))))
+
 (defun create-agent (cwd model cfg)
   "Build the coding agent. Model precedence: explicit arg > config > auto."
   (set-workspace-root! cwd)
   (let* ((platform f"${(sys/os)} (${(sys/arch)})")
          (chosen (choose-model model cfg))
          (prompt (build-system-prompt cwd platform)))
+    (sync-provider! cfg chosen)   ;; route the default provider to `chosen`'s owner
     ;; Anonymous constructor, not defagent — this is called on every model
     ;; switch / config reload / MCP connect, and defagent would rebind a global
     ;; each time. (agent {…}) is cheap (~1µs) and history lives in :messages.

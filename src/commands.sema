@@ -236,7 +236,9 @@
             (model-entries cfg))
           state)
         (let ((entry (model-entry cfg args)))
-          (emit :ok f"switched to ${args}")
+          (emit :ok (if entry
+                      f"switched to ${args} (${(:provider entry)})"
+                      f"switched to ${args}"))
           (when (and entry (provider-key-missing? (:provider entry)))
             (emit :info f"note: ${(provider-env-key (:provider entry))} is not set — requests to this model will fail"))
           (when (and entry (not (= (get entry :effort "") "")) (= (get state :effort "") ""))

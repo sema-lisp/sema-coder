@@ -32,6 +32,12 @@
 (check "model-effort absent"   (model-effort cfg-me "m2") "")
 (check "model-effort unknown"  (model-effort (coder-config {}) "claude-opus-4-6") "")
 
+;; model→provider routing: the picker's display name, lowercased to the llm id
+(check "provider-name lowercased" (model-provider-name cfg-me "m1") "p")
+(check "provider-name unknown id" (model-provider-name cfg-me "nope") #f)
+(check "provider-name openai"     (model-provider-name (coder-config {}) "gpt-5.6-luna") "openai")
+(check "provider-name anthropic"  (model-provider-name (coder-config {}) "claude-opus-4-6") "anthropic")
+
 ;; ── load-config on a good file → {:ok cfg} ──
 (file/write "/tmp/sc-init-ok.sema"
   "(configure! (coder-config {:model \"m\" :max-turns 9 :commands (list (command \"t\" {:run [\"echo\"]}))}))")
