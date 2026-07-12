@@ -31,6 +31,29 @@
   (unless (member name *command-order*)
     (set! *command-order* (append *command-order* (list name)))))
 
+;; ── Argument completions ─────────────────────────────────────────
+;; A command may register a completion source for its argument. The TUI palette
+;; fuzzy-filters these once the input reads "/cmd <partial>"; commands without
+;; a source keep the plain prompt.
+
+(define *command-completions* {})  ;; name(string) → (fn state → ({:value :label [:active]} …))
+
+(defun register-completions! (name f)
+  (set! *command-completions* (assoc *command-completions* name f)))
+
+(defun command-has-completions? (name)
+  (if (get *command-completions* name #f) #t #f))
+
+(defun command-completions (name state)
+  "Completion entries for /NAME's argument — ({:value … :label …} …), or '().
+   :value is what gets inserted/run; :label is the human line shown; an entry
+   with :active #t marks the currently-in-effect value (rendered as ●)."
+  ;; nil default (not #f): on current sema `if-let` treats #f as truthy and
+  ;; would call (f state) on a missing entry.
+  (if-let (f (get *command-completions* name nil))
+    (f state)
+    '()))
+
 (defun slash-command? (input)
   (string/starts-with? (string/trim input) "/"))
 
@@ -180,17 +203,98 @@
     (emit :line "")
     state))
 
+(defun provider-env-key (name)
+  "The conventional API-key env var for a provider display NAME, or #f."
+  (match (string/lower name)
+    ("anthropic" "ANTHROPIC_API_KEY")
+    ("openai"    "OPENAI_API_KEY")
+    (_ #f)))
+
+(defun provider-key-missing? (name)
+  "True when NAME's key env var is known and unset — its models can't be called."
+  ;; plain let/if: provider-env-key returns #f for unknown providers, which
+  ;; current sema's `if-let` would wrongly treat as truthy (then (env #f)).
+  (let ((k (provider-env-key name)))
+    (if k (let ((v (env k))) (if (or (nil? v) (= v "")) #t #f)) #f)))
+
 (register-command! "model" "Show or switch the model: /model [name]"
   (lambda (state args)
-    (if (= args "")
-      (begin
-        (emit :info f"model: ${(if (= (:model state) "") "auto" (:model state))}")
-        state)
-      (begin
-        (emit :ok f"switched to ${args}")
-        (assoc state
-          :model args
-          :agent (create-agent (:cwd state) args (:config state)))))))
+    (let* ((cfg     (get state :config {}))
+           (current (choose-model (get state :model "") cfg)))
+      (if (= args "")
+        (begin
+          (emit :info f"model: ${(if (= current "") "auto" current)}")
+          (for-each
+            (lambda (m) (emit :line (format "    ~a  ~a~a"
+                                      (accent (string/pad-right (:id m) 22))
+                                      (muted f"${(:provider m)}: ${(:label m)}")
+                                      (string/append
+                                        (if (= (:id m) current) (ok " ●") "")
+                                        (if (provider-key-missing? (:provider m)) (muted " · no key") "")))))
+            (model-entries cfg))
+          state)
+        (let ((entry (model-entry cfg args)))
+          (emit :ok f"switched to ${args}")
+          (when (and entry (provider-key-missing? (:provider entry)))
+            (emit :info f"note: ${(provider-env-key (:provider entry))} is not set — requests to this model will fail"))
+          (when (and entry (not (= (get entry :effort "") "")) (= (get state :effort "") ""))
+            (emit :info f"effort → ${(get entry :effort "")} (model default; /effort overrides)"))
+          (assoc state
+            :model args
+            :agent (create-agent (:cwd state) args cfg)))))))
+
+;; The /model argument completes from the config's :models provider groups
+;; (see config.sema) — shown in the palette as "Provider: Model Name", with the
+;; active model marked and providers whose API key is missing annotated.
+(register-completions! "model"
+  (lambda (state)
+    (let* ((cfg     (get state :config {}))
+           (current (choose-model (get state :model "") cfg)))
+      (map (lambda (m)
+             {:value  (:id m)
+              :label  (string/append f"${(:provider m)}: ${(:label m)}"
+                                     (if (provider-key-missing? (:provider m)) " · no key" ""))
+              :active (= (:id m) current)})
+           (model-entries cfg)))))
+
+;; Sema's portable :reasoning-effort levels (llm docs); models without
+;; reasoning support ignore the option, so no per-model gating is needed.
+(define effort-levels (list "none" "minimal" "low" "medium" "high" "xhigh"))
+
+(register-command! "effort" "Show or set reasoning effort: /effort [level|default]"
+  (lambda (state args)
+    ;; Accept ":high" as well as "high" — the docs write levels as keywords.
+    (let ((v (let ((a (string/trim args)))
+               (if (string/starts-with? a ":") (string/slice a 1 (string/length a)) a))))
+      (cond
+        ((= v "")
+          (let* ((cfg (get state :config {}))
+                 (cur (pick-effort (get state :effort "") (choose-model (get state :model "") cfg) cfg)))
+            (emit :info f"effort: ${(if (= cur "") "default" cur)} · levels: ${(string/join effort-levels ", ")} · /effort default resets"))
+          state)
+        ((= v "default")
+          (emit :ok "reasoning effort → provider default")
+          (assoc state :effort ""))
+        ((member v effort-levels)
+          (emit :ok f"reasoning effort → ${v}")
+          (assoc state :effort v))
+        (else
+          (emit :error f"unknown effort “${v}” (try ${(string/join effort-levels ", ")}, or default)")
+          state)))))
+
+(register-completions! "effort"
+  (lambda (state)
+    (let* ((cfg (get state :config {}))
+           (cur (pick-effort (get state :effort "") (choose-model (get state :model "") cfg) cfg))
+           (mark (if (= cur "") "default" cur)))
+      (map (lambda (e) (assoc e :active (= (:value e) mark)))
+        (list {:value "none"    :label "none — thinking disabled"}
+              {:value "minimal" :label "minimal — barely deliberates"}
+              {:value "low"     :label "low — quick and cheap"}
+              {:value "medium"  :label "medium — balanced"}
+              {:value "high"    :label "high — thorough"}
+              {:value "xhigh"   :label "xhigh — maximum deliberation"}
+              {:value "default" :label "default — back to the provider default"})))))
 
 (register-command! "clear" "Clear the conversation history"
   (lambda (state args)
@@ -218,21 +322,52 @@
             servers))))
     state))
 
-(register-command! "resume" "Resume a past session (opens the modal; ⌃R in the TUI)"
+(register-command! "resume" "Resume a past session: /resume [id] (modal: ⌃R in the TUI)"
   (lambda (state args)
-    (if *tui-active*
-      (open-resume-modal!)
-      (let ((ss (list-sessions)))
-        (if (= (length ss) 0)
-          (emit :info "no saved sessions yet")
-          (for-each
-            (lambda (m) (emit :line (format "    ~a  ~a msgs  ~a"
-                                     (string/pad-right (:title m) 40) (:count m) (:id m))))
-            ss))))
-    state))
+    (cond
+      ;; /resume <id> — restore directly, no modal.
+      ((not (= args ""))
+        (if *tui-active*
+          (begin
+            (try (restore-session! args)
+              (catch e (emit :error f"couldn't restore “${args}”: ${(get e :message (str e))}")))
+            ;; restore-session! updates the TUI globals; hand them back as state.
+            (tui-state))
+          (let ((r (try (load-session args) (catch e #f))))
+            (if (not r)
+              (begin (emit :error f"no session “${args}” (try /resume for the list)") state)
+              (let* ((meta (:meta r))
+                     (m    (get meta :model "")))
+                (emit :ok f"resumed “${(get meta :title args)}” · ${(length (:messages r))} messages")
+                (assoc state
+                  :messages (:messages r)
+                  :model  m
+                  :effort (get meta :effort "")
+                  :agent  (create-agent (:cwd state) m (get state :config {}))))))))
+      (*tui-active* (open-resume-modal!) state)
+      (else
+        (let ((ss (list-sessions)))
+          (if (= (length ss) 0)
+            (emit :info "no saved sessions yet")
+            (for-each
+              (lambda (m) (emit :line (format "    ~a  ~a msgs  ~a"
+                                       (string/pad-right (:title m) 40) (:count m) (:id m))))
+              ss)))
+        state))))
+
+;; The /resume argument completes from the saved sessions, newest first.
+(register-completions! "resume"
+  (lambda (state)
+    (map (lambda (m) {:value (:id m)
+                      :label f"${(:title m)} · ${(:count m)} msgs"})
+         (list-sessions))))
 
 (register-command! "cwd" "Show the working directory"
   (lambda (state args) (emit :info (:cwd state)) state))
+
+(register-completions! "config"
+  (lambda (state)
+    (list {:value "edit" :label "open init.sema in your editor"})))
 
 (register-command! "config" "Show the config path (/config edit opens it)"
   (lambda (state args)

@@ -12,13 +12,14 @@
     {:role "assistant" :content "21 plus 21 is 42."}))
 
 (parameterize ((config-dir-override tmp))
-  (save-session! "sess1" 1700000000 "claude-opus-4-8" msgs)
+  (save-session! "sess1" 1700000000 "claude-opus-4-8" "high" msgs)
 
   (let ((rows (list-sessions)))
     (check "one session listed" (length rows) 1)
     (let ((m (car rows)))
       (check "title from first user msg" (:title m) "add 21 and 21")
       (check "model preserved"           (:model m) "claude-opus-4-8")
+      (check "effort preserved"          (:effort m) "high")
       (check "created preserved"         (:created m) 1700000000)
       (check "message count"             (:count m) 4)))
 
@@ -33,7 +34,7 @@
       (check "tool-call-id linked" (:tool-call-id tm) "c1")))
 
   ;; empty message list writes nothing
-  (save-session! "empty" 1700000001 "m" '())
+  (save-session! "empty" 1700000001 "m" "" '())
   (check "empty not persisted" (length (list-sessions)) 1)
 
   (file/delete (session-path "sess1")))

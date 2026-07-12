@@ -21,6 +21,57 @@
 (check "no matches" (palette-matches) '())
 (set! *input* "")
 
+;; ── argument completions (/model <partial> → the config's model picker) ──
+(set! *config* (coder-config {}))
+(set! *input* "/model ")
+(let ((pv (palette-view)))
+  (check "space after /model → arg mode" (:mode pv) :args)
+  (check "box titled by the command"     (:title pv) "model")
+  (check "empty query lists every model" (length (:entries pv)) 7))
+(set! *input* "/model opus")
+(check "best match ranks first" (:value (car (palette-entries))) "claude-opus-4-6")
+(set! *input* "/model gpt")
+(check-true "matches by id"    (any #(= (:value %) "gpt-5.5") (palette-entries)))
+(set! *input* "/model terra")
+(check-true "matches by label" (any #(= (:value %) "gpt-5.6-terra") (palette-entries)))
+(set! *input* "/model zzzznope")
+(check "no model matches" (palette-entries) '())
+
+;; ── active-value marker ──
+(set! *model* "claude-sonnet-5")
+(set! *input* "/model ")
+(check "active model marked"
+       (map :value (filter #(get % :active #f) (palette-entries)))
+       (list "claude-sonnet-5"))
+(set! *input* "/effort ")
+(check "default effort marked active"
+       (map :value (filter #(get % :active #f) (palette-entries)))
+       (list "default"))
+(set! *model* "")
+
+;; ── palette-choice / palette-completion (pure Enter/Tab logic) ──
+(set! *input* "/model opus")
+(check "enter runs the selection"  (palette-choice (palette-view) 0 *input*) "/model claude-opus-4-6")
+(check "tab completes selection"   (palette-completion (palette-view) 0) "/model claude-opus-4-6")
+(set! *input* "/model gpt-5.5")
+(check "exact value runs as typed" (palette-choice (palette-view) 0 *input*) "/model gpt-5.5")
+(set! *input* "/model zzz-custom")
+(check "unknown id passes through" (palette-choice (palette-view) 0 *input*) "/model zzz-custom")
+(check "tab with no match is #f"   (if (palette-completion (palette-view) 0) #t #f) #f)
+(set! *input* "/mod")
+(check "command mode enter picks match" (palette-choice (palette-view) 0 *input*) "/model")
+(check "command mode tab appends space" (palette-completion (palette-view) 0) "/model ")
+(set! *input* "/effort ")
+(check "effort levels offered" (length (palette-entries)) 7)
+(set! *input* "/effort xh")
+(check "effort fuzzy match" (:value (car (palette-entries))) "xhigh")
+(set! *input* "/mod")
+(check "no space yet → command mode" (:mode (palette-view)) :commands)
+(set! *input* "/help x")
+(check "no completions registered → command mode" (:mode (palette-view)) :commands)
+(set! *input* "")
+(set! *config* {})
+
 ;; ── window-list (modal scrolling) ──
 (define xs (list "a" "b" "c" "d" "e"))
 (check "top of list"    (window-list xs 0 3) {:items (list "a" "b" "c") :start 0})
