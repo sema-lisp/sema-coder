@@ -48,7 +48,9 @@
   "Completion entries for /NAME's argument — ({:value … :label …} …), or '().
    :value is what gets inserted/run; :label is the human line shown; an entry
    with :active #t marks the currently-in-effect value (rendered as ●)."
-  (if-let (f (get *command-completions* name #f))
+  ;; nil default (not #f): on current sema `if-let` treats #f as truthy and
+  ;; would call (f state) on a missing entry.
+  (if-let (f (get *command-completions* name nil))
     (f state)
     '()))
 
@@ -210,9 +212,10 @@
 
 (defun provider-key-missing? (name)
   "True when NAME's key env var is known and unset — its models can't be called."
-  (if-let (k (provider-env-key name))
-    (let ((v (env k))) (if (or (nil? v) (= v "")) #t #f))
-    #f))
+  ;; plain let/if: provider-env-key returns #f for unknown providers, which
+  ;; current sema's `if-let` would wrongly treat as truthy (then (env #f)).
+  (let ((k (provider-env-key name)))
+    (if k (let ((v (env k))) (if (or (nil? v) (= v "")) #t #f)) #f)))
 
 (register-command! "model" "Show or switch the model: /model [name]"
   (lambda (state args)

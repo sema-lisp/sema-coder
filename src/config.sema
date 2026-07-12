@@ -70,7 +70,11 @@
 
 (defun model-effort (cfg model-id)
   "The per-model :effort default declared on CFG's entry for MODEL-ID, or \"\"."
-  (if-let (e (model-entry cfg model-id)) (get e :effort "") ""))
+  ;; plain `let`/`if`, not `if-let`: model-entry returns #f when absent, and on
+  ;; current sema `if-let` treats #f as truthy — it would bind e=#f and crash in
+  ;; `get`. `if` reads #f as falsy correctly.
+  (let ((e (model-entry cfg model-id)))
+    (if e (get e :effort "") "")))
 
 (defun mcp-server (name opts)
   "A server record. OPTS is the mcp/connect map plus the app key :autostart."
