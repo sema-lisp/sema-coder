@@ -82,6 +82,17 @@
         (string/join (take n lines) "\n")
         f"\n\n[truncated — showing first ${n} of ${(length lines)} lines]"))))
 
+(defun truncate-chars (text max-chars)
+  "Cap TEXT at MAX-CHARS codepoints, noting how much was cut. Applied on top of
+   the line cap to guard against lines too large to be counted in lines at all
+   (e.g. a minified JS bundle emitted as a single line)."
+  (let ((n (string/length text)))
+    (if (<= n max-chars)
+      text
+      (string/append
+        (string/slice text 0 max-chars)
+        f"\n\n[truncated — output exceeded ${max-chars} characters]"))))
+
 (defun lines->numbered (text)
   "Prepend 1-indexed line numbers (tab-separated) to each line."
   (let ((lines (string/split text "\n")))

@@ -62,6 +62,7 @@
 (define *reload-at* 0)        ;; debounce: reload once the change settles (0 = idle)
 (define *session-id* #f)      ;; current session's file id (persisted after each turn)
 (define *session-created* 0)  ;; its creation timestamp (ms)
+(define *persist-warned* #f)  ;; emitted at most one persist-failure warning per session
 
 ;; The key loop must read the quit flag through a function call: on current
 ;; sema releases, a direct global read inside a recursive loop in a `load`ed
@@ -449,22 +450,29 @@
 (defun persist-session! ()
   (when *session-id*
     (try (save-session! *session-id* *session-created* (effective-model) (effective-effort) *messages*)
-      (catch e nil))))
+      (catch e
+        (unless *persist-warned*
+          (set! *persist-warned* #t)
+          (add-block! {:kind :warn :text f"session not saved: ${e} — check disk space and permissions"}))))))
 
 (defun restore-session! (id)
-  (let (({:keys [meta messages]} (load-session id)))
-    (set! *messages* messages)
-    (set! *session-id* id)
-    (set! *session-created* (get meta :created (time-ms)))
-    ;; Resume the session's model + effort too, and rebuild the agent on them —
-    ;; a resumed conversation continues on what it was actually running.
-    (set! *model*  (get meta :model ""))
-    (set! *effort* (get meta :effort ""))
-    (set! *agent*  (create-agent *cwd* *model* *config*))
-    (clear-transcript!)
-    (for-each add-block! (messages->blocks messages))
-    (add-block! {:kind :info :text f"resumed “${(get meta :title id)}” · ${(length messages)} messages · ${(let ((m (get meta :model ""))) (if (= m "") "auto" m))}"})
-    (set! *scroll* 0)))
+  (try
+    (let (({:keys [meta messages]} (load-session id)))
+      (set! *messages* messages)
+      (set! *session-id* id)
+      (set! *session-created* (get meta :created (time-ms)))
+      (set! *persist-warned* #f)
+      ;; Resume the session's model + effort too, and rebuild the agent on them —
+      ;; a resumed conversation continues on what it was actually running.
+      (set! *model*  (get meta :model ""))
+      (set! *effort* (get meta :effort ""))
+      (set! *agent*  (create-agent *cwd* *model* *config*))
+      (clear-transcript!)
+      (for-each add-block! (messages->blocks messages))
+      (add-block! {:kind :info :text f"resumed “${(get meta :title id)}” · ${(length messages)} messages · ${(let ((m (get meta :model ""))) (if (= m "") "auto" m))}"})
+      (set! *scroll* 0))
+    (catch e
+      (add-block! {:kind :error :text f"failed to restore session: ${e}"}))))
 
 ;; ── Commands (dispatched through the shared registry) ────────────────────────
 ;; The TUI parameterizes the emit sink so registry handlers — including any

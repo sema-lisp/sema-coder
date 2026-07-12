@@ -106,8 +106,10 @@
       (if (= args "") lst (append lst (list args))))))
 
 (defun run-argv-command (argv args)
+  ;; sh-quote every token so the argv list runs in the workspace just like the
+  ;; :shell variant — `run-in-workspace` pins cwd via `cd <root> &&`.
   (let* ((full (argv-for argv args))
-         (res  (apply shell full))
+         (res  (run-in-workspace (string/join (map sh-quote full) " ")))
          (out  (string/trim (:stdout res)))
          (err  (string/trim (:stderr res))))
     (emit :info (string/append "$ " (string/join full " ")))

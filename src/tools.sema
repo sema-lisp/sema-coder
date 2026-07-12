@@ -10,7 +10,8 @@
 (load "text.sema")
 
 (define MAX-READ-LINES   2000)   ;; read-file cap
-(define MAX-OUTPUT-LINES 500)    ;; bash output cap
+(define MAX-OUTPUT-LINES 500)    ;; bash output line cap
+(define MAX-OUTPUT-CHARS 100000) ;; bash output character cap (~100 KB ASCII)
 (define MAX-MATCH-LINES  100)    ;; grep result cap
 (define MAX-FIND-LINES   200)    ;; find-files result cap
 
@@ -50,19 +51,21 @@
    :new_string {:type :string :description "Replacement string"}}
   (lambda (path old_string new_string)
     (try
-      (let ((resolved (resolve-path workspace-root path)))
-        (if (not (file/exists? resolved))
-          f"Error: File not found: ${path}"
-          (let* ((content (file/read resolved))
-                 (n       (count-occurrences content old_string)))
-            (cond
-              ((= n 0)
-                f"Error: old_string not found in ${path}. Read the file first.")
-              ((> n 1)
-                f"Error: old_string matches ${n} times in ${path}. Add surrounding context to make it unique.")
-              (else
-                (file/write resolved (string/replace content old_string new_string))
-                f"Edited ${path} (1 replacement)")))))
+      (if (= old_string "")
+        "Error: old_string must not be empty."
+        (let ((resolved (resolve-path workspace-root path)))
+          (if (not (file/exists? resolved))
+            f"Error: File not found: ${path}"
+            (let* ((content (file/read resolved))
+                   (n       (count-occurrences content old_string)))
+              (cond
+                ((= n 0)
+                  f"Error: old_string not found in ${path}. Read the file first.")
+                ((> n 1)
+                  f"Error: old_string matches ${n} times in ${path}. Add surrounding context to make it unique.")
+                (else
+                  (file/write resolved (string/replace content old_string new_string))
+                  f"Edited ${path} (1 replacement)"))))))
       (catch e f"Error editing file ${path}: ${e}"))))
 
 ;; ── Shell-backed tools ───────────────────────────────────────────
@@ -86,7 +89,9 @@
                        (if (= code 0) '() (list f"Exit code: ${code}")))))
         (if (null? parts)
           "Command completed successfully (no output)."
-          (-> (string/join parts "\n") (truncate-lines MAX-OUTPUT-LINES))))
+          (-> (string/join parts "\n")
+              (truncate-chars MAX-OUTPUT-CHARS)
+              (truncate-lines MAX-OUTPUT-LINES))))
       (catch e f"Error running command: ${e}"))))
 
 (defun search-workspace (pattern target)
