@@ -4,7 +4,7 @@
 
 # Sema Coder
 
-**A terminal coding agent written almost entirely in [Sema](https://sema-lang.com)** — a Lisp with first-class LLM primitives.
+**A terminal coding agent written entirely in [Sema](https://sema-lang.com)** — a Lisp with first-class LLM primitives.
 
 [![License](https://img.shields.io/github/license/sema-lisp/sema-coder?color=c8a855)](LICENSE)
 [![Website](https://img.shields.io/badge/website-sema--lang.com-c8a855)](https://sema-lang.com)
