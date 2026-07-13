@@ -67,7 +67,7 @@ Platform: ${platform}
   (let* ((platform f"${(sys/os)} (${(sys/arch)})")
          (chosen (choose-model model cfg))
          (prompt (build-system-prompt cwd platform)))
-    (sync-provider! cfg chosen)   ;; route the default provider to `chosen`'s owner
+    (sync-provider! cfg chosen)
     ;; Anonymous constructor, not defagent — this is called on every model
     ;; switch / config reload / MCP connect, and defagent would rebind a global
     ;; each time. (agent {…}) is cheap (~1µs) and history lives in :messages.
