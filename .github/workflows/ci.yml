@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Setup Sema
-        uses: sema-lisp/setup-sema@main
+        uses: sema-lisp/setup-sema@v1
 
       - name: Run tests
         run: sema test.sema
