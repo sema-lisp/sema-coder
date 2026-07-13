@@ -29,6 +29,11 @@
 (check "truncate-lines keeps" (truncate-lines "a\nb" 5) "a\nb")
 (check-contains "truncate-lines notes cut" (truncate-lines "a\nb\nc\nd" 2) "truncated")
 (check "numbered"             (lines->numbered "a\nb") "1\ta\n2\tb")
+(check "truncate-chars short" (truncate-chars "abc" 10) "abc")
+(check-contains "truncate-chars notes cut" (truncate-chars "abcdef" 3) "truncated")
+(check-true "truncate-chars slices to max" (string/starts-with? (truncate-chars "abcdefgh" 3) "abc"))
+;; codepoint-based, not byte: 3 CJK chars capped at 2 keep 2 codepoints
+(check-true "truncate-chars counts codepoints" (string/starts-with? (truncate-chars "你你你" 2) "你你"))
 
 ;; ── indexed iteration ──
 (check "enumerate-map" (enumerate-map (lambda (i x) (list i x)) (list "a" "b"))

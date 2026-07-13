@@ -9,7 +9,8 @@
 (load "util.sema")
 (load "text.sema")
 
-(define MAX-READ-LINES   2000)   ;; read-file cap
+(define MAX-READ-LINES   2000)   ;; read-file line cap
+(define MAX-READ-CHARS   100000) ;; read-file character cap (bounds a few huge lines)
 (define MAX-OUTPUT-LINES 500)    ;; bash output line cap
 (define MAX-OUTPUT-CHARS 100000) ;; bash output character cap (~100 KB ASCII)
 (define MAX-MATCH-LINES  100)    ;; grep result cap
@@ -24,7 +25,8 @@
         (if (file/exists? resolved)
           (-> (file/read resolved)
               lines->numbered
-              (truncate-lines MAX-READ-LINES))
+              (truncate-lines MAX-READ-LINES)
+              (truncate-chars MAX-READ-CHARS))   ;; catch a few very long lines the line cap misses
           f"Error: File not found: ${path}"))
       (catch e f"Error reading file ${path}: ${e}"))))
 
@@ -112,7 +114,7 @@
                (out    (string/trim (:stdout result)))
                (err    (string/trim (:stderr result))))
           (cond
-            ((not (= out "")) (truncate-lines out MAX-MATCH-LINES))
+            ((not (= out "")) (truncate-chars (truncate-lines out MAX-MATCH-LINES) MAX-OUTPUT-CHARS))
             ((= err "")       "No matches found.")
             (else             f"Error searching: ${err}")))
         (catch e f"Error searching: ${e}")))))

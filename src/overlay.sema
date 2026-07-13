@@ -57,8 +57,10 @@
 (defun open-mcp-modal! () (set-overlay! {:kind :mcp :view :list :sel 0 :tsel 0}))
 
 (defun mcp-sel-server ()
+  ;; nil (not #f) when there's no selection: when-let in the connect/disconnect
+  ;; helpers treats #f as truthy on current sema and would call (:name #f).
   (let ((v (mcp-records)) (i (:sel (overlay))))
-    (if (and (> (length v) 0) (< i (length v))) (nth v i) #f)))
+    (if (and (> (length v) 0) (< i (length v))) (nth v i) nil)))
 
 (defun rebuild-agent-with-mcp! ()
   (set! *agent* (create-agent *cwd* *model* *config*)))
@@ -165,8 +167,10 @@
   (set-overlay! {:kind :resume :view :list :sel 0 :dscroll 0 :sessions (list-sessions)}))
 
 (defun resume-sel-session ()
+  ;; nil (not #f) when there's no selection: when-let in the restore/detail
+  ;; helpers treats #f as truthy on current sema and would call (:id #f).
   (let ((ss (:sessions (overlay))) (i (:sel (overlay))))
-    (if (and (> (length ss) 0) (< i (length ss))) (nth ss i) #f)))
+    (if (and (> (length ss) 0) (< i (length ss))) (nth ss i) nil)))
 
 (defun session-model-label (m)
   (let ((md (:model m))) (if (or (not md) (= md "")) "auto" md)))

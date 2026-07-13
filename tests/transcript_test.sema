@@ -29,4 +29,11 @@
 ;; empty results render nothing
 (check "empty result renders nothing" (preview-lines "   ") '())
 
+;; ── :raw blocks preserve internal whitespace, clipped not wrapped ──
+(check-contains ":raw keeps space runs"
+  (car (block-lines {:kind :raw :text "col1     col2"} 40)) "col1     col2")
+;; a too-wide :raw line stays a single row (clipped), never soft-wrapped into more
+(check ":raw wide line stays one row + blank"
+  (length (block-lines {:kind :raw :text (string/repeat "x" 200)} 20)) 2)
+
 (done)

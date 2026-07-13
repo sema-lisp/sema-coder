@@ -19,13 +19,18 @@
 
 (defun save-session! (id created model effort messages)
   "Write the session as JSONL (meta line + one message per line). No-op if empty.
-   MODEL and EFFORT are the session's effective values, so /resume restores them."
+   MODEL and EFFORT are the session's effective values, so /resume restores them.
+   Writes a temp file then renames over the target so a crash mid-write can't
+   truncate the existing session — rename is atomic within a filesystem."
   (when (> (length messages) 0)
     (file/mkdir (sessions-dir))
-    (let ((meta {:kind "meta" :id id :created created :model model :effort effort
-                 :title (session-title messages)}))
-      (file/write (session-path id)
-        (string/join (cons (json/encode meta) (map json/encode messages)) "\n")))))
+    (let* ((meta {:kind "meta" :id id :created created :model model :effort effort
+                  :title (session-title messages)})
+           (dest (session-path id))
+           (tmp  (string/append dest ".tmp")))
+      (file/write tmp
+        (string/join (cons (json/encode meta) (map json/encode messages)) "\n"))
+      (file/rename tmp dest))))
 
 (defun read-lines (path)
   (filter #(not (= (string/trim %) "")) (string/split (file/read path) "\n")))

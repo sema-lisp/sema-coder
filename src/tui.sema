@@ -318,7 +318,10 @@
                  tlines))
          (rows (append (list (header-line)) body (list (prompt-line)) (list (status-line))))
          (rows (fit-rows rows *rows*))
-         (rows (if (overlay-active?) (overlay-center rows (overlay-rows)) rows)))
+         (rows (if (overlay-active?) (overlay-center rows (overlay-rows)) rows))
+         ;; An overlay taller than the terminal yields more than *rows* rows;
+         ;; re-clamp so render! never writes past the bottom and desyncs the diff.
+         (rows (fit-rows rows *rows*)))
     ;; Normalize to exactly *rows* padded strings.
     (map #(pad-to % *cols*) rows)))
 
@@ -488,12 +491,17 @@
    :cwd *cwd* :agent *agent* :config *config*})
 
 (defun apply-tui-state! (st)
-  (set! *messages* (:messages st))
-  (set! *model*    (:model st))
-  (set! *effort*   (get st :effort ""))
-  (set! *cwd*      (:cwd st))
-  (set! *agent*    (:agent st))
-  (set! *config*   (:config st)))
+  (let ((cleared? (and (> (length *messages*) 0) (null? (:messages st)))))
+    (set! *messages* (:messages st))
+    (set! *model*    (:model st))
+    (set! *effort*   (get st :effort ""))
+    (set! *cwd*      (:cwd st))
+    (set! *agent*    (:agent st))
+    (set! *config*   (:config st))
+    ;; A command that emptied the conversation (/clear) starts a fresh session,
+    ;; so the next turn writes a new file instead of overwriting the one the
+    ;; just-cleared conversation was persisted under.
+    (when cleared? (new-session!))))
 
 (defun run-command! (input)
   ;; A throwing handler (a user-registered command, or /model on a bad model)
@@ -559,8 +567,11 @@
         (else (set! *should-quit* #t))))
     (:quit       (unless *busy* (set! *should-quit* #t)))
     (:palette    (set! *input* "/") (set! *cursor* 1) (set! *psel* 0))
-    (:mcp        (open-mcp-modal!))
-    (:resume     (open-resume-modal!))
+    ;; No overlay while a turn runs: a restore/reconnect mid-turn would race the
+    ;; finishing turn, which then overwrites *messages* and persists onto the
+    ;; wrong session file. (Typed /mcp and /resume are already gated by on-enter.)
+    (:mcp        (unless *busy* (open-mcp-modal!)))
+    (:resume     (unless *busy* (open-resume-modal!)))
     (:clear-line (clear-input!))
     (:line-start (set! *cursor* 0))
     (:line-end   (set! *cursor* (string/length *input*)))
@@ -654,6 +665,7 @@
         (set! *config-error* #f)
         (reconcile-commands! (:commands cfg))
         (reconcile-servers! (:mcp-servers cfg))
+        (mcp-autostart!)   ;; connect any newly-declared :autostart servers
         (set! *config* cfg)
         (set! *agent* (create-agent *cwd* *model* cfg))
         (add-block! {:kind :ok :text f"config reloaded · model → ${(if (= (:model cfg) "") "auto" (:model cfg))}"})

@@ -159,11 +159,13 @@
     cfg))
 
 (defun editor-command ()
-  "The user's preferred editor: $VISUAL, then $EDITOR (may carry flags), or #f."
+  "The user's preferred editor: $VISUAL, then $EDITOR (may carry flags), or nil."
+  ;; nil (not #f) when unset: open-config! uses when-let, which treats #f as
+  ;; truthy on current sema and would run a shell command literally named "#f".
   (let ((v (env "VISUAL")) (e (env "EDITOR")))
     (cond ((and v (not (= v ""))) v)
           ((and e (not (= e ""))) e)
-          (else #f))))
+          (else nil))))
 
 (defun opened-ok? (res) (= (get res :exit-code 1) 0))
 
@@ -394,11 +396,22 @@
 
 (register-command! "reload" "Reload config from disk and rebuild the agent"
   (lambda (state args)
-    (let ((cfg (boot-config!)))
-      (emit :ok "config reloaded")
-      (assoc state
-        :config cfg
-        :agent (create-agent (:cwd state) (:model state) cfg)))))
+    ;; On a broken init.sema, keep the running config (like the file-watch
+    ;; reload) instead of reconciling to defaults — a typo must not wipe the
+    ;; user's live commands, keybindings, and MCP servers.
+    (let ((r (load-config (config-path))))
+      (if (:ok r)
+        (let ((cfg (:ok r)))
+          (reconcile-commands! (:commands cfg))
+          (reconcile-servers! (:mcp-servers cfg))
+          (mcp-autostart!)
+          (emit :ok "config reloaded")
+          (assoc state
+            :config cfg
+            :agent (create-agent (:cwd state) (:model state) cfg)))
+        (begin
+          (emit :error f"config: ${(:error r)} — keeping current config")
+          state)))))
 
 (register-command! "quit" "Exit Sema Coder" (lambda (state args) 'quit))
 (register-command! "exit" "Exit Sema Coder" (lambda (state args) 'quit))

@@ -24,6 +24,15 @@
 (check "disconnected idle"    (:status (mcp-get "sema")) :idle)
 (check "no tools after"       (length (all-mcp-tools)) 0)
 
+;; ── reconcile preserves a LIVE connection (a hot-reload must keep the tools) ──
+(mcp-reset!)
+(reconcile-servers! (list (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))
+(check "connected before reconcile"  (mcp-connect! "sema") :connected)
+(reconcile-servers! (list (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))
+(check "reconcile keeps connected"   (:status (mcp-get "sema")) :connected)
+(check "reconcile keeps its tools"   (length (all-mcp-tools)) 2)
+(mcp-disconnect! "sema")
+
 ;; ── autostart connects only :autostart servers ──
 (mcp-reset!)
 (reconcile-servers! (list (mcp-server "auto"   {:command "sema" :args ["mcp" "--include" "eval"] :autostart #t})
