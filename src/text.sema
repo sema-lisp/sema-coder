@@ -124,6 +124,29 @@
           (string/append body f"\n\n[showing lines ${start}-${endln} of ${total}]")
           body)))))
 
+;; ── Word boundaries (for prompt-input word motion / delete-word) ──
+
+(defun word-char? (c) (not (or (= c " ") (= c "\t"))))
+
+(defun word-left-index (s i)
+  "Codepoint index of the previous word boundary before I in S: skip whitespace,
+   then word chars, leftward. (i → start of the word to its left.)"
+  (let* ((skip-ws (let loop ((j i))
+                    (if (and (> j 0) (not (word-char? (string/slice s (- j 1) j)))) (loop (- j 1)) j)))
+         (skip-wd (let loop ((j skip-ws))
+                    (if (and (> j 0) (word-char? (string/slice s (- j 1) j))) (loop (- j 1)) j))))
+    skip-wd))
+
+(defun word-right-index (s i)
+  "Codepoint index of the next word boundary after I in S: skip whitespace, then
+   word chars, rightward. (i → end of the word to its right.)"
+  (let* ((n (string/length s))
+         (skip-ws (let loop ((j i))
+                    (if (and (< j n) (not (word-char? (string/slice s j (+ j 1))))) (loop (+ j 1)) j)))
+         (skip-wd (let loop ((j skip-ws))
+                    (if (and (< j n) (word-char? (string/slice s j (+ j 1)))) (loop (+ j 1)) j))))
+    skip-wd))
+
 ;; ── Indexed iteration ────────────────────────────────────────────
 
 (defun enumerate (xs)

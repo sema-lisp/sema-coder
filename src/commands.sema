@@ -318,7 +318,13 @@
 
 (register-command! "tools" "List the agent's tools"
   (lambda (state args)
-    (for-each #(emit :line f"    ${(accent %)}") (map tool/name (agent-tools)))
+    (let ((origins (mcp-tool-origins)))
+      (for-each
+        (lambda (t)
+          (let ((srv (get origins (tool/name t) #f)))
+            (emit :line (string/append "    " (accent (string/pad-right (tool/name t) 14))
+                                       (if srv (muted f"· mcp:${srv}") "")))))
+        (agent-tools)))
     state))
 
 (register-command! "mcp" "Manage MCP servers (opens the modal; ⌃O in the TUI)"

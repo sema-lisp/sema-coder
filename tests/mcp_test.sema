@@ -31,7 +31,9 @@
 (reconcile-servers! (list (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))
 (check "reconcile keeps connected"   (:status (mcp-get "sema")) :connected)
 (check "reconcile keeps its tools"   (length (all-mcp-tools)) 2)
+(check "tool origin maps to server"  (get (mcp-tool-origins) "eval") "sema")
 (mcp-disconnect! "sema")
+(check "no origins once disconnected" (mcp-tool-origins) {})
 
 ;; ── autostart connects only :autostart servers ──
 (mcp-reset!)

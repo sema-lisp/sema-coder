@@ -531,6 +531,25 @@
     (set! *cursor* (- *cursor* 1))
     (set! *psel* 0)))
 
+(defun forward-delete! ()
+  "Delete the codepoint AT the cursor (the Delete / Fn+Delete key)."
+  (when (< *cursor* (string/length *input*))
+    (set! *input* (string/append (string/slice *input* 0 *cursor*)
+                                 (string/slice *input* (+ *cursor* 1) (string/length *input*))))
+    (set! *psel* 0)))
+
+(defun delete-word-backward! ()
+  "Delete from the previous word boundary up to the cursor (Option+Delete)."
+  (let ((start (word-left-index *input* *cursor*)))
+    (when (< start *cursor*)
+      (set! *input* (string/append (string/slice *input* 0 start)
+                                   (string/slice *input* *cursor* (string/length *input*))))
+      (set! *cursor* start)
+      (set! *psel* 0))))
+
+(defun word-left! ()  (set! *cursor* (word-left-index *input* *cursor*)))
+(defun word-right! () (set! *cursor* (word-right-index *input* *cursor*)))
+
 (defun clear-input! () (set! *input* "") (set! *cursor* 0) (set! *psel* 0))
 
 (defun on-enter ()
@@ -578,12 +597,18 @@
     (:repaint    (full-repaint!))
     (action      (run-key-command! action))))
 
-(defun handle-named (name)
-  (match name
+(defun word-motion? (k)
+  "A held Option (alt) or Ctrl modifier turns arrow motion into word motion."
+  (let ((mods (get k :mods '())))
+    (or (member :alt mods) (member :ctrl mods))))
+
+(defun handle-named (k)
+  (match (:name k)
     (:enter     (on-enter))
     (:backspace (backspace!))
-    (:left      (set! *cursor* (max 0 (- *cursor* 1))))
-    (:right     (set! *cursor* (min (string/length *input*) (+ *cursor* 1))))
+    (:delete    (forward-delete!))
+    (:left      (if (word-motion? k) (word-left!)  (set! *cursor* (max 0 (- *cursor* 1)))))
+    (:right     (if (word-motion? k) (word-right!) (set! *cursor* (min (string/length *input*) (+ *cursor* 1)))))
     (:home      (set! *cursor* 0))
     (:end       (set! *cursor* (string/length *input*)))
     (:tab
@@ -612,12 +637,17 @@
     (:wheel-down (scroll-by! -3))
     (_ nil)))
 
+(defun handle-alt (k)
+  ;; Option+Delete arrives as Alt+DEL (0x7f) → delete the word before the cursor.
+  (when (= (:char k) "\u007f") (delete-word-backward!)))
+
 (defun handle-key (k)
   (if (overlay-active?)
     (handle-overlay-key k)
     (match (:kind k)
       (:ctrl  (handle-ctrl (:char k)))
-      (:key   (handle-named (:name k)))
+      (:key   (handle-named k))
+      (:alt   (handle-alt k))
       (:char  (insert-char! (:char k)))
       (:mouse (handle-mouse k))
       (_ nil))))

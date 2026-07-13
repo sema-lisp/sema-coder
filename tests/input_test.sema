@@ -1,0 +1,49 @@
+(load "harness.sema")
+(load "../src/tui.sema")
+
+;; Prompt-input editing: forward-delete, delete-word-back, and word motion.
+;; Handlers are driven directly on the *input*/*cursor* globals.
+
+(defun set-input! (s c) (set! *input* s) (set! *cursor* c))
+
+;; ── forward-delete (the Delete key): removes the char AT the cursor ──
+(set-input! "abcd" 1)
+(forward-delete!)
+(check "forward-delete removes char at cursor" *input* "acd")
+(check "forward-delete keeps cursor" *cursor* 1)
+(set-input! "abc" 3)
+(forward-delete!)
+(check "forward-delete at end is a no-op" *input* "abc")
+
+;; ── delete-word-backward (Option+Delete) ──
+(set-input! "foo bar" 7)
+(delete-word-backward!)
+(check "delete-word-back removes the word" *input* "foo ")
+(check "delete-word-back moves cursor to boundary" *cursor* 4)
+
+;; ── word motion ──
+(set-input! "foo bar" 7)
+(word-left!)
+(check "word-left jumps to word start" *cursor* 4)
+(set-input! "foo bar" 0)
+(word-right!)
+(check "word-right jumps past the word" *cursor* 3)
+
+;; ── dispatch: :delete arm, and modified vs plain arrows ──
+(set-input! "abc" 0)
+(handle-named {:kind :key :name :delete})
+(check "handle-named :delete forward-deletes" *input* "bc")
+
+(set-input! "foo bar" 7)
+(handle-named {:kind :key :name :left :mods (list :alt)})
+(check "Option+Left = word motion" *cursor* 4)
+
+(set-input! "foo bar" 7)
+(handle-named {:kind :key :name :left})
+(check "plain Left = single char" *cursor* 6)
+
+(set-input! "foo bar" 7)
+(handle-alt {:kind :alt :char "\u007f"})
+(check "Option+Delete (alt DEL) deletes word" *input* "foo ")
+
+(done)

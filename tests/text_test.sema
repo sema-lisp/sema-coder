@@ -44,6 +44,15 @@
 (check-contains "window honors limit"      (numbered-window "1\n2\n3\n4\n5" 1 2 2000) "[showing lines 1-2 of 5]")
 (check-contains "window offset past end"   (numbered-window "a\nb" 9 nil 2000) "past end")
 
+;; ── word boundaries (prompt-input word motion / delete-word) ──
+(check "word-left from end"     (word-left-index "foo  bar baz" 12) 9)
+(check "word-left mid word"     (word-left-index "foo  bar baz" 8) 5)
+(check "word-left to start"     (word-left-index "foo  bar baz" 3) 0)
+(check "word-left at 0"         (word-left-index "foo  bar baz" 0) 0)
+(check "word-right from 0"      (word-right-index "foo  bar baz" 0) 3)
+(check "word-right over spaces" (word-right-index "foo  bar baz" 3) 8)
+(check "word-right at end"      (word-right-index "foo  bar baz" 12) 12)
+
 ;; ── indexed iteration ──
 (check "enumerate-map" (enumerate-map (lambda (i x) (list i x)) (list "a" "b"))
                        (list (list 0 "a") (list 1 "b")))

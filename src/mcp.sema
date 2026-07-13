@@ -99,6 +99,16 @@
     (map #(if (equal? (:status %) :connected) (:tools %) '())
          (mcp-records))))
 
+(defun mcp-tool-origins ()
+  "Map of tool-name → server-name for every tool on a connected server. Tool
+   values carry no back-reference to their server, so origin is recovered from
+   the records that pair a server's :name with its :tools."
+  (foldl (lambda (m rec)
+           (if (equal? (:status rec) :connected)
+             (foldl (lambda (m2 t) (assoc m2 (tool/name t) (:name rec))) m (:tools rec))
+             m))
+         {} (mcp-records)))
+
 (defun mcp-autostart! ()
   "Connect every idle :autostart server. Call before entering the alt-screen so
    a first-time OAuth prompt is visible. Returns the count connected."
