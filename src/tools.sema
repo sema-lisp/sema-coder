@@ -15,6 +15,7 @@
 (define MAX-OUTPUT-CHARS 100000) ;; bash output character cap (~100 KB ASCII)
 (define MAX-MATCH-LINES  100)    ;; grep result cap
 (define MAX-FIND-LINES   200)    ;; find-files result cap
+(define DEFAULT-BASH-TIMEOUT-MS 120000) ;; bash default kill-after (2 min) so a hung command can't wedge the turn
 
 (deftool read-file
   "Read a file and return its contents with line numbers. Always read a file before editing it. Reads up to 2000 lines from the top by default; pass offset/limit to page through a larger file."
@@ -38,38 +39,52 @@
    :content {:type :string :description "Content to write"}}
   (lambda (path content)
     (try
-      (let ((resolved (resolve-path workspace-root path)))
+      (let* ((resolved (resolve-path workspace-root path))
+             ;; Flag an overwrite so a blind clobber is visible (unlike edit-file,
+             ;; write-file needs no prior read).
+             (existed  (file/exists? resolved))
+             (old-size (if existed (get (try (file/info resolved) (catch e {})) :size 0) 0)))
         (file/mkdir (path/dir resolved))
         (file/write resolved content)
-        f"Wrote ${(string/length content)} chars to ${path}")
+        (if existed
+          f"Overwrote existing ${path} (${(string/length content)} chars, was ${old-size} bytes)"
+          f"Wrote ${(string/length content)} chars to ${path}"))
       (catch e f"Error writing file ${path}: ${e}"))))
 
 (defun count-occurrences (haystack needle)
   "How many times NEEDLE appears in HAYSTACK (n matches → n+1 split parts)."
   (- (length (string/split haystack needle)) 1))
 
+(defun apply-edit (content old_string new_string replace-all)
+  "Pure core of edit-file: {:text … :count n} on success, {:error msg} otherwise.
+   Requires a unique match unless REPLACE-ALL, which replaces every occurrence."
+  (if (= old_string "")
+    {:error "old_string must not be empty."}
+    (let ((n (count-occurrences content old_string)))
+      (cond
+        ((= n 0) {:error "old_string not found. Read the file first."})
+        ((and (> n 1) (not replace-all))
+          {:error f"old_string matches ${n} times. Add surrounding context to make it unique, or pass replace_all to replace them all."})
+        (else {:text (string/replace content old_string new_string) :count n})))))
+
 (deftool edit-file
-  "Edit a file by replacing an exact string match. You MUST read the file first. old_string must match exactly (including whitespace) and appear exactly once."
-  {:path       {:type :string :description "Path to edit (relative to the workspace)"}
-   :old_string {:type :string :description "Exact string to find"}
-   :new_string {:type :string :description "Replacement string"}}
-  (lambda (path old_string new_string)
+  "Edit a file by replacing an exact string match. You MUST read the file first. old_string must match exactly (including whitespace) and, unless replace_all is set, appear exactly once."
+  {:path        {:type :string  :description "Path to edit (relative to the workspace)"}
+   :old_string  {:type :string  :description "Exact string to find"}
+   :new_string  {:type :string  :description "Replacement string"}
+   :replace_all {:type :boolean :description "Replace every occurrence instead of requiring a unique match (optional)"}}
+  (lambda (path old_string new_string replace_all)
     (try
-      (if (= old_string "")
-        "Error: old_string must not be empty."
-        (let ((resolved (resolve-path workspace-root path)))
-          (if (not (file/exists? resolved))
-            f"Error: File not found: ${path}"
-            (let* ((content (file/read resolved))
-                   (n       (count-occurrences content old_string)))
-              (cond
-                ((= n 0)
-                  f"Error: old_string not found in ${path}. Read the file first.")
-                ((> n 1)
-                  f"Error: old_string matches ${n} times in ${path}. Add surrounding context to make it unique.")
-                (else
-                  (file/write resolved (string/replace content old_string new_string))
-                  f"Edited ${path} (1 replacement)"))))))
+      (let ((resolved (resolve-path workspace-root path)))
+        (if (not (file/exists? resolved))
+          f"Error: File not found: ${path}"
+          (let ((r (apply-edit (file/read resolved) old_string new_string replace_all)))
+            (if (:error r)
+              f"Error: ${(:error r)} (${path})"
+              (begin
+                (file/write resolved (:text r))
+                (let ((n (:count r)))
+                  f"Edited ${path} (${n} replacement${(if (= n 1) "" "s")})"))))))
       (catch e f"Error editing file ${path}: ${e}"))))
 
 ;; ── Shell-backed tools ───────────────────────────────────────────
@@ -78,19 +93,51 @@
   "Run a shell command with cwd pinned to the workspace root."
   (shell "sh" "-c" (string/append "cd " (sh-quote workspace-root) " && " command)))
 
+(defun run-in-workspace-timed (command timeout-ms)
+  "Like run-in-workspace but kills COMMAND after TIMEOUT-MS. Spawned via proc/*
+   so the child can be reaped; stdout/stderr are drained each poll (pipe
+   backpressure) and accumulated. Returns {:stdout :stderr :exit-code :timed-out}."
+  (let ((h (proc/spawn (list "sh" "-c" (string/append "cd " (sh-quote workspace-root) " && " command)))))
+    (let loop ((waited 0) (out "") (err ""))
+      (let ((out2 (string/append out (proc/read-stdout h)))
+            (err2 (string/append err (proc/read-stderr h)))
+            (code (proc/exit-code h)))
+        (cond
+          (code
+            (proc/wait h)   ;; let the reader threads flush the tail
+            {:stdout (string/append out2 (proc/read-stdout h))
+             :stderr (string/append err2 (proc/read-stderr h))
+             :exit-code code :timed-out #f})
+          ((>= waited timeout-ms)
+            (proc/kill h)
+            ;; Don't proc/wait here: killing sh orphans its child, which keeps the
+            ;; stdout pipe open, and wait blocks on the reader flush until that
+            ;; child exits — for a runaway command (e.g. `npm run dev`) that's
+            ;; never. Return the buffered output now so the turn is freed, and
+            ;; reap in the background.
+            (try (async (proc/wait h)) (catch e nil))
+            {:stdout (string/append out2 (proc/read-stdout h))
+             :stderr (string/append err2 (proc/read-stderr h))
+             :exit-code -1 :timed-out #t})
+          (else (sleep 15) (loop (+ waited 15) out2 err2)))))))
+
 (deftool bash
-  "Run a shell command in the workspace. Returns stdout, stderr, and exit code. Use for tests, builds, git — not for reading/searching files (use read-file/grep)."
-  {:command {:type :string :description "The shell command to run"}}
-  (lambda (command)
+  "Run a shell command in the workspace. Returns stdout, stderr, and exit code. Killed after 120s (or the given timeout) so a hung command can't stall the session. Use for tests, builds, git — not for reading/searching files (use read-file/grep)."
+  {:command {:type :string  :description "The shell command to run"}
+   :timeout {:type :integer :description "Seconds before the command is killed (optional; default 120)"}}
+  (lambda (command timeout)
     (try
-      (let* ((result (run-in-workspace command))
+      (let* ((tmo    (if (and (number? timeout) (> timeout 0)) (* timeout 1000) DEFAULT-BASH-TIMEOUT-MS))
+             (result (run-in-workspace-timed command tmo))
              (out    (:stdout result))
              (err    (:stderr result))
              (code   (:exit-code result))
              (parts  (append
                        (if (= (string/trim out) "") '() (list out))
                        (if (= (string/trim err) "") '() (list f"stderr:\n${err}"))
-                       (if (= code 0) '() (list f"Exit code: ${code}")))))
+                       (if (:timed-out result)
+                         (list f"[timed out after ${(quotient tmo 1000)}s — process killed]")
+                         (if (= code 0) '() (list f"Exit code: ${code}"))))))
         (if (null? parts)
           "Command completed successfully (no output)."
           (-> (string/join parts "\n")
@@ -98,21 +145,38 @@
               (truncate-lines MAX-OUTPUT-LINES))))
       (catch e f"Error running command: ${e}"))))
 
-(defun search-workspace (pattern target)
-  "ripgrep when available, else grep -rn. Both invoked argv-style; `--` keeps
-   a pattern starting with `-` from being read as a flag."
-  (try (shell "rg" "--line-number" "--max-count" "10" "--no-heading" "--" pattern target)
-       (catch e (shell "grep" "-rn" "-m" "10" "--" pattern target))))
+(defun blankish? (s) (or (not s) (= s "")))   ;; nil, #f, or ""
+
+(defun search-argv (tool pattern target ignore-case glob)
+  "Argv for TOOL (:rg | :grep) to search PATTERN in TARGET, adding case-insensitive
+   and glob filters when given. `--` keeps a pattern starting with `-` from being
+   read as a flag."
+  (append
+    (if (equal? tool :rg)
+      (append (list "rg" "--line-number" "--max-count" "10" "--no-heading")
+              (if ignore-case (list "-i") '())
+              (if (blankish? glob) '() (list "-g" glob)))
+      (append (list "grep" "-rn" "-m" "10")
+              (if ignore-case (list "-i") '())
+              (if (blankish? glob) '() (list (string/append "--include=" glob)))))
+    (list "--" pattern target)))
+
+(defun search-workspace (pattern target ignore-case glob)
+  "ripgrep when available, else grep -rn. Both invoked argv-style (no shell)."
+  (try (apply shell (search-argv :rg   pattern target ignore-case glob))
+       (catch e (apply shell (search-argv :grep pattern target ignore-case glob)))))
 
 (deftool grep
   "Search file contents for a pattern (regex). Returns matching lines with paths and line numbers. Prefers ripgrep, falls back to grep."
-  {:pattern {:type :string :description "Search pattern (text or regex)"}
-   :path    {:type :string :description "Directory or file to search (default: workspace root)"}}
-  (lambda (pattern path)
+  {:pattern     {:type :string  :description "Search pattern (text or regex)"}
+   :path        {:type :string  :description "Directory or file to search (default: workspace root)"}
+   :ignore_case {:type :boolean :description "Case-insensitive match (optional)"}
+   :glob        {:type :string  :description "Only search files matching this glob, e.g. '*.rs' (optional)"}}
+  (lambda (pattern path ignore_case glob)
     (if (or (nil? pattern) (= pattern ""))
       "Error: pattern is required"
       (try
-        (let* ((result (search-workspace pattern (resolve-dir workspace-root path)))
+        (let* ((result (search-workspace pattern (resolve-dir workspace-root path) ignore_case glob))
                (out    (string/trim (:stdout result)))
                (err    (string/trim (:stderr result))))
           (cond

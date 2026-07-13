@@ -1,0 +1,35 @@
+(load "harness.sema")
+(load "../src/tools.sema")
+
+(set-workspace-root! "/tmp/sc-tools-test")
+(file/mkdir "/tmp/sc-tools-test")
+
+;; ── apply-edit: the pure core of edit-file (unique match, or replace_all) ──
+(check "apply-edit empty old" (:error (apply-edit "abc" "" "x" #f)) "old_string must not be empty.")
+(check-contains "apply-edit not found" (:error (apply-edit "abc" "z" "x" #f)) "not found")
+(check "apply-edit unique replace" (apply-edit "a b a" "b" "B" #f) {:text "a B a" :count 1})
+(check-contains "apply-edit multi is an error without replace_all"
+                (:error (apply-edit "a a a" "a" "b" #f)) "matches 3 times")
+(check "apply-edit replace_all replaces every match" (apply-edit "a a a" "a" "b" #t) {:text "b b b" :count 3})
+
+;; ── search-argv: grep/rg argv construction with ignore_case + glob ──
+(check "rg plain argv"
+       (search-argv :rg "foo" "." #f #f)
+       (list "rg" "--line-number" "--max-count" "10" "--no-heading" "--" "foo" "."))
+(check "rg ignore-case + glob"
+       (search-argv :rg "foo" "." #t "*.rs")
+       (list "rg" "--line-number" "--max-count" "10" "--no-heading" "-i" "-g" "*.rs" "--" "foo" "."))
+(check "grep fallback include glob"
+       (search-argv :grep "foo" "." #f "*.sema")
+       (list "grep" "-rn" "-m" "10" "--include=*.sema" "--" "foo" "."))
+
+;; ── run-in-workspace-timed: bash timeout (spawns a real child) ──
+(let ((r (run-in-workspace-timed "echo hi; exit 2" 3000)))
+  (check "timed: exit code passthrough" (:exit-code r) 2)
+  (check "timed: not timed out"         (:timed-out r) #f)
+  (check-contains "timed: captured stdout" (:stdout r) "hi"))
+(let ((r (run-in-workspace-timed "echo start; sleep 3" 120)))
+  (check "timed: slow command is killed"  (:timed-out r) #t)
+  (check-contains "timed: partial stdout before kill" (:stdout r) "start"))
+
+(done)
