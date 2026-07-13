@@ -93,15 +93,36 @@
         (string/slice text 0 max-chars)
         f"\n\n[truncated — output exceeded ${max-chars} characters]"))))
 
-(defun lines->numbered (text)
-  "Prepend 1-indexed line numbers (tab-separated) to each line."
-  (let ((lines (string/split text "\n")))
+(defun lines->numbered (text . opts)
+  "Prepend line numbers (tab-separated) to each line. Optional START (1-based)
+   begins numbering there instead of at 1, so a windowed read keeps true line
+   numbers."
+  (let ((start (if (null? opts) 1 (car opts)))
+        (lines (string/split text "\n")))
     (string/join
-      (->> lines
-           (zip (range 0 (length lines)))
-           ;; zip yields 2-element lists (i line), not cons pairs — index with nth.
-           (map #(string/append (number->string (+ 1 (nth % 0))) "\t" (nth % 1))))
+      (enumerate-map (lambda (i l) (string/append (number->string (+ start i)) "\t" l)) lines)
       "\n")))
+
+(defun numbered-window (text offset limit max-lines)
+  "A line-numbered slice of TEXT for a paged read: at most LIMIT lines from the
+   1-based OFFSET (both optional — nil OFFSET = 1, nil LIMIT = MAX-LINES), never
+   more than MAX-LINES. Line numbers stay true to the file, and a
+   '[showing lines a-b of N]' note is appended whenever the view is partial.
+   Returns a short notice when OFFSET is past the end."
+  (let* ((lines (string/split text "\n"))
+         (total (length lines))
+         (start (max 1 (if (and (number? offset) (> offset 0)) offset 1)))
+         (cap   (min max-lines (if (and (number? limit) (> limit 0)) limit max-lines)))
+         (from0 (- start 1)))
+    (if (>= from0 total)
+      f"[offset ${start} is past end of file (${total} line${(if (= total 1) "" "s")})]"
+      (let* ((n     (min cap (- total from0)))
+             (window (take n (drop from0 lines)))
+             (endln (+ start n -1))
+             (body  (lines->numbered (string/join window "\n") start)))
+        (if (or (> start 1) (< endln total))
+          (string/append body f"\n\n[showing lines ${start}-${endln} of ${total}]")
+          body)))))
 
 ;; ── Indexed iteration ────────────────────────────────────────────
 

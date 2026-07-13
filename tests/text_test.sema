@@ -35,6 +35,15 @@
 ;; codepoint-based, not byte: 3 CJK chars capped at 2 keep 2 codepoints
 (check-true "truncate-chars counts codepoints" (string/starts-with? (truncate-chars "你你你" 2) "你你"))
 
+;; ── numbered-window: paged, line-numbered reads ──
+(check "lines->numbered from start"      (lines->numbered "x\ny" 5) "5\tx\n6\ty")
+(check "window whole small file"         (numbered-window "a\nb\nc" nil nil 2000) "1\ta\n2\tb\n3\tc")
+(check "window offset keeps true numbers" (numbered-window "a\nb\nc\nd" 2 2 2000)
+                                          "2\tb\n3\tc\n\n[showing lines 2-3 of 4]")
+(check-contains "window caps at max-lines" (numbered-window "1\n2\n3\n4\n5" nil nil 2) "[showing lines 1-2 of 5]")
+(check-contains "window honors limit"      (numbered-window "1\n2\n3\n4\n5" 1 2 2000) "[showing lines 1-2 of 5]")
+(check-contains "window offset past end"   (numbered-window "a\nb" 9 nil 2000) "past end")
+
 ;; ── indexed iteration ──
 (check "enumerate-map" (enumerate-map (lambda (i x) (list i x)) (list "a" "b"))
                        (list (list 0 "a") (list 1 "b")))

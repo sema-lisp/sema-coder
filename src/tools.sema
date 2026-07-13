@@ -17,16 +17,18 @@
 (define MAX-FIND-LINES   200)    ;; find-files result cap
 
 (deftool read-file
-  "Read a file and return its contents with line numbers. Always read a file before editing it. Truncates very large files."
-  {:path {:type :string :description "Path to the file to read (relative to the workspace)"}}
-  (lambda (path)
+  "Read a file and return its contents with line numbers. Always read a file before editing it. Reads up to 2000 lines from the top by default; pass offset/limit to page through a larger file."
+  {:path   {:type :string  :description "Path to the file to read (relative to the workspace)"}
+   :offset {:type :integer :description "1-based line to start reading from (optional; default 1)"}
+   :limit  {:type :integer :description "Maximum number of lines to read (optional; default 2000)"}}
+  (lambda (path offset limit)
     (try
       (let ((resolved (resolve-path workspace-root path)))
         (if (file/exists? resolved)
-          (-> (file/read resolved)
-              lines->numbered
-              (truncate-lines MAX-READ-LINES)
-              (truncate-chars MAX-READ-CHARS))   ;; catch a few very long lines the line cap misses
+          ;; numbered-window pages the file with true line numbers; the char cap
+          ;; is a backstop against a few lines too long for the line window.
+          (truncate-chars (numbered-window (file/read resolved) offset limit MAX-READ-LINES)
+                          MAX-READ-CHARS)
           f"Error: File not found: ${path}"))
       (catch e f"Error reading file ${path}: ${e}"))))
 
