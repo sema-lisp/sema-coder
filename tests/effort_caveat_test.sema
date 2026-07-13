@@ -1,0 +1,28 @@
+(load "harness.sema")
+(load "../src/commands.sema")
+
+;; /effort surfaces an honest note when a real effort is set on an OpenAI model:
+;; on chat/completions some OpenAI models drop effort+tools, and the runtime
+;; degrades gracefully — so we say so instead of silently applying nothing.
+
+(define effort-handler (:handler (get *commands* "effort")))
+
+(defun effort-emits (model args)
+  "Run /effort ARGS with the given active MODEL; return the emitted (kind text) pairs."
+  (let ((out '()))
+    (parameterize ((current-emit (lambda (k t) (set! out (append out (list (list k t)))))))
+      (effort-handler {:model model :effort "" :config default-config} args))
+    out))
+
+(defun noted? (pairs)
+  "True when a pair mentions the effort caveat."
+  (any (lambda (p) (string/contains? (nth p 1) "apply effort at their default")) pairs))
+
+(check-true "openai + real effort → caveat noted"     (noted? (effort-emits "gpt-5.6-luna" "high")))
+(check-true "anthropic + real effort → no caveat"     (not (noted? (effort-emits "claude-opus-4-6" "high"))))
+(check-true "openai + none → no caveat"               (not (noted? (effort-emits "gpt-5.6-luna" "none"))))
+(check-true "auto/unknown model → no caveat"          (not (noted? (effort-emits "" "high"))))
+(check-true "the effort still gets set (:ok emitted)"
+  (any (lambda (p) (equal? (nth p 0) :ok)) (effort-emits "gpt-5.6-luna" "high")))
+
+(done)

@@ -281,6 +281,14 @@
           (assoc state :effort ""))
         ((member v effort-levels)
           (emit :ok f"reasoning effort → ${v}")
+          ;; Honest heads-up: on chat/completions, some OpenAI models reject a
+          ;; non-none effort together with tools (gpt-5.6+). The runtime degrades
+          ;; gracefully (auto-retries at default) rather than failing the turn —
+          ;; but say so, since the effort you set may not actually apply there.
+          (let* ((cfg (get state :config {}))
+                 (mid (choose-model (get state :model "") cfg)))
+            (when (and (not (= v "none")) (= (model-provider-name cfg mid) "openai"))
+              (emit :info "note: some OpenAI models apply effort at their default when tools are used — the runtime auto-handles this (no turn fails)")))
           (assoc state :effort v))
         (else
           (emit :error f"unknown effort “${v}” (try ${(string/join effort-levels ", ")}, or default)")
