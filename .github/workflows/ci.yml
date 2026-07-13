@@ -11,14 +11,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install sema
-        run: |
-          curl -fsSL https://sema-lang.com/install.sh | sh
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-
-      - name: Show sema version
-        run: sema --version
+      - name: Setup Sema
+        uses: sema-lisp/setup-sema@main
 
       - name: Run tests
         run: sema test.sema
