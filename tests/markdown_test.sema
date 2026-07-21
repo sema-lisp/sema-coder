@@ -36,6 +36,13 @@
 (check-contains "strike styled" (car (md-lines "~~gone~~" 40)) "\x1b;[9m")
 (check-contains "hr rule" (car (md-lines "---" 40)) "─")
 
+;; ── headings wrap to width like any other prose ──
+;; (an over-wide heading used to escape the row and stomp the line below it)
+(let ((rows (md-lines "## a very long heading that absolutely must wrap instead of overflowing the terminal row" 40)))
+  (check-true "long heading wraps" (> (length rows) 1))
+  (check "heading lines fit width" (length (filter #(> (string/width %) 40) rows)) 0)
+  (check-contains "heading still styled" (car rows) "\x1b;["))
+
 ;; ── resize hardening: ANSI-safe clip never cuts an escape ──
 (check "clip-styled width" (string/width (clip-styled (bright "hello world") 5)) 5)
 (check "clip-styled text"  (term/strip (clip-styled (bright "hello world") 5)) "hello")

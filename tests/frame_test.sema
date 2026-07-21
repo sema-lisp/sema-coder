@@ -1,0 +1,45 @@
+(load "harness.sema")
+(load "../src/tui.sema")
+
+;; The frame invariant: every build-frame row fits *cols*. The diff renderer
+;; rewrites single rows in place, so an over-wide row soft-wraps in the
+;; terminal and paints over the row below it — which is the prompt row when
+;; the culprit is the last transcript row (the painted-over-prompt bug).
+
+(set! *rows* 24) (set! *cols* 80) (set! *cwd* "/tmp")
+(set! *config* {})
+
+(defun overwide () (filter #(> (string/width %) *cols*) (build-frame)))
+(defun check-frame (label) (check label (length (overwide)) 0))
+
+;; Nasty content: a heading wider than the terminal, then a running tool call
+;; with a long MCP-style name and a long argument.
+(add-block! {:kind :assistant :text "## Summary of the deep investigation into the terminal renderer and all of the changes required to fix it"})
+(check-frame "long heading")
+
+(add-block! {:kind :tool :tool "mcp__chrome-devtools__performance_start_trace"
+             :arg (string/repeat "x" 70) :state :running :ms 0})
+(check-frame "running tool with long name")
+
+(set-last-tool-done! 120000 "trace started ok" #f)
+(check-frame "done tool line with duration suffix")
+
+;; Scrolled: the over-wide line must fit wherever the window puts it.
+(for-each (lambda (i) (add-block! {:kind :info :text f"filler line ${i}"}))
+          (range 0 30))
+(set! *scroll* 4)
+(check-frame "scrolled mid-transcript")
+(set! *scroll* 0)
+
+;; Header: a long model name on a narrow terminal (the gap is floored at 1).
+(set! *model* "anthropic:claude-fable-5-extremely-long-model-identifier")
+(set! *cols* 60)
+(check-frame "long model in header at 60 cols")
+(set! *model* "") (set! *cols* 80)
+
+;; Palette open over the transcript.
+(prompt-set! "/mo")
+(check-frame "palette open")
+(prompt-clear!)
+
+(done)

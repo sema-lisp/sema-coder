@@ -142,8 +142,10 @@
     ((regex/match #"^\s*(-{3,}|\*{3,}|_{3,})\s*$" line)
       (list (faint (string/repeat "─" width))))
     ((regex/match #"^(#{1,6})\s+(.+)$" line)
+      ;; Wrapped like prose: an over-wide heading would soft-wrap in the
+      ;; terminal and stomp the row below it (the fixed-row diff model).
       (let ((m (regex/match #"^(#{1,6})\s+(.+)$" line)))
-        (list (heading (nth (:groups m) 1)))))
+        (map heading (string/word-wrap (nth (:groups m) 1) width))))
     ((regex/match #"^>\s?(.*)$" line)
       (let ((m (regex/match #"^>\s?(.*)$" line)))
         (map #(string/append (faint "▏ ") %)

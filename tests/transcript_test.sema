@@ -29,6 +29,22 @@
 ;; empty results render nothing
 (check "empty result renders nothing" (preview-lines "   ") '())
 
+;; ── over-long tool names (MCP) clip to the row instead of overflowing ──
+;; block-lines output is already indented, so each line must fit w+1; a wider
+;; line soft-wraps in the terminal and paints over the row below it.
+(let* ((w 60)
+       (long-tool "mcp__chrome-devtools__performance_start_trace")
+       (running {:kind :tool :tool long-tool :arg (string/repeat "x" 70) :state :running :ms 0})
+       (rows (block-lines running w)))
+  (check "running tool line fits" (length (filter #(> (string/width %) (+ w 1)) rows)) 0)
+  (check-contains "tool name still shown (clipped)" (term/strip (car rows)) "mcp__"))
+(let* ((w 60)
+       (long-tool "mcp__chrome-devtools__performance_start_trace")
+       (done-b {:kind :tool :tool long-tool :arg (string/repeat "x" 70) :state :done :ms 120000 :result "" :error #f})
+       (rows (block-lines done-b w)))
+  (check "done tool line fits" (length (filter #(> (string/width %) (+ w 1)) rows)) 0)
+  (check-contains "duration stays visible" (term/strip (car rows)) "120000ms"))
+
 ;; ── :raw blocks preserve internal whitespace, clipped not wrapped ──
 (check-contains ":raw keeps space runs"
   (car (block-lines {:kind :raw :text "col1     col2"} 40)) "col1     col2")
