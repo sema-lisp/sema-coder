@@ -4,6 +4,7 @@
 (load "tools.sema")
 (load "mcp.sema")
 (load "config.sema")   ;; model-effort — per-model :effort defaults
+(load "hooks.sema")    ;; pre/post-turn, pre-tool-call, on-error lifecycle hooks
 
 (defun agent-tools ()
   "The agent's full tool set: the app's own tools plus every connected MCP
@@ -91,13 +92,33 @@ Platform: ${platform}
    portable — providers/models without it treat the option as a no-op."
   (if (and effort (not (= effort ""))) (assoc opts :reasoning-effort effort) opts))
 
+(defun with-tool-hooks (on-tool)
+  "Wrap an :on-tool-call callback so :pre-tool-call hooks fire as each tool
+   starts, then delegate to the original ON-TOOL (which does the rendering)."
+  (lambda (event)
+    (when (= (get event :event "") "start")
+      (run-hooks :pre-tool-call {:tool (get event :tool "") :args (get event :args {})}))
+    (on-tool event)))
+
 (defun run-turn (agent input messages on-tool effort)
-  "Blocking turn used by the non-TTY / one-shot path (no live streaming)."
-  (agent/run agent input (turn-opts {:on-tool-call on-tool :messages messages} effort)))
+  "Blocking turn used by the non-TTY / one-shot path (no live streaming).
+   Fires pre-turn / pre-tool-call / on-error / post-turn hooks around the run."
+  (run-hooks :pre-turn {:input input :messages messages})
+  (let ((result
+          (try (agent/run agent input
+                 (turn-opts {:on-tool-call (with-tool-hooks on-tool) :messages messages} effort))
+            (catch e (run-hooks :on-error {:input input :error e}) (throw e)))))
+    (run-hooks :post-turn {:input input :result result})
+    result))
 
 (defun run-turn-streaming (agent input messages on-tool on-text effort)
   "Turn used by the TUI: :on-text streams assistant deltas, :on-tool-call streams
-   tool events, so the front-end can render the reply live."
-  (agent/run agent
-    input
-    (turn-opts {:on-tool-call on-tool :on-text on-text :messages messages} effort)))
+   tool events, so the front-end can render the reply live. Fires the same
+   lifecycle hooks as run-turn."
+  (run-hooks :pre-turn {:input input :messages messages})
+  (let ((result
+          (try (agent/run agent input
+                 (turn-opts {:on-tool-call (with-tool-hooks on-tool) :on-text on-text :messages messages} effort))
+            (catch e (run-hooks :on-error {:input input :error e}) (throw e)))))
+    (run-hooks :post-turn {:input input :result result})
+    result))

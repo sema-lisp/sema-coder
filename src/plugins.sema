@@ -1,0 +1,44 @@
+;; plugins.sema — load user/project plugins after init.
+;;
+;; A plugin is a *.sema file that runs registration SIDE-EFFECTS the way
+;; init.sema can't: register-command! / register-overlay! / add-hook! /
+;; bind-key!. (init.sema is pure config DATA that apply-config! reconciles; a
+;; plugin is code that extends the app's registries directly.)
+;;
+;; Two dirs are scanned, global first then project-local (so a project plugin
+;; loads last and can shadow a global one):
+;;   <config-dir>/plugins/*.sema        — global, every project
+;;   <cwd>/.sema-coder/plugins/*.sema    — project-local
+;;
+;; Loaded ONCE at boot, after the config is applied (coder.sema). Unlike
+;; init.sema and the tools/ dir (which hot-reload), plugin changes need a
+;; restart: a plugin may add-hook! (which appends), so re-loading would
+;; duplicate. Register commands/overlays/hooks/keys here; put persistent TOOLS
+;; in the tools/ dir (they hot-reload and survive config reloads).
+
+(load "config.sema")   ;; config-dir
+
+(defun plugin-dirs (cwd)
+  "The plugin dirs to scan, global first then project-local."
+  (list (path/join (config-dir) "plugins")
+        (path/join cwd ".sema-coder" "plugins")))
+
+(defun load-plugins-from! (dir)
+  "Load every DIR/*.sema (sorted), running its registrations. Returns a list of
+   'file: message' strings for files that threw — never propagates, so one bad
+   plugin can't stop the app. No-op when DIR is absent."
+  (if (and dir (file/exists? dir))
+    (foldl
+      (lambda (errs name)
+        (if (string/ends-with? name ".sema")
+          (let ((err (try (begin (load (path/join dir name)) #f)
+                          (catch e f"${name}: ${(get e :message (str e))}"))))
+            (if err (append errs (list err)) errs))
+          errs))
+      '() (sort (file/list dir)))
+    '()))
+
+(defun load-plugins! (cwd)
+  "Load global then project-local plugins for CWD. Returns a flat list of
+   load-error strings (empty on success); the caller surfaces them."
+  (apply append (map load-plugins-from! (plugin-dirs cwd))))

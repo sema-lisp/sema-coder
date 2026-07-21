@@ -14,6 +14,9 @@
       (let ((e (env "SEMA_CODER_CONFIG_DIR"))) (if (and e (not (= e ""))) e #f))
       (path/join (sys/config-dir) "sema" "sema-coder")))
 (defun config-path () (path/join (config-dir) "init.sema"))
+;; Autoloaded first-party tools live beside init.sema (see tools.sema's
+;; autoload-tools!). Project-local + tiered tool storage is the Forge concern.
+(defun tools-dir () (path/join (config-dir) "tools"))
 
 ;; ── Constructors: return values, never mutate ────────────────────
 
@@ -28,22 +31,45 @@
    (a list of (model …) records)."
   {:name name :models models})
 
-;; The providers/models offered by the /model autocomplete. Purely a picker
-;; list — any model id typed by hand still works. A config's own :models
-;; replaces this wholesale.
-(define default-models
+;; ── Provider descriptor table — one source of truth ─────────────
+;; Every provider fact lives here once: the llm-registry :id, the display
+;; :display-name shown by the /model picker, the :env-key its API key comes
+;; from, and the :models it offers. default-models, provider-env-key, the
+;; generated init.sema template, and the boot "no API key" message all derive
+;; from this list — so adding a provider is a one-place change.
+(define provider-descriptors
   (list
-    (provider "Anthropic"
-      (list
-        (model "claude-opus-4-6"  "Claude Opus 4.6")
-        (model "claude-sonnet-5"  "Claude Sonnet 5")
-        (model "claude-haiku-4-5" "Claude Haiku 4.5")))
-    (provider "OpenAI"
-      (list
-        (model "gpt-5.6-sol"   "GPT-5.6 Sol")
-        (model "gpt-5.6-terra" "GPT-5.6 Terra")
-        (model "gpt-5.6-luna"  "GPT-5.6 Luna")
-        (model "gpt-5.5"       "GPT-5.5")))))
+    {:id "anthropic" :display-name "Anthropic" :env-key "ANTHROPIC_API_KEY"
+     :models (list
+               (model "claude-opus-4-6"  "Claude Opus 4.6")
+               (model "claude-sonnet-5"  "Claude Sonnet 5")
+               (model "claude-haiku-4-5" "Claude Haiku 4.5"))}
+    {:id "openai" :display-name "OpenAI" :env-key "OPENAI_API_KEY"
+     :models (list
+               (model "gpt-5.6-sol"   "GPT-5.6 Sol")
+               (model "gpt-5.6-terra" "GPT-5.6 Terra")
+               (model "gpt-5.6-luna"  "GPT-5.6 Luna")
+               (model "gpt-5.5"       "GPT-5.5"))}))
+
+(defun provider-descriptor-by-name (name)
+  "The descriptor whose :display-name matches NAME (case-insensitive), or #f."
+  ;; plain filter/car, not if-let: a #f miss must read as falsy (if-let treats
+  ;; #f as truthy on current sema).
+  (let ((hits (filter (lambda (d) (= (string/lower (:display-name d))
+                                     (string/lower name)))
+                      provider-descriptors)))
+    (if (null? hits) #f (car hits))))
+
+(defun provider-env-keys ()
+  "Every provider's API-key env var, in descriptor order — for the boot and
+   usage 'no key' messages."
+  (map :env-key provider-descriptors))
+
+;; The providers/models offered by the /model autocomplete, derived from the
+;; descriptor table. Purely a picker list — any model id typed by hand still
+;; works, and a config's own :models replaces this wholesale.
+(define default-models
+  (map (lambda (d) (provider (:display-name d) (:models d))) provider-descriptors))
 
 (define default-config
   {:model              ""        ;; "" = auto-detect from API keys
@@ -53,7 +79,8 @@
    :models             default-models
    :mcp-servers        '()
    :commands           '()
-   :keys               {}})      ;; action → key overrides (e.g. {:mcp "ctrl-p"})
+   :hooks              '()        ;; lifecycle hooks (list of (hook event fn))
+   :keys               {}})       ;; action → key overrides (e.g. {:mcp "ctrl-p"})
 
 (defun model-entries (cfg)
   "Flatten the config's :models provider groups into {:id :label :provider}
@@ -92,13 +119,29 @@
 
 (defun command (name spec)
   "A command record. SPEC carries :desc and one of :run (argv) / :do (fn) /
-   :shell, plus an optional :key (e.g. \"ctrl-t\") that binds the command to a
-   keyboard shortcut."
+   :shell, plus optional :key (e.g. \"ctrl-t\") to bind a keyboard shortcut and
+   :keep-input #t to leave the prompt intact when run from the palette (for a
+   handler that reads/rewrites *input* itself)."
   (assoc spec :name name))
+
+(defun hook (event handler)
+  "A lifecycle-hook record for the config's :hooks list: subscribe HANDLER (a fn
+   of one context map) to EVENT — see hooks.sema for the event catalog."
+  {:event event :handler handler})
 
 (defun coder-config (m)
   "Assemble the config value, filling any omitted key from the defaults."
   (merge default-config m))
+
+(defun known-config-keys ()
+  "The recognized top-level config keys — everything default-config declares."
+  (keys default-config))
+
+(defun unknown-config-keys (cfg)
+  "Top-level keys in CFG that aren't recognized (from default-config). merge
+   keeps a typo'd key like :max-turn, so this recovers it for a warning
+   instead of letting it vanish silently."
+  (filter (lambda (k) (not (member k (known-config-keys)))) (keys cfg)))
 
 ;; ── Single sink + pure loader ────────────────────────────────────
 ;; configure! writes a scratch cell, not the active config, so a load that
@@ -119,9 +162,38 @@
         {:error "init.sema did not call (configure! …)"}))
     (catch e {:error e})))
 
+;; ── Generate the init.sema :models block from the descriptor table, so the
+;; first-run template can't drift from default-models. ──
+(defun provider-block-source (d)
+  "Rendered `(provider …)` source for descriptor D and its models, the ids
+   padded so the labels line up."
+  (let ((w (foldl max 0 (map (lambda (m) (string/length (format "~s" (:id m))))
+                             (:models d)))))
+    (string/append
+      "       (provider " (format "~s" (:display-name d)) "\n"
+      "         (list\n"
+      (string/join
+        (map (lambda (m)
+               (string/append "           (model "
+                              (string/pad-right (format "~s" (:id m)) w)
+                              " " (format "~s" (:label m)) ")"))
+             (:models d))
+        "\n")
+      "))")))
+
+(defun default-models-source ()
+  "The `(list (provider …) …)` source spliced into default-init-source; loading
+   it reproduces default-models exactly."
+  (string/append
+    "(list\n"
+    (string/join (map provider-block-source provider-descriptors) "\n")
+    ")"))
+
 ;; ── First-run default (annotated so humans + agents copy correct syntax) ──
+;; The :models block is generated from provider-descriptors, so it can't drift.
 
 (define default-init-source
+  (string/append
 ";; init.sema — Sema Coder config (Lisp data, hot-reloaded on save).
 ;; Edit in any editor; declarations are values the app reconciles to.
 
@@ -137,18 +209,9 @@
      ;; may carry per-model defaults, e.g.
      ;;   (model \"gpt-5.6-sol\" \"GPT-5.6 Sol\" {:effort \"high\"})
      :models
-     (list
-       (provider \"Anthropic\"
-         (list
-           (model \"claude-opus-4-6\"  \"Claude Opus 4.6\")
-           (model \"claude-sonnet-5\"  \"Claude Sonnet 5\")
-           (model \"claude-haiku-4-5\" \"Claude Haiku 4.5\")))
-       (provider \"OpenAI\"
-         (list
-           (model \"gpt-5.6-sol\"   \"GPT-5.6 Sol\")
-           (model \"gpt-5.6-terra\" \"GPT-5.6 Terra\")
-           (model \"gpt-5.6-luna\"  \"GPT-5.6 Luna\")
-           (model \"gpt-5.5\"       \"GPT-5.5\"))))
+     "
+    (default-models-source)
+"
 
      ;; ── MCP servers — manage in the /mcp modal (⌃O). Each is a value. ──
      :mcp-servers
@@ -172,8 +235,15 @@
      ;; ── Keybindings — rebind any action, or bind a key to a command name. ──
      ;; actions: :mcp :resume :palette :quit :interrupt :clear-line :line-start :line-end :repaint
      :keys {}   ;; e.g. {:mcp \"ctrl-p\" :test \"ctrl-t\"}
+
+     ;; ── Hooks — observe the turn lifecycle. Uncomment to add handlers; each
+     ;; takes a context map and its return is ignored. Events + their ctx:
+     ;;   :session-start {:cwd}          :pre-turn {:input :messages}
+     ;;   :pre-tool-call {:tool :args}   :post-turn {:input :result}
+     ;;   :on-error {:input :error}
+     ;; :hooks (list (hook :pre-tool-call (lambda (ctx) ...)))
      }))
-")
+"))
 
 (defun ensure-config! ()
   "Write the annotated default init.sema if none exists. Returns the path."

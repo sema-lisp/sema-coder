@@ -14,16 +14,24 @@ constructor — both already supported); item 4 was narrowed to PARTIAL. One
 incidental gap surfaced during verification and was filed as **#94** (prelude
 macro names can't be `(define (name …) …)` heads).
 
-## Upstream status (checked 2026-07-10, evening)
+## Upstream status (checked 2026-07-10; re-checked 2026-07-21)
 
 Fixed on `main` — in the Unreleased changelog, **not yet in any release**
-(latest release is 1.30.0, which still has all of these). This codebase keeps
-its workarounds until a release ships; each carries a "fold onto the builtin"
-note at the definition site:
+(latest release is **still 1.30.0**, which has none of these fixes). This
+codebase keeps its workarounds until a release ships; each carries a "fold onto
+the builtin" note at the definition site:
 
 - **#82 stale global reads from `load`ed units** — CLOSED (repro +
   characterization on the issue). `should-quit?` accessor workaround stays in
   `src/tui.sema`.
+- **#88 `event/select`/`io/read-key-timeout` block the scheduler** — CLOSED
+  2026-07-12 (PR #99). They now arm the same `AwaitIo` yield the file/http/shell
+  offloads use, so a "wait for key OR agent progress" loop no longer freezes
+  sibling tasks. The busy-pump workaround (`read-key-timeout 0` + `async/sleep
+  16`) in the TUI loop stays until a release ships.
+- **#89 `shell/quote` + `shell` `:cwd`/`:env` options map** — CLOSED (PR #100).
+  The hand-rolled `sh-quote` and the `cd <dir> && …` pinning idiom stay until a
+  release ships.
 - **#90 `enumerate`/`map-indexed`** — CLOSED. Local copies stay in
   `src/text.sema`.
 - **#91 sequence HOFs over `mutable-array`** — CLOSED. The
@@ -33,13 +41,14 @@ note at the definition site:
 - **#94 prelude-macro names as define heads** — still OPEN, but the fix is in
   the Unreleased changelog ("Prelude macro names are usable as ordinary
   identifiers").
+- **#104 async/spawn snapshots captured locals** — CLOSED 2026-07-12 (PR #106).
+  A `set!` to a captured local that runs after `async/spawn` is now observed by
+  the task (the root-cause class behind the #82 workaround).
 
 Still open upstream: **#83** (string/index-of start offset), **#84**
 (take/drop order), **#85** (deftool `:default`), **#86** (`agent/run`
-`:usage`), **#87** (cancelled turn loses transcript), **#88**
-(read-key-timeout blocks scheduler), **#89** (`shell` `:cwd`/`:env` +
-`shell/quote`), **#93** (`markdown/to-ansi`). Related new bug found upstream:
-**#104** (async/spawn snapshots captured locals).
+`:usage`), **#87** (cancelled turn loses transcript), **#93**
+(`markdown/to-ansi`).
 
 ## Blocker (filed separately)
 
@@ -94,7 +103,8 @@ Still open upstream: **#83** (string/index-of start offset), **#84**
 ## Async / TUI
 
 8. **`io/read-key-timeout` and `event/select` block the cooperative
-   scheduler.** Unlike `file/*`, `http/*`, `shell`, and the LLM path, they have
+   scheduler.** ✅ FIXED upstream (unreleased) — [#88], PR #99: both now yield
+   `AwaitIo` in async context. Unlike `file/*`, `http/*`, `shell`, and the LLM path, they have
    no `in_async_context()` offload — so a "wait for key OR agent progress" loop
    must busy-pump (`read-key-timeout 0` + `async/sleep 16`), costing latency
    and wakeups. Suggest: make `event/select` (at least the `:key` source)
@@ -103,11 +113,14 @@ Still open upstream: **#83** (string/index-of start offset), **#84**
 
 ## Shell
 
-9. **No shell-quoting helper.** `shell`'s single-string form goes through
+9. **No shell-quoting helper.** ✅ FIXED upstream (unreleased) — [#89], PR #100
+   adds `shell/quote`. `shell`'s single-string form goes through
    `sh -c`, and the `cd <dir> && …` workspace-pinning idiom breaks on paths
    with spaces/quotes unless you hand-roll POSIX quoting (sema-coder now
    carries its own `sh-quote`). Suggest: `shell/quote` builtin.
-10. **`shell` has no options map (`:cwd`, `:env`).** `proc/spawn` has them but
+10. **`shell` has no options map (`:cwd`, `:env`).** ✅ FIXED upstream
+    (unreleased) — [#89], PR #100 adds a trailing `{:cwd :env}` options map to
+    `shell`. `proc/spawn` has them but
     is a different (streaming, handle-based) API; for a one-shot command in a
     directory you're forced into the `cd &&` idiom from (9).
 

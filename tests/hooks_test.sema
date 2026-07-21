@@ -1,0 +1,43 @@
+(load "harness.sema")
+(load "../src/agent.sema")   ;; brings in hooks + with-tool-hooks + the (hook …) ctor
+
+(clear-hooks!)
+(check "no hooks initially" (get *hooks* :pre-turn '()) '())
+
+;; ── add-hook! + run-hooks: handlers fire in registration order with the ctx ──
+(define log '())
+(add-hook! :pre-turn (lambda (ctx) (set! log (append log (list (str "a:" (:input ctx)))))))
+(add-hook! :pre-turn (lambda (ctx) (set! log (append log (list (str "b:" (:input ctx)))))))
+(run-hooks :pre-turn {:input "hi"})
+(check "both handlers ran in order" log (list "a:hi" "b:hi"))
+(run-hooks :post-turn {})   ;; unrelated event
+(check "unrelated event is a no-op" log (list "a:hi" "b:hi"))
+
+;; ── a throwing handler is caught; later handlers still run ──
+(clear-hooks!)
+(define log2 '())
+(add-hook! :pre-turn (lambda (ctx) (raise {:message "boom"})))
+(add-hook! :pre-turn (lambda (ctx) (set! log2 (append log2 (list "survived")))))
+(run-hooks :pre-turn {})
+(check "throwing hook doesn't stop the rest" log2 (list "survived"))
+
+;; ── reconcile-hooks! replaces the config-declared set (drops removed on reload) ──
+(reconcile-hooks! (list (hook :post-turn (lambda (ctx) #t))
+                        (hook :post-turn (lambda (ctx) #t))))
+(check "reconcile installs two post-turn" (length (get *hooks* :post-turn '())) 2)
+(reconcile-hooks! (list (hook :on-error (lambda (ctx) #t))))
+(check "reconcile drops removed"  (get *hooks* :post-turn '()) '())
+(check "reconcile keeps declared" (length (get *hooks* :on-error '())) 1)
+
+;; ── with-tool-hooks fires :pre-tool-call on "start" only, passes events through ──
+(clear-hooks!)
+(define fired '())
+(add-hook! :pre-tool-call (lambda (ctx) (set! fired (append fired (list (:tool ctx))))))
+(define calls '())
+(define wrapped (with-tool-hooks (lambda (ev) (set! calls (append calls (list (:event ev)))))))
+(wrapped {:event "start" :tool "bash" :args {:command "ls"}})
+(wrapped {:event "end"   :tool "bash" :args {}})
+(check "pre-tool-call fires on start only"    fired (list "bash"))
+(check "wrapped passes both events through"   calls (list "start" "end"))
+
+(done)

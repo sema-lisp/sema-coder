@@ -1,0 +1,34 @@
+(load "harness.sema")
+(load "../src/commands.sema")   ;; brings in plugins + the registries a plugin extends
+
+;; ── load-plugins-from!: run a dir of plugin files, report errors, don't throw ──
+(define pd "/tmp/sc-plugins-test")
+(shell "rm" "-rf" pd) (file/mkdir pd)
+(file/write (path/join pd "hello.sema")
+  "(register-command! \"hello-plugin\" \"say hi\" (lambda (s a) s))\n(bind-key! \"ctrl-y\" \"hello-plugin\")")
+(let ((errs (load-plugins-from! pd)))
+  (check "clean plugin → no errors"        errs '())
+  (check-true "plugin registered a command" (get *commands* "hello-plugin" #f))
+  (check "plugin bound a key" (get (runtime-keys) :hello-plugin #f) "ctrl-y"))
+
+;; a broken plugin is reported (returned), not thrown
+(file/write (path/join pd "broken.sema") "(this is (not balanced")
+(check "broken plugin reported" (length (load-plugins-from! pd)) 1)
+
+;; a missing dir is a quiet no-op
+(check "missing dir → no errors" (load-plugins-from! "/tmp/sc-plugins-none") '())
+
+;; ── load-plugins!: scans (config-dir)/plugins (global) then project-local ──
+(define gd "/tmp/sc-plugins-global")
+(shell "rm" "-rf" gd) (file/mkdir gd)
+(parameterize ((config-dir-override gd))
+  (check "global plugin dir is under the config dir"
+         (car (plugin-dirs "/x")) (path/join gd "plugins"))
+  (file/mkdir (path/join (config-dir) "plugins"))
+  (file/write (path/join (config-dir) "plugins" "g.sema")
+    "(register-command! \"global-plug\" \"g\" (lambda (s a) s))")
+  ;; project dir for this cwd doesn't exist → only the global plugin loads
+  (check "load-plugins! clean" (load-plugins! "/tmp/sc-no-project") '())
+  (check-true "global plugin loaded" (get *commands* "global-plug" #f)))
+
+(done)

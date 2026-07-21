@@ -1,0 +1,40 @@
+;; hooks.sema — lifecycle hooks around the turn loop.
+;;
+;; Handlers observe the turn lifecycle. They're subscribable from init.sema —
+;; declared as :hooks DATA and reconciled like commands/servers, which keeps
+;; load-config pure — and (later) from plugins via add-hook! directly.
+;;
+;; Events (each handler is a fn of one context map; its return value is ignored):
+;;   :session-start  {:cwd}              — a fresh conversation begins
+;;   :pre-turn       {:input :messages}  — before the agent runs a turn
+;;   :pre-tool-call  {:tool :args}       — before each tool the agent calls
+;;   :post-turn      {:input :result}    — after a turn completes
+;;   :on-error       {:input :error}     — a turn threw (the error then re-raises)
+;;
+;; A throwing handler is caught and swallowed, so a bad hook can never break the
+;; turn it observes nor corrupt the TUI by printing — log inside your handler.
+
+(define hook-events
+  (list :session-start :pre-turn :pre-tool-call :post-turn :on-error))
+
+(define *hooks* {})   ;; event(keyword) → (handler …), in registration order
+
+(defun clear-hooks! () (set! *hooks* {}))
+
+(defun add-hook! (event handler)
+  "Subscribe HANDLER to EVENT. Later handlers run after earlier ones."
+  (set! *hooks* (assoc *hooks* event (append (get *hooks* event '()) (list handler)))))
+
+(defun run-hooks (event ctx)
+  "Invoke every handler for EVENT with the context map CTX (side-effecting;
+   return values ignored). A throwing handler is caught and swallowed. Returns nil."
+  (for-each
+    (lambda (h) (try (h ctx) (catch e nil)))
+    (get *hooks* event '()))
+  nil)
+
+(defun reconcile-hooks! (hooks)
+  "Replace the config-owned hook set with HOOKS (a list of (hook …) records), so
+   a reload drops removed hooks — no accumulation."
+  (clear-hooks!)
+  (for-each (lambda (h) (add-hook! (:event h) (:handler h))) hooks))

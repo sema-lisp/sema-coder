@@ -46,4 +46,24 @@
 (handle-alt {:kind :alt :char "\u007f"})
 (check "Option+Delete (alt DEL) deletes word" *input* "foo ")
 
+;; ── Prompt input API (the extension surface: read + edit the prompt) ──
+(set-input! "hello world" 5)
+(check "prompt-text reads the input"   (prompt-text) "hello world")
+(check "prompt-cursor reads the caret" (prompt-cursor) 5)
+
+;; prompt-insert! splices at the caret and advances past it (multi-char)
+(prompt-insert! " there")
+(check "prompt-insert! splices at caret" *input* "hello there world")
+(check "prompt-insert! advances caret"   *cursor* 11)
+
+;; prompt-set! replaces the whole prompt, caret to end
+(prompt-set! "/todos")
+(check "prompt-set! replaces text"  *input* "/todos")
+(check "prompt-set! caret to end"   *cursor* 6)
+
+;; prompt-clear! empties it
+(prompt-clear!)
+(check "prompt-clear! empties"      *input* "")
+(check "prompt-clear! caret to 0"   *cursor* 0)
+
 (done)

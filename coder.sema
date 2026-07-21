@@ -11,34 +11,48 @@
 
 (load "src/cli.sema")
 (load "src/banner.sema")
-(load "src/tui.sema")   ;; brings in commands, agent, tools, mcp, session, …
+(load "src/tui.sema") ;; brings in commands, agent, tools, mcp, session, …
 
 (define VERSION "0.3.0")
 
 (try
   (begin
     (define cli (parse-cli))
-    (when (:help cli) (show-usage) (exit 0))
-    (when (:version cli) (println f"sema-coder ${VERSION}") (exit 0))
+    (when (:help cli)
+      (show-usage)
+      (exit 0))
+    (when (:version cli)
+      (println f"sema-coder ${VERSION}")
+      (exit 0))
 
     ;; not `provider`/`model` — those names would shadow the config constructors
     ;; init.sema calls on every load/hot-reload (same trap as `agent` below).
     (define llm-provider (llm/auto-configure))
     (when (nil? llm-provider)
-      (io/println-error "Error: No API key found. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.")
+      (io/println-error
+        f"Error: No API key found. Set ${(string/join (provider-env-keys) " or ")}.")
       (exit 1))
 
-    (define cfg       (boot-config!))  ;; ensure + load init.sema, reconcile commands + servers
-    (define cwd       (sys/cwd))
+    (define cfg (boot-config!)) ;; ensure + load init.sema, reconcile commands + servers
+    (define cwd (sys/cwd))
+    ;; Load plugins after the config is applied, before the agent is built, so a
+    ;; plugin's commands / overlays / hooks / keys are live for the session.
+    (for-each (lambda (e) (io/println-error f"plugin error: ${e}")) (load-plugins! cwd))
     (define cli-model (:model cli))
-    (mcp-autostart!)                 ;; connect :autostart servers before the agent is built
+    (mcp-autostart!) ;; connect :autostart servers before the agent is built
     ;; not `agent` — that name would shadow the (agent {…}) builtin constructor.
     (define sema-coder-agent (create-agent cwd cli-model cfg))
 
-    ;; One-shot mode — prose to stdout, nothing else.
+    ;; One-shot mode — prose to stdout, nothing else. (The TUI path fires
+    ;; :session-start from new-session!; here the non-TTY paths fire it.)
     (when (:prompt cli)
-      (let ((result (run-turn sema-coder-agent (:prompt cli) '() on-tool-call
-                              (pick-effort "" (choose-model cli-model cfg) cfg))))
+      (run-hooks :session-start {:cwd cwd})
+      (let ((result
+              (run-turn sema-coder-agent
+                (:prompt cli)
+                '()
+                on-tool-call
+                (pick-effort "" (choose-model cli-model cfg) cfg))))
         (println (:response result))
         (exit 0)))
 
@@ -52,37 +66,52 @@
     (show-welcome cwd cli-model)
     (let ((na (mcp-needs-auth)))
       (unless (null? na)
-        (show-info f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")}")))
+        (show-info
+          f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")}")))
+
+    (run-hooks :session-start {:cwd cwd})
 
     (define state
-      {:messages '() :model cli-model :effort ""
-       :cwd cwd :agent sema-coder-agent :config cfg})
+      {:messages '()
+       :model cli-model
+       :effort ""
+       :cwd cwd
+       :agent sema-coder-agent
+       :config cfg})
 
     (defun handle-input (input)
       (cond
-        ((nil? input)                       ;; EOF — stdin closed
+        ((nil? input) ;; EOF — stdin closed
           (io/println-error "")
           (show-info goodbye-line)
           (exit 0))
-        ((= (string/trim input) "") nil)    ;; blank line — ignore
+        ((= (string/trim input) "") nil) ;; blank line — ignore
         ((slash-command? input)
-          (let ((next (try
-                        (dispatch-command (parse-command input) state)
-                        (catch e
-                          (show-error f"command failed: ${(get e :message (str e))}")
-                          state))))
+          (let ((next
+                  (try
+                    (dispatch-command (parse-command input) state)
+                    (catch e
+                      (show-error f"command failed: ${(get e :message (str e))}")
+                      state))))
             (if (equal? next 'quit)
-              (begin (show-info goodbye-line) (exit 0))
+              (begin
+                (show-info goodbye-line)
+                (exit 0))
               (set! state next))))
         (else
-          (let ((result (try
-                          (run-turn (:agent state) (string/trim input) (:messages state) on-tool-call
-                                    (let ((c (get state :config {})))
-                                      (pick-effort (get state :effort "")
-                                                   (choose-model (get state :model "") c) c)))
-                          (catch e
-                            (show-error f"agent error: ${(get e :message (str e))}")
-                            #f))))
+          (let ((result
+                  (try
+                    (run-turn (:agent state)
+                      (string/trim input)
+                      (:messages state)
+                      on-tool-call
+                      (let ((c (get state :config {})))
+                        (pick-effort (get state :effort "")
+                          (choose-model (get state :model "") c)
+                          c)))
+                    (catch e
+                      (show-error f"agent error: ${(get e :message (str e))}")
+                      #f))))
             (when result
               (show-response (:response result))
               (set! state (assoc state :messages (:messages result))))))))

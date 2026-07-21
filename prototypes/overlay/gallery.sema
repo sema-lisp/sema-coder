@@ -1,0 +1,196 @@
+;; gallery.sema — overlay modal DESIGN PROTOTYPES (standalone, throwaway).
+;;
+;;   Run:  sema prototypes/overlay/gallery.sema        (best in a real terminal — true color)
+;;
+;; These render candidate looks for the reusable "scrollable, selectable-list
+;; modal" — the overlay used by involved flows (MCP CRUD, resume, and later
+;; forge/workflows). This is NOT the completion palette (that stays as-is for
+;; quick inline picks); this is the heavier modal with its own view + actions.
+;;
+;; Goal of this file: SEE the options and pick a direction. Once chosen we port
+;; :mcp/:resume onto it, add the registry, and support an overlay stack.
+;; Nothing here is wired into the app.
+
+(load "../../src/theme.sema")
+(load "../../src/text.sema")
+
+(define BW 58)          ;; modal box width
+(define IND "   ")      ;; left indent, to simulate on-screen placement
+
+;; ── Box chrome (same primitives the real overlay.sema uses) ──────────────────
+(defun bx-row (content inner)
+  (let ((c (if (> (string/width content) inner) (clip-styled content inner) content)))
+    (string/append (faint "│ ") (pad-to c inner) (faint " │"))))
+(defun bx-top   (title bw) (string/append (faint "┌") (accent-dim title)
+                             (faint (string/append (string/repeat "─" (max 0 (- bw 2 (string/width title)))) "┐"))))
+(defun bx-round (title bw) (string/append (faint "╭") (accent-dim title)
+                             (faint (string/append (string/repeat "─" (max 0 (- bw 2 (string/width title)))) "╮"))))
+(defun bx-sep   (bw) (faint (string/append "├" (string/repeat "─" (max 0 (- bw 2))) "┤")))
+(defun bx-bot   (bw) (faint (string/append "└" (string/repeat "─" (max 0 (- bw 2))) "┘")))
+(defun bx-botr  (bw) (faint (string/append "╰" (string/repeat "─" (max 0 (- bw 2))) "╯")))
+(defun rule     (w)  (faint (string/repeat "─" w)))
+
+;; ── Status glyph + label (the MCP CRUD case) ─────────────────────────────────
+(defun glyph (status)
+  (match status
+    (:connected  (ok   "●"))
+    (:idle       (faint "◌"))
+    (:needs-auth (warn "▲"))
+    (:error      (bad  "○"))
+    (_           (faint "◌"))))
+(defun status-text (s)
+  (match (:status s)
+    (:connected  (muted (string/append (number->string (:tools s)) " tools · connected")))
+    (:idle       (muted "idle"))
+    (:needs-auth (warn  "needs auth"))
+    (:error      (bad   (string/append "error · " (:error s))))
+    (_           (muted "idle"))))
+
+;; ── A generic single-line item row: marker + glyph + label (clipped/padded so
+;;    the meta right-aligns) — the reusable core every style shares. ──
+(defun item-row (marker glyph-s label meta selected? inner)
+  (let* ((mw     2)                                   ;; marker is 2 cols
+         (gw     (if (= glyph-s "") 0 2))
+         (metaw  (string/width meta))
+         (labelw (max 6 (- inner mw gw 1 metaw)))
+         (lbl    (pad-width (clip-width label labelw) labelw)))
+    (string/append marker
+                   (if (= glyph-s "") "" (string/append glyph-s " "))
+                   (if selected? (bright lbl) (muted lbl))
+                   " " meta)))
+
+;; ── Sample data ──────────────────────────────────────────────────────────────
+(define servers
+  (list {:name "sema"   :transport "stdio" :status :connected :tools 7}
+        {:name "fs"     :transport "stdio" :status :idle}
+        {:name "asana"  :transport "http"  :status :needs-auth}
+        {:name "github" :transport "http"  :status :error :error "401"}))
+(define SEL 0)
+
+;; ═════════════════════════════════════════════════════════════════════════════
+;; STYLE A — classic box, ▸ marker (the refined current look)
+;; ═════════════════════════════════════════════════════════════════════════════
+(defun render-a ()
+  (let ((inner (- BW 4)))
+    (append
+      (list (bx-top " MCP servers · 4 " BW))
+      (enumerate-map
+        (lambda (i s)
+          (bx-row (item-row (if (= i SEL) (accent "▸ ") "  ")
+                            (glyph (:status s)) (:name s) (status-text s) (= i SEL) inner) inner))
+        servers)
+      (list (bx-sep BW))
+      (list (bx-row (faint "↑↓ move · c connect · d disconnect · e edit · esc") inner))
+      (list (bx-bot BW)))))
+
+;; ═════════════════════════════════════════════════════════════════════════════
+;; STYLE B — rounded corners, accent gutter bar on the selected row
+;; ═════════════════════════════════════════════════════════════════════════════
+(defun render-b ()
+  (let ((inner (- BW 4)))
+    (append
+      (list (bx-round " MCP servers · 4 " BW))
+      (enumerate-map
+        (lambda (i s)
+          (bx-row (item-row (if (= i SEL) (accent "▌ ") "  ")
+                            (glyph (:status s)) (:name s) (status-text s) (= i SEL) inner) inner))
+        servers)
+      (list (bx-sep BW))
+      (list (bx-row (faint "↑↓ · c connect · d disconnect · e edit · ⏎ tools · esc") inner))
+      (list (bx-botr BW)))))
+
+;; ═════════════════════════════════════════════════════════════════════════════
+;; STYLE C — two-line cards: name line + dim meta line, blank between
+;; ═════════════════════════════════════════════════════════════════════════════
+(defun render-c ()
+  (let ((inner (- BW 4)))
+    (append
+      (list (bx-top " MCP servers " BW))
+      (apply append
+        (enumerate-map
+          (lambda (i s)
+            (list
+              (bx-row (string/append (if (= i SEL) (accent "▸ ") "  ")
+                                     (glyph (:status s)) " "
+                                     (if (= i SEL) (bright (:name s)) (muted (:name s)))) inner)
+              (bx-row (string/append "     " (faint (:transport s)) (faint " · ") (status-text s)) inner)))
+          servers))
+      (list (bx-sep BW))
+      (list (bx-row (faint "↑↓ move · c/d connect · e edit · esc") inner))
+      (list (bx-bot BW)))))
+
+;; ═════════════════════════════════════════════════════════════════════════════
+;; STYLE D — borderless: uppercase title + rules, indented rows, no side bars
+;; ═════════════════════════════════════════════════════════════════════════════
+(defun render-d ()
+  (let ((w (- BW 2)))
+    (append
+      (list (string/append " " (accent (term/style "MCP SERVERS" :bold)) (muted "   ·   4 servers")))
+      (list (string/append " " (rule w)))
+      (enumerate-map
+        (lambda (i s)
+          (string/append
+            (if (= i SEL) (accent " ▸ ") "   ")
+            (if (= i SEL) (bright (pad-width (:name s) 9)) (muted (pad-width (:name s) 9))) " "
+            (glyph (:status s)) " " (status-text s) (faint (string/append "  ·  " (:transport s)))))
+        servers)
+      (list (string/append " " (rule w)))
+      (list (string/append " " (faint "↑↓ move · c connect · d disconnect · e edit · esc close"))))))
+
+;; ── nested DETAIL view (drill into a server's tools) — shows a stacked flow ──
+(defun render-detail ()
+  (let ((inner (- BW 4)) (tools (list "eval" "docs" "docs_search")))
+    (append
+      (list (bx-round " sema · tools " BW))
+      (map (lambda (t) (bx-row (string/append "  " (accent "◦ ") (bright t)) inner)) tools)
+      (list (bx-sep BW))
+      (list (bx-row (faint "↑↓ scroll · esc back") inner))
+      (list (bx-botr BW)))))
+
+;; ── empty state ──────────────────────────────────────────────────────────────
+(defun render-empty ()
+  (let ((inner (- BW 4)))
+    (list (bx-top " MCP servers " BW)
+          (bx-row "" inner)
+          (bx-row (muted "   No servers yet — add one in init.sema (press e).") inner)
+          (bx-row "" inner)
+          (bx-bot BW))))
+
+;; ── REUSE: the same modal chrome (style B), driven by session data ───────────
+(define sessions
+  (list {:title "refactor the config loader" :count 24 :model "opus-4-6"}
+        {:title "bash timeout + read-file paging" :count 8 :model "gpt-5.6-sol"}
+        {:title "palette flicker" :count 41 :model "auto"}))
+(defun render-sessions ()
+  (let ((inner (- BW 4)))
+    (append
+      (list (bx-round " Resume session · 3 " BW))
+      (enumerate-map
+        (lambda (i m)
+          (bx-row (item-row (if (= i SEL) (accent "▌ ") "  ")
+                            "" (:title m)
+                            (muted (string/append (number->string (:count m)) " msgs · " (:model m)))
+                            (= i SEL) inner) inner))
+        sessions)
+      (list (bx-sep BW))
+      (list (bx-row (faint "↑↓ · ⏎ preview · r restore · esc") inner))
+      (list (bx-botr BW)))))
+
+;; ── driver ───────────────────────────────────────────────────────────────────
+(defun show (label rows)
+  (println "")
+  (println (string/append "  " (accent-dim (string/append "── " label))))
+  (println "")
+  (for-each (lambda (r) (println (string/append IND r))) rows)
+  (println ""))
+
+(println "")
+(println (string/append "  " (heading "Overlay modal — design prototypes")
+                        "   " (muted "(selected row = first)")))
+(show "STYLE A · classic box, ▸ marker" (render-a))
+(show "STYLE B · rounded, accent gutter bar" (render-b))
+(show "STYLE C · two-line cards" (render-c))
+(show "STYLE D · borderless (rules only)" (render-d))
+(show "Nested detail view (style B → server tools)" (render-detail))
+(show "Empty state (style A)" (render-empty))
+(show "Reuse: sessions list in the same chrome (style B)" (render-sessions))

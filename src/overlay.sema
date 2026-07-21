@@ -1,11 +1,18 @@
-;; overlay.sema — the TUI's single-slot modal overlay: the MCP management
-;; modal (⌃O) and the resume/session picker (⌃R), plus the shared bordered-box
-;; renderers and their key handlers.
+;; overlay.sema — the TUI's modal overlay system: a registry of modals over an
+;; overlay STACK, plus the reusable Style-B list-modal and the two built-in
+;; modals (MCP management ⌃O, resume/session picker ⌃R).
 ;;
-;; Reads the TUI globals (*cols*, *agent*, …) defined in tui.sema — all load
-;; units share one global env. The overlay's own state lives in a stable
-;; container mutated in place, never rebound: rebinding a module global with
-;; set! can serve stale values to readers in other top-level forms.
+;; A modal is a descriptor {:kind :open :render :on-key} added with
+;; register-overlay!; open-overlay! pushes a fresh state, and the dispatch
+;; (overlay-rows / handle-overlay-key) looks the descriptor up by the top
+;; state's :kind — so a new modal (first-party or plugin) is one register call,
+;; and a child modal can push over its parent. See docs/overlay-registry-design.md.
+;;
+;; Reads the TUI globals (*cols*, *rows*, *agent*, …) defined in tui.sema — all
+;; load units share one global env. Overlay state lives in a stable container
+;; (a list in a 1-slot array) mutated in place, never set!-rebound: rebinding a
+;; module global with set! can serve stale values to readers in other top-level
+;; forms.
 
 (load "theme.sema")
 (load "text.sema")
@@ -13,14 +20,64 @@
 (load "mcp.sema")
 (load "session.sema")
 
-(define *overlay-box* (mutable-array/new 1 #f))   ;; slot 0: #f | {:kind :mcp|:resume :view … :sel N …}
+;; ── Overlay stack ────────────────────────────────────────────────
+;; A stack of overlay state maps (top = active), held as a list in a stable
+;; 1-slot array: reads through (overlay-stack) always see the latest write, and
+;; since there is no mutable-array/pop!, a list gives push (cons) + pop (cdr)
+;; for free. A child modal pushes over its parent (Forge approve→rename, a
+;; confirm over a dashboard); the last pop closes.
+(define *overlay-stack* (mutable-array/new 1 '()))   ;; slot 0: (state …) top-first
 
-(defun overlay () (mutable-array/get *overlay-box* 0))
-(defun set-overlay! (v) (mutable-array/set! *overlay-box* 0 v))
+(defun overlay-stack ()       (mutable-array/get *overlay-stack* 0))
+(defun set-overlay-stack! (l) (mutable-array/set! *overlay-stack* 0 l))
 
-(defun overlay-active? () (if (overlay) #t #f))
-(defun close-overlay! () (set-overlay! #f))
+(defun overlay-active? () (not (null? (overlay-stack))))
+(defun overlay ()
+  "The active (top) overlay's state map, or #f when the stack is empty."
+  (let ((s (overlay-stack))) (if (null? s) #f (car s))))
+
+(defun push-overlay! (state)
+  "Open STATE as a child modal over the current one."
+  (set-overlay-stack! (cons state (overlay-stack))))
+
+(defun set-overlay! (state)
+  "Replace the top overlay's state (push if the stack is empty)."
+  (let ((s (overlay-stack)))
+    (set-overlay-stack! (if (null? s) (list state) (cons state (cdr s))))))
+
 (defun overlay-merge! (m) (set-overlay! (merge (overlay) m)))
+
+(defun close-overlay! ()
+  "Pop the top overlay — a child returns to its parent; the last pop closes."
+  (let ((s (overlay-stack))) (unless (null? s) (set-overlay-stack! (cdr s)))))
+
+(defun close-all-overlays! () (set-overlay-stack! '()))
+
+;; ── Overlay registry ─────────────────────────────────────────────
+;; Each modal registers a descriptor keyed by :kind. open-overlay! pushes a
+;; fresh state from :open; the dispatch (overlay-rows / handle-overlay-key)
+;; looks the descriptor up by the top state's :kind. Built-ins register at load
+;; (below); plugins call register-overlay! after init.
+(define *overlays* {})   ;; kind(keyword) → {:kind :open :render :on-key}
+
+(defun overlay-spec (m) m)   ;; descriptor constructor (a plain map; identity for now)
+(defun register-overlay! (spec) (set! *overlays* (assoc *overlays* (:kind spec) spec)))
+(defun overlay-registered? (kind) (if (get *overlays* kind #f) #t #f))
+(defun overlay-desc () (if (overlay) (get *overlays* (:kind (overlay)) #f) #f))
+
+(defun open-overlay! (kind . args)
+  "Push a fresh overlay of KIND (its :open builds the initial state). No-op if
+   KIND isn't registered. A throwing :open (e.g. a plugin that scans files)
+   surfaces as an error block instead of crashing the keypress — nothing is
+   pushed."
+  (let ((spec (get *overlays* kind #f)))
+    (when spec
+      (let ((st (try ((:open spec) args)
+                     (catch e (begin
+                                (add-block! {:kind :error
+                                             :text f"overlay ${kind} failed to open: ${(get e :message (str e))}"})
+                                #f)))))
+        (when st (push-overlay! st))))))
 
 ;; ── Bordered box helpers (clip content to the inner width, ANSI-safe) ──
 
@@ -32,6 +89,11 @@
                  (faint (string/append (string/repeat "─" (max 0 (- bw 2 (string/length title)))) "┐"))))
 (defun box-bot (bw) (faint (string/append "└" (string/repeat "─" (max 0 (- bw 2))) "┘")))
 (defun box-sep (bw) (faint (string/append "├" (string/repeat "─" (max 0 (- bw 2))) "┤")))
+;; Style-B rounded corners (the chrome the overlay registry settled on).
+(defun box-round (title bw)
+  (string/append (faint "╭") (accent-dim title)
+                 (faint (string/append (string/repeat "─" (max 0 (- bw 2 (string/width title)))) "╮"))))
+(defun box-round-bot (bw) (faint (string/append "╰" (string/repeat "─" (max 0 (- bw 2))) "╯")))
 
 (defun window-list (lst sel maxrows)
   "A MAXROWS-long window of LST that keeps index SEL visible → {:items :start}."
@@ -52,9 +114,69 @@
 (defun key-char= (k ch)   (and (equal? (:kind k) :char) (equal? (:char k) ch)))
 (defun key-ctrl= (k ch)   (and (equal? (:kind k) :ctrl) (equal? (:char k) ch)))
 
+;; ── Layout context ───────────────────────────────────────────────
+;; Passed to each overlay's :render so a render never reaches for TUI globals
+;; directly (which also makes it headless-testable).
+(defun overlay-layout ()
+  {:cols *cols* :rows *rows* :max-width (min (max 40 (- *cols* 6)) 72)})
+
+;; ── Reusable list modal (Style B: rounded box + ▌ gutter) ─────────
+;; One scrollable, selectable list every modal can reuse. A feature supplies
+;; :items + a :render-item (item selected? width → content string) and :actions
+;; (footer hints); list-modal owns the chrome, the ▌ selection gutter, the
+;; scroll window, and centering. Returns centered rows for the compositor.
+
+(defun modal-cell (label meta inner)
+  "Row content: LABEL on the left (clipped), META right-aligned within INNER.
+   Both may be styled; widths are measured display-aware (ANSI-safe)."
+  (let* ((mw     (min (string/width meta) (max 0 (- inner 4))))
+         (meta2  (clip-styled meta mw))
+         (labelw (max 1 (- inner mw 1))))
+    (string/append (pad-to (clip-styled label labelw) labelw) " " meta2)))
+
+(defun list-modal-footer (actions)
+  (string/join
+    (map (lambda (a) (let ((l (get a :label "")))
+                       (if (= l "") (:key a) (string/append (:key a) " " l))))
+         actions)
+    " · "))
+
+(defun list-modal (spec)
+  "Render a Style-B selectable list. SPEC:
+     {:title s :items (…) :sel n :layout m :render-item fn :actions (…)}.
+   :render-item is (fn item selected? inner-width → content-string)."
+  (let* ((layout (:layout spec))
+         (bw     (get layout :max-width 58))
+         (inner  (- bw 4))
+         (cw     (- inner 2))                          ;; content width past the gutter
+         (items  (:items spec))
+         (sel    (:sel spec))
+         (n      (length items))
+         (title  (string/append " " (:title spec) " · " (number->string n) " "))
+         (rowcap (max 3 (- (get layout :rows 24) 8)))
+         (win    (window-list items sel rowcap))
+         (start  (:start win))
+         (ri     (:render-item spec))
+         (rows   (if (= n 0)
+                   (list (box-row (muted "   (empty)") inner))
+                   (enumerate-map
+                     (lambda (i it)
+                       (let ((idx (+ i start)))
+                         (box-row (string/append (if (= idx sel) (accent "▌ ") "  ")
+                                                 (ri it (= idx sel) cw))
+                                  inner)))
+                     (:items win)))))
+    (map #(center-h % bw)
+      (append
+        (list (box-round title bw))
+        rows
+        (list (box-sep bw))
+        (list (box-row (faint (list-modal-footer (:actions spec))) inner))
+        (list (box-round-bot bw))))))
+
 ;; ── MCP management modal ─────────────────────────────────────────────────────
 
-(defun open-mcp-modal! () (set-overlay! {:kind :mcp :view :list :sel 0 :tsel 0}))
+(defun open-mcp-modal! () (open-overlay! :mcp))   ;; back-compat alias for the ⌃O binding
 
 (defun mcp-sel-server ()
   ;; nil (not #f) when there's no selection: when-let in the connect/disconnect
@@ -81,55 +203,35 @@
     (:error      f"error: ${(get rec :error "")}")
     (_           "idle — press c to connect")))
 
-(defun mcp-row-text (rec sel?)
-  (string/append
-    (if sel? (accent "▸ ") "  ")
-    (mcp-status-glyph (:status rec)) " "
-    (bright (string/pad-right (:name rec) 12)) " "
-    (muted (string/pad-right (:transport rec) 5)) " "
-    (if (equal? (:status rec) :connected)
-      (muted (string/append (number->string (length (:tools rec))) " tools  ")) "        ")
-    (muted (mcp-status-label rec))))
-
-(defun mcp-list-rows (bw)
-  (let* ((inner (max 8 (- bw 4)))
-         (servers (mcp-records))
-         (sel (:sel (overlay)))
-         (rows (if (= (length servers) 0)
-                 (list (box-row (muted "No MCP servers — add one in init.sema (press e)") inner))
-                 (enumerate-map (lambda (i rec) (box-row (mcp-row-text rec (= i sel)) inner))
-                                (vector->list servers)))))
-    (append
-      (list (box-top " MCP servers " bw))
-      rows
-      (list (box-sep bw))
-      (list (box-row (faint "↑↓ · c connect · d disconnect · t tools · e edit · Esc") inner))
-      (list (box-bot bw)))))
+(defun mcp-render-item (rec selected? inner)
+  (modal-cell
+    (string/append (mcp-status-glyph (:status rec)) " "
+                   (if selected? (bright (:name rec)) (muted (:name rec)))
+                   "  " (faint (:transport rec)))
+    (muted (mcp-status-label rec))
+    inner))
 
 (defun mcp-sel-tools ()
   "Tool names of the selected server, when connected."
   (let ((srv (mcp-sel-server)))
     (if (and srv (equal? (:status srv) :connected)) (map tool/name (:tools srv)) '())))
 
-(defun mcp-tools-rows (bw)
-  (let* ((inner (max 8 (- bw 4)))
-         (srv (mcp-sel-server))
-         (names (mcp-sel-tools))
-         (win (window-list names (:tsel (overlay)) 10))
-         (rows (if (null? names)
-                 (list (box-row (muted "not connected — no tools") inner))
-                 (map #(box-row (string/append "  " (accent %)) inner) (:items win)))))
-    (append
-      (list (box-top (string/append " " (if srv (:name srv) "?") " · tools ") bw))
-      rows
-      (list (box-sep bw))
-      (list (box-row (faint "↑↓ scroll · Esc back") inner))
-      (list (box-bot bw)))))
+(defun mcp-tool-item (name selected? inner)
+  (modal-cell (string/append "◦ " (if selected? (bright name) (accent name))) "" inner))
 
-(defun mcp-modal-rows ()
-  (let* ((bw  (min (max 40 (- *cols* 6)) 72))
-         (box (if (equal? (:view (overlay)) :tools) (mcp-tools-rows bw) (mcp-list-rows bw))))
-    (map #(center-h % bw) box)))
+(defun mcp-render (state layout)
+  (if (equal? (:view state) :tools)
+    (let ((srv (mcp-sel-server)))
+      (list-modal {:title (string/append (if srv (:name srv) "?") " · tools")
+                   :items (mcp-sel-tools) :sel (:tsel state) :layout layout
+                   :render-item mcp-tool-item
+                   :actions (list {:key "↑↓" :label "scroll"} {:key "esc" :label "back"})}))
+    (list-modal {:title "MCP servers"
+                 :items (vector->list (mcp-records)) :sel (:sel state) :layout layout
+                 :render-item mcp-render-item
+                 :actions (list {:key "↑↓" :label "move"} {:key "c" :label "connect"}
+                                {:key "d" :label "disconnect"} {:key "⏎" :label "tools"}
+                                {:key "e" :label "edit"} {:key "esc" :label "close"})})))
 
 (defun mcp-connect-selected! ()
   (when-let (srv (mcp-sel-server))
@@ -161,10 +263,17 @@
                                                      (+ (:tsel (overlay)) 1))}))
     (else nil)))
 
+(register-overlay!
+  (overlay-spec
+    {:kind :mcp
+     :open   (lambda (args) {:kind :mcp :view :list :sel 0 :tsel 0})
+     :render mcp-render
+     :on-key (lambda (state k)
+               (if (equal? (:view state) :tools) (mcp-tools-key k) (mcp-list-key k)))}))
+
 ;; ── Resume modal (session history) ───────────────────────────────────────────
 
-(defun open-resume-modal! ()
-  (set-overlay! {:kind :resume :view :list :sel 0 :dscroll 0 :sessions (list-sessions)}))
+(defun open-resume-modal! () (open-overlay! :resume))   ;; back-compat alias for the ⌃R binding
 
 (defun resume-sel-session ()
   ;; nil (not #f) when there's no selection: when-let in the restore/detail
@@ -175,28 +284,11 @@
 (defun session-model-label (m)
   (let ((md (:model m))) (if (or (not md) (= md "")) "auto" md)))
 
-(defun resume-row-text (m sel? inner)
-  (let* ((meta   (string/append (number->string (:count m)) " msgs · " (session-model-label m)))
-         (titlew (max 8 (- inner 4 (string/width meta) 2)))
-         (title  (pad-width (clip-width (:title m) titlew) titlew)))
-    (string/append (if sel? (accent "▸ ") "  ") (bright title) "  " (muted meta))))
-
-(defun resume-list-rows (bw)
-  (let* ((inner (max 8 (- bw 4)))
-         (sessions (:sessions (overlay)))
-         (sel (:sel (overlay)))
-         (win (window-list sessions sel 12))
-         (start (:start win))
-         (rows (if (= (length sessions) 0)
-                 (list (box-row (muted "No saved sessions yet — they're written after each turn") inner))
-                 (enumerate-map (lambda (i m) (box-row (resume-row-text m (= (+ i start) sel) inner) inner))
-                                (:items win)))))
-    (append
-      (list (box-top " Resume session " bw))
-      rows
-      (list (box-sep bw))
-      (list (box-row (faint "↑↓ · enter view · r restore · Esc") inner))
-      (list (box-bot bw)))))
+(defun resume-render-item (m selected? inner)
+  (modal-cell
+    (if selected? (bright (:title m)) (muted (:title m)))
+    (muted (string/append (number->string (:count m)) " msgs · " (session-model-label m)))
+    inner))
 
 (defun session-first-line (s)
   (let ((parts (filter #(not (= (string/trim %) "")) (string/split s "\n"))))
@@ -225,27 +317,35 @@
 
 (define RESUME-DETAIL-ROWS 14)   ;; visible message-preview lines in the detail view
 
-(defun resume-detail-rows (bw)
+(defun resume-detail-view (state layout)
   ;; One preview line per message, so dscroll is a direct top offset (clamped).
-  (let* ((inner (max 8 (- bw 4)))
-         (msgs (:detail (overlay)))
+  ;; Not a selectable list (no gutter), so it's rendered directly, not via
+  ;; list-modal — but in the same Style-B rounded chrome.
+  (let* ((bw    (get layout :max-width 58))
+         (inner (- bw 4))
+         (msgs  (:detail state))
          (lines (map #(msg-preview-row % inner) msgs))
-         (start (max 0 (min (:dscroll (overlay)) (max 0 (- (length lines) RESUME-DETAIL-ROWS)))))
-         (win (take (min RESUME-DETAIL-ROWS (max 0 (- (length lines) start))) (drop start lines)))
-         (sel (resume-sel-session)))
-    (append
-      (list (box-top (string/append " " (if sel (clip-width (:title sel) 30) "session") " ") bw))
-      (if (null? lines)
-        (list (box-row (muted "empty session") inner))
-        (map #(box-row % inner) win))
-      (list (box-sep bw))
-      (list (box-row (faint "↑↓ scroll · enter/r restore · Esc back") inner))
-      (list (box-bot bw)))))
+         (start (max 0 (min (:dscroll state) (max 0 (- (length lines) RESUME-DETAIL-ROWS)))))
+         (win   (take (min RESUME-DETAIL-ROWS (max 0 (- (length lines) start))) (drop start lines)))
+         (sel   (resume-sel-session)))
+    (map #(center-h % bw)
+      (append
+        (list (box-round (string/append " " (if sel (clip-width (:title sel) 30) "session") " ") bw))
+        (if (null? lines)
+          (list (box-row (muted "empty session") inner))
+          (map #(box-row % inner) win))
+        (list (box-sep bw))
+        (list (box-row (faint "↑↓ scroll · ⏎/r restore · esc back") inner))
+        (list (box-round-bot bw))))))
 
-(defun resume-modal-rows ()
-  (let* ((bw  (min (max 40 (- *cols* 6)) 72))
-         (box (if (equal? (:view (overlay)) :detail) (resume-detail-rows bw) (resume-list-rows bw))))
-    (map #(center-h % bw) box)))
+(defun resume-render (state layout)
+  (if (equal? (:view state) :detail)
+    (resume-detail-view state layout)
+    (list-modal {:title "Resume session"
+                 :items (:sessions state) :sel (:sel state) :layout layout
+                 :render-item resume-render-item
+                 :actions (list {:key "↑↓" :label "move"} {:key "⏎" :label "preview"}
+                                {:key "r" :label "restore"} {:key "esc" :label "close"})})))
 
 (defun resume-open-detail! ()
   (when-let (m (resume-sel-session))
@@ -278,13 +378,22 @@
 (defun handle-resume-key (k)
   (if (equal? (:view (overlay)) :detail) (resume-detail-key k) (resume-list-key k)))
 
-;; ── Dispatch ──
+(register-overlay!
+  (overlay-spec
+    {:kind :resume
+     :open   (lambda (args) {:kind :resume :view :list :sel 0 :dscroll 0 :sessions (list-sessions)})
+     :render resume-render
+     :on-key (lambda (state k) (handle-resume-key k))}))
+
+;; ── Dispatch — registry lookup by the top overlay's :kind ──
+;; (Replaces the old hand-written if/cond over :mcp/:resume; a new modal is a
+;;  register-overlay! away, and a child modal on the stack dispatches to its own
+;;  descriptor because (overlay) is the top frame.)
 
 (defun overlay-rows ()
-  (if (equal? (:kind (overlay)) :resume) (resume-modal-rows) (mcp-modal-rows)))
+  (let ((spec (overlay-desc)))
+    (if spec ((:render spec) (overlay) (overlay-layout)) '())))
 
 (defun handle-overlay-key (k)
-  (cond
-    ((equal? (:kind (overlay)) :resume) (handle-resume-key k))
-    ((equal? (:view (overlay)) :tools)  (mcp-tools-key k))
-    (else                               (mcp-list-key k))))
+  (let ((spec (overlay-desc)))
+    (when spec ((:on-key spec) (overlay) k))))

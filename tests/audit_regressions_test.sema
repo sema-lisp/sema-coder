@@ -34,4 +34,10 @@
 (check "provider-env-key openai"        (provider-env-key "OpenAI") "OPENAI_API_KEY")
 (check "provider-env-key unknown"       (provider-env-key "Nonesuch") #f)
 
+;; ── provider-env-key reads the descriptor table, so adding a provider is a
+;; one-place change (no second match arm to keep in sync). ──
+(check "env-key derives from descriptors"
+       (map (lambda (d) (provider-env-key (:display-name d))) provider-descriptors)
+       (map :env-key provider-descriptors))
+
 (done)

@@ -38,6 +38,23 @@
 (check "provider-name openai"     (model-provider-name (coder-config {}) "gpt-5.6-luna") "openai")
 (check "provider-name anthropic"  (model-provider-name (coder-config {}) "claude-opus-4-6") "anthropic")
 
+;; ── provider descriptors: one table drives the whole provider/model catalog ──
+(check "descriptors carry env keys"
+       (map :env-key provider-descriptors)
+       (list "ANTHROPIC_API_KEY" "OPENAI_API_KEY"))
+(check "default-models derives from the descriptor table"
+       default-models
+       (map (lambda (d) (provider (:display-name d) (:models d))) provider-descriptors))
+(check "descriptor lookup by display name, any case"
+       (:env-key (provider-descriptor-by-name "anthropic")) "ANTHROPIC_API_KEY")
+(check "descriptor lookup misses unknown names" (provider-descriptor-by-name "Nonesuch") #f)
+(check "env keys for boot/usage messages"
+       (provider-env-keys) (list "ANTHROPIC_API_KEY" "OPENAI_API_KEY"))
+
+;; ── unknown / typo'd keys are recovered for a warning, not swallowed ──
+(check "known keys pass clean" (unknown-config-keys (coder-config {:model "m"})) '())
+(check "typo'd key flagged"    (unknown-config-keys (coder-config {:max-turn 9})) (list :max-turn))
+
 ;; ── load-config on a good file → {:ok cfg} ──
 (file/write "/tmp/sc-init-ok.sema"
   "(configure! (coder-config {:model \"m\" :max-turns 9 :commands (list (command \"t\" {:run [\"echo\"]}))}))")

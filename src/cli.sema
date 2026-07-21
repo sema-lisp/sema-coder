@@ -4,6 +4,8 @@
 ;; A malformed or unknown option prints an error and exits — a typo'd flag
 ;; must not quietly start an interactive session.
 
+(load "config.sema")   ;; provider-env-keys — the usage footer lists the API keys
+
 (defun cli-args ()
   "User arguments: everything after the first \"--\" in the raw argv
    (`sema coder.sema -- <args…>`). No \"--\" means no user args — the raw
@@ -52,4 +54,4 @@
   (println "  -h, --help            Show this help")
   (println "")
   (println "Config: <config-dir>/sema/sema-coder/init.sema")
-  (println "Keys: ANTHROPIC_API_KEY or OPENAI_API_KEY"))
+  (println f"Keys: ${(string/join (provider-env-keys) " or ")}"))

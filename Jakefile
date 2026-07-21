@@ -25,3 +25,9 @@ task ask q="":
 task test filter="":
     @needs sema
     sema test.sema -- {{filter}}
+
+@group coder
+@desc "Show the coder command-line help"
+task help:
+    @needs sema
+    ./coder.sema -- --help

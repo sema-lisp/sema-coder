@@ -215,8 +215,61 @@
           (else             f"Error listing directory ${path}: ${err}")))
       (catch e f"Error listing directory ${path}: ${e}"))))
 
+;; ── Tool registry ────────────────────────────────────────────────
+;; all-tools reads this registry, so no hand-synced list drifts. Built-ins
+;; register once (below); the tools/ autoload seam (autoload-tools!) fills a
+;; separate resettable layer, so re-loading a tools/ dir can't duplicate and a
+;; deleted tool file drops its tool — reconcile semantics, like config commands.
+;;
+;; Note: tools/ files use (deftool …) + (register-tool! name). A (tool {…})
+;; data-constructor (building a tool from a plain map) would let the agent forge
+;; tools programmatically, but the host has no such primitive and that's the
+;; Forge feature (Tier 2, deferred) — the registry itself needs none of it.
+
+(define *builtin-tools*    '())   ;; the app's own tools; registered once at load
+(define *autoloaded-tools* '())   ;; from a tools/ dir; reset before each pass
+
+(defun upsert-tool (tools t)
+  "TOOLS with T appended, replacing any existing tool of the same name — so a
+   re-registration updates in place instead of duplicating."
+  (append (filter (lambda (x) (not (= (tool/name x) (tool/name t)))) tools)
+          (list t)))
+
+(defun register-builtin-tool! (t) (set! *builtin-tools* (upsert-tool *builtin-tools* t)))
+
+(defun register-tool! (t)
+  "Register T into the autoloaded layer — the call a tools/*.sema file makes
+   after its (deftool …). Replaces a same-named tool, so a reload won't dup."
+  (set! *autoloaded-tools* (upsert-tool *autoloaded-tools* t)))
+
+(defun reset-autoloaded-tools! () (set! *autoloaded-tools* '()))
+
 (defun all-tools ()
-  (list read-file write-file edit-file bash grep find-files list-dir))
+  "Every registered tool: the app's built-ins plus anything autoloaded from a
+   tools/ dir. Rebuild the agent (create-agent) to pick up a change."
+  (append *builtin-tools* *autoloaded-tools*))
 
 ;; Derived from the tools themselves — no hand-synced list to drift.
 (defun tool-names () (map tool/name (all-tools)))
+
+(defun autoload-tools! (dir)
+  "Reset the autoloaded layer and (re-)load every DIR/*.sema, each of which
+   registers its tool(s) with register-tool!. A removed file drops its tool; a
+   re-load replaces rather than duplicates. Returns a list of load-error strings
+   (empty on success); never prints, so it's safe from the TUI file-watch. No-op
+   when DIR is absent."
+  (reset-autoloaded-tools!)
+  (if (and dir (file/exists? dir))
+    (foldl
+      (lambda (errs name)
+        (if (string/ends-with? name ".sema")
+          (let ((err (try (begin (load (path/join dir name)) #f)
+                          (catch e f"tools: ${name} failed to load: ${(get e :message (str e))}"))))
+            (if err (append errs (list err)) errs))
+          errs))
+      '() (sort (file/list dir)))
+    '()))
+
+;; Register the built-in tools into the registry (once, at load).
+(for-each register-builtin-tool!
+  (list read-file write-file edit-file bash grep find-files list-dir))

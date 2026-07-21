@@ -19,17 +19,28 @@
 (load "agent.sema")
 (load "session.sema")
 (load "keymap.sema")   ;; command records may declare a :key
+(load "plugins.sema")  ;; load-plugins! — boot-time extension loading
 
 ;; ── Registry ─────────────────────────────────────────────────────
 
-(define *commands* {})        ;; name(string) → {:desc :handler}
+(define *commands* {})        ;; name(string) → {:desc :handler :keep-input?}
 (define *command-order* '())  ;; registration order, for /help
 (define *tui-active* #f)      ;; set by tui-run; gates modal-vs-print behaviour
 
-(defun register-command! (name desc handler)
-  (set! *commands* (assoc *commands* name {:desc desc :handler handler}))
+(defun register-command! (name desc handler . opts)
+  "Register a slash command: NAME (string), DESC (help text), HANDLER
+   (state args → state | 'quit). An optional OPTS map carries flags — currently
+   :keep-input #t, which tells the TUI not to auto-clear the prompt when the
+   command runs from the palette, so the handler can read/transform *input*
+   itself (key-bound invocations never clear regardless)."
+  (let ((flags (if (null? opts) {} (car opts))))
+    (set! *commands* (assoc *commands* name (merge flags {:desc desc :handler handler}))))
   (unless (member name *command-order*)
     (set! *command-order* (append *command-order* (list name)))))
+
+(defun command-keeps-input? (name)
+  "True when command NAME opted out of the palette's prompt auto-clear."
+  (get (get *commands* name {}) :keep-input #f))
 
 ;; ── Argument completions ─────────────────────────────────────────
 ;; A command may register a completion source for its argument. The TUI palette
@@ -138,7 +149,8 @@
   (set! *config-command-names* (map :name cmds))
   (for-each
     (lambda (spec)
-      (register-command! (:name spec) (get spec :desc "") (config-command-handler spec)))
+      (register-command! (:name spec) (get spec :desc "") (config-command-handler spec)
+                         {:keep-input (get spec :keep-input #f)}))
     cmds)
   (set-command-keys!
     (foldl (lambda (m spec)
@@ -146,17 +158,45 @@
                (if k (assoc m (string->keyword (:name spec)) k) m)))
            {} cmds)))
 
+(defun config-key-warnings (cfg)
+  "One human-readable warning per unrecognized top-level key in CFG."
+  (map (lambda (k) f"unknown config key ${k} — ignored (typo?)")
+       (unknown-config-keys cfg)))
+
+(defun apply-config! (path fallback-cfg)
+  "The single load+reconcile path shared by boot / /reload / the TUI file-watch.
+   Load PATH, and on success reconcile the runtime — config-owned commands, MCP
+   servers + autostart, and the tools/ autoload dir — to it. On a broken file,
+   reconcile NOTHING (keep whatever is running) and report the error. Returns
+     {:ok cfg :warnings (str …)}   — unrecognized config keys + tool-load errors
+     {:error e :cfg fallback-cfg}  — a broken file; FALLBACK-CFG is echoed back.
+   Never prints: the caller surfaces :warnings / :error, so this is safe to call
+   off the command dispatch (e.g. the TUI file-watch) where the emit sink isn't
+   rerouted. The caller also owns whether to rebuild the agent."
+  (let ((r (load-config path)))
+    (if (:ok r)
+      (let ((cfg       (:ok r))
+            (tool-errs (autoload-tools! (tools-dir))))
+        (reconcile-commands! (:commands cfg))
+        (reconcile-servers! (:mcp-servers cfg))
+        (reconcile-hooks! (:hooks cfg))
+        (mcp-autostart!)
+        {:ok cfg :warnings (append (config-key-warnings cfg) tool-errs)})
+      {:error (:error r) :cfg fallback-cfg})))
+
+(defun emit-config-warnings! (warnings)
+  "Surface apply-config! WARNINGS through the emit sink (REPL / command dispatch)."
+  (for-each (lambda (w) (emit :info f"config: ${w}")) warnings))
+
 (defun boot-config! ()
-  "Ensure init.sema exists, load it, reconcile config-owned commands; return the
-   config value (defaults + an emitted error on a broken file)."
+  "Ensure init.sema exists, apply it, return the config value (defaults + an
+   emitted error on a broken file). The caller builds the agent."
   (ensure-config!)
-  (let* ((r   (load-config (config-path)))
-         (cfg (if (:ok r) (:ok r)
-                (begin (emit :error f"config: ${(:error r)} — using defaults")
-                       default-config))))
-    (reconcile-commands! (:commands cfg))
-    (reconcile-servers! (:mcp-servers cfg))
-    cfg))
+  (let ((r (apply-config! (config-path) default-config)))
+    (if (:ok r)
+      (begin (emit-config-warnings! (:warnings r)) (:ok r))
+      (begin (emit :error f"config: ${(:error r)} — using defaults")
+             (:cfg r)))))
 
 (defun editor-command ()
   "The user's preferred editor: $VISUAL, then $EDITOR (may carry flags), or nil."
@@ -208,11 +248,11 @@
     state))
 
 (defun provider-env-key (name)
-  "The conventional API-key env var for a provider display NAME, or #f."
-  (match (string/lower name)
-    ("anthropic" "ANTHROPIC_API_KEY")
-    ("openai"    "OPENAI_API_KEY")
-    (_ #f)))
+  "The conventional API-key env var for a provider display NAME, or #f.
+   Reads the descriptor table (config.sema), so a new provider is one edit."
+  ;; plain let/if, not if-let: a #f miss must read as falsy on current sema.
+  (let ((d (provider-descriptor-by-name name)))
+    (if d (:env-key d) #f)))
 
 (defun provider-key-missing? (name)
   "True when NAME's key env var is known and unset — its models can't be called."
@@ -342,6 +382,20 @@
             servers))))
     state))
 
+(defun session-restore-fields (id cwd config)
+  "Load session ID and compute the conversational state it restores to —
+   {:messages :model :effort :agent :meta}, with a fresh agent on the restored
+   model. The ONE place both the REPL /resume path and the TUI restore-session!
+   build this, so the two frontends can't drift."
+  (let* ((r    (load-session id))
+         (meta (:meta r))
+         (m    (get meta :model "")))
+    {:messages (:messages r)
+     :model    m
+     :effort   (get meta :effort "")
+     :agent    (create-agent cwd m config)
+     :meta     meta}))
+
 (register-command! "resume" "Resume a past session: /resume [id] (modal: ⌃R in the TUI)"
   (lambda (state args)
     (cond
@@ -353,17 +407,17 @@
               (catch e (emit :error f"couldn't restore “${args}”: ${(get e :message (str e))}")))
             ;; restore-session! updates the TUI globals; hand them back as state.
             (tui-state))
-          (let ((r (try (load-session args) (catch e #f))))
-            (if (not r)
+          (let ((f (try (session-restore-fields args (:cwd state) (get state :config {}))
+                     (catch e #f))))
+            (if (not f)
               (begin (emit :error f"no session “${args}” (try /resume for the list)") state)
-              (let* ((meta (:meta r))
-                     (m    (get meta :model "")))
-                (emit :ok f"resumed “${(get meta :title args)}” · ${(length (:messages r))} messages")
+              (begin
+                (emit :ok f"resumed “${(get (:meta f) :title args)}” · ${(length (:messages f))} messages")
                 (assoc state
-                  :messages (:messages r)
-                  :model  m
-                  :effort (get meta :effort "")
-                  :agent  (create-agent (:cwd state) m (get state :config {}))))))))
+                  :messages (:messages f)
+                  :model  (:model f)
+                  :effort (:effort f)
+                  :agent  (:agent f)))))))
       (*tui-active* (open-resume-modal!) state)
       (else
         (let ((ss (list-sessions)))
@@ -402,16 +456,14 @@
 
 (register-command! "reload" "Reload config from disk and rebuild the agent"
   (lambda (state args)
-    ;; On a broken init.sema, keep the running config (like the file-watch
-    ;; reload) instead of reconciling to defaults — a typo must not wipe the
-    ;; user's live commands, keybindings, and MCP servers.
-    (let ((r (load-config (config-path))))
+    ;; On a broken init.sema, apply-config! keeps the running config (it
+    ;; reconciles nothing) — a typo must not wipe the user's live commands,
+    ;; keybindings, and MCP servers.
+    (let ((r (apply-config! (config-path) (get state :config {}))))
       (if (:ok r)
         (let ((cfg (:ok r)))
-          (reconcile-commands! (:commands cfg))
-          (reconcile-servers! (:mcp-servers cfg))
-          (mcp-autostart!)
           (emit :ok "config reloaded")
+          (emit-config-warnings! (:warnings r))
           (assoc state
             :config cfg
             :agent (create-agent (:cwd state) (:model state) cfg)))

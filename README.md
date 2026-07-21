@@ -27,6 +27,7 @@ safety) is Rust. It depends on nothing but the `sema` binary.
   see the [sema README](https://github.com/sema-lisp/sema#installation)).
 - **An API key** — `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in the environment.
 - Optional: **`rg`** (ripgrep) — the grep tool prefers it, falling back to `grep`.
+- Optional: **`jake`** — enables the `jake coder.run`, `jake coder.ask`, `jake coder.test`, and `jake coder.help` shortcuts.
 
 ## Run
 
@@ -282,6 +283,7 @@ run it in a workspace you're prepared to let it modify.
 ```bash
 ./test.sema                # run the test suite (or: jake coder.test)
 ./test.sema -- markdown    # only files whose name contains a term
+jake coder.help             # show CLI help through Jake
 ```
 
 The runner is itself Sema — it fans each `tests/*_test.sema` out to a child

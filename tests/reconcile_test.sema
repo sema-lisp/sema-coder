@@ -17,4 +17,68 @@
 (check "reload drops b" (config-command-names) (list "a"))
 (check-true "b is unregistered" (nil? (get *commands* "b" nil)))
 
+;; ── :keep-input flag: stored on register, defaults off, reconciled from config ──
+(register-command! "kmd" "keeps" (lambda (s a) s) {:keep-input #t})
+(check-true "keep-input flag stored"   (command-keeps-input? "kmd"))
+(register-command! "nmd" "normal" (lambda (s a) s))
+(check "no flag by default"            (command-keeps-input? "nmd") #f)
+(check "unknown command → no flag"     (command-keeps-input? "nope") #f)
+(reconcile-commands! (list (command "snip" {:desc "s" :do (lambda (s a) s) :keep-input #t})
+                           (command "plain" {:desc "p" :do (lambda (s a) s)})))
+(check-true "config :keep-input reconciled" (command-keeps-input? "snip"))
+(check "config default keeps clearing"      (command-keeps-input? "plain") #f)
+
+;; ── apply-config! is the one load+reconcile path (boot / /reload / TUI) ──
+;; Pin config-dir to an empty temp so the tools/ autoload is deterministic.
+(define apply-dir "/tmp/sc-apply-cfgdir")
+(shell "rm" "-rf" apply-dir) (file/mkdir apply-dir)
+(parameterize ((config-dir-override apply-dir))
+  (file/write "/tmp/sc-apply-ok.sema"
+    "(configure! (coder-config {:model \"z\" :commands (list (command \"solo\" {:run [\"true\"]}))}))")
+  (let ((r (apply-config! "/tmp/sc-apply-ok.sema" default-config)))
+    (check-true "apply ok"              (:ok r))
+    (check "apply reconciles commands"  (config-command-names) (list "solo"))
+    (check "clean config → no warnings" (:warnings r) '()))
+
+  (file/write "/tmp/sc-apply-warn.sema"
+    "(configure! (coder-config {:model \"z\" :max-turn 9}))")
+  (check "apply flags one typo'd key"
+         (length (:warnings (apply-config! "/tmp/sc-apply-warn.sema" default-config))) 1)
+
+  (file/write "/tmp/sc-apply-bad.sema" "(broken")
+  (let ((r (apply-config! "/tmp/sc-apply-bad.sema" default-config)))
+    (check-true "apply error"           (:error r))
+    (check "broken file keeps fallback" (:cfg r) default-config))
+
+  ;; apply-config! autoloads (tools-dir) on the ok path
+  (file/mkdir (tools-dir))
+  (file/write (path/join (tools-dir) "extra.sema")
+    "(deftool extra \"x\" {:a {:type :string :description \"d\"}} (lambda (a) a))\n(register-tool! extra)")
+  (apply-config! "/tmp/sc-apply-ok.sema" default-config)
+  (check-true "apply autoloads tools/ dir" (member "extra" (tool-names)))
+
+  ;; apply-config! reconciles config-declared hooks
+  (file/write "/tmp/sc-apply-hooks.sema"
+    "(configure! (coder-config {:hooks (list (hook :pre-turn (lambda (ctx) #t)))}))")
+  (apply-config! "/tmp/sc-apply-hooks.sema" default-config)
+  (check "apply reconciles declared hooks" (length (get *hooks* :pre-turn '())) 1)
+
+  ;; ── unified restore: session-restore-fields is the one builder both /resume
+  ;;    front-ends use, so the REPL path and the TUI restore can't drift ──
+  (file/mkdir (path/join (config-dir) "sessions"))
+  (define rmsgs (list {:role "user" :content "hi"} {:role "assistant" :content "yo"}))
+  (save-session! "sess1" 111 "claude-sonnet-5" "high" rmsgs)
+  (let ((f (session-restore-fields "sess1" "/tmp" {})))
+    (check "restore fields: messages"  (:messages f) rmsgs)
+    (check "restore fields: model"     (:model f) "claude-sonnet-5")
+    (check "restore fields: effort"    (:effort f) "high")
+    (check-true "restore fields: agent built" (:agent f)))
+  ;; the REPL /resume handler builds the SAME conversational fields
+  (set! *tui-active* #f)
+  (let ((next (dispatch-command (parse-command "/resume sess1")
+                                {:messages '() :model "" :effort "" :cwd "/tmp" :agent #f :config {}})))
+    (check "repl /resume messages match" (:messages next) rmsgs)
+    (check "repl /resume model matches"  (:model next) "claude-sonnet-5")
+    (check "repl /resume effort matches" (:effort next) "high")))
+
 (done)

@@ -448,7 +448,8 @@
   ;; timestamp + pid: two instances started in the same millisecond can't
   ;; silently share (and clobber) one session file.
   (set! *session-id* f"${(time-ms)}-${(sys/pid)}")
-  (set! *session-created* (time-ms)))
+  (set! *session-created* (time-ms))
+  (run-hooks :session-start {:cwd *cwd*}))
 
 (defun persist-session! ()
   (when *session-id*
@@ -459,20 +460,22 @@
           (add-block! {:kind :warn :text f"session not saved: ${e} — check disk space and permissions"}))))))
 
 (defun restore-session! (id)
+  ;; The conversational state (messages/model/effort/agent) comes from the shared
+  ;; session-restore-fields — the same builder the REPL /resume uses, so the two
+  ;; can't drift. restore-session! then owns only the TUI-side effects: session
+  ;; tracking and the transcript repaint.
   (try
-    (let (({:keys [meta messages]} (load-session id)))
-      (set! *messages* messages)
+    (let ((f (session-restore-fields id *cwd* *config*)))
+      (set! *messages* (:messages f))
+      (set! *model*    (:model f))
+      (set! *effort*   (:effort f))
+      (set! *agent*    (:agent f))
       (set! *session-id* id)
-      (set! *session-created* (get meta :created (time-ms)))
+      (set! *session-created* (get (:meta f) :created (time-ms)))
       (set! *persist-warned* #f)
-      ;; Resume the session's model + effort too, and rebuild the agent on them —
-      ;; a resumed conversation continues on what it was actually running.
-      (set! *model*  (get meta :model ""))
-      (set! *effort* (get meta :effort ""))
-      (set! *agent*  (create-agent *cwd* *model* *config*))
       (clear-transcript!)
-      (for-each add-block! (messages->blocks messages))
-      (add-block! {:kind :info :text f"resumed “${(get meta :title id)}” · ${(length messages)} messages · ${(let ((m (get meta :model ""))) (if (= m "") "auto" m))}"})
+      (for-each add-block! (messages->blocks (:messages f)))
+      (add-block! {:kind :info :text f"resumed “${(get (:meta f) :title id)}” · ${(length (:messages f))} messages · ${(let ((m (:model f))) (if (= m "") "auto" m))}"})
       (set! *scroll* 0))
     (catch e
       (add-block! {:kind :error :text f"failed to restore session: ${e}"}))))
@@ -485,6 +488,20 @@
   (if (equal? kind :clear)
     (clear-transcript!)
     (add-block! {:kind kind :text text})))
+
+;; ── Conversational state: the single bridge ──────────────────────
+;; The app has two front-ends. The REPL (coder.sema) holds conversational state
+;; as a plain `state` map and threads it through the loop. The TUI holds the same
+;; six fields as working globals (*messages* *model* *effort* *cwd* *agent*
+;; *config*) because its render/turn loop mutates them in place. Command handlers
+;; are written ONCE against the map shape (state args → state) and run in both;
+;; tui-state / apply-tui-state! are the ONLY translation between the two — every
+;; command result flows through them (run-command!). Anything that restores or
+;; rebuilds conversational state (e.g. /resume) goes through the shared
+;; session-restore-fields so the two front-ends can't diverge.
+;;
+;; The six fields live in three places (this pair + coder.sema's initial map);
+;; add a field to all three together.
 
 (defun tui-state ()
   {:messages *messages* :model *model* :effort *effort*
@@ -518,11 +535,29 @@
 
 ;; ── Key handling ─────────────────────────────────────────────────────────────
 
-(defun insert-char! (ch)
-  (set! *input* (string/append (string/slice *input* 0 *cursor*) ch
+;; ── Prompt input API ─────────────────────────────────────────────
+;; The composing prompt (*input*) and caret (*cursor*, a codepoint index into
+;; *input*) are read + edited only through these — the surface an overlay or
+;; plugin uses to act on the prompt, e.g. a modal splicing a reference at the
+;; caret. The typed-key path and the editing helpers below build on them too.
+
+(defun prompt-text ()   *input*)
+(defun prompt-cursor () *cursor*)
+
+(defun prompt-insert! (s)
+  "Insert string S into the prompt at the caret and advance the caret past it."
+  (set! *input* (string/append (string/slice *input* 0 *cursor*) s
                                (string/slice *input* *cursor* (string/length *input*))))
-  (set! *cursor* (+ *cursor* (string/length ch)))
+  (set! *cursor* (+ *cursor* (string/length s)))
   (set! *psel* 0))
+
+(defun prompt-set! (s)
+  "Replace the whole prompt with S; caret to the end."
+  (set! *input* s) (set! *cursor* (string/length s)) (set! *psel* 0))
+
+(defun prompt-clear! ()
+  "Empty the prompt; caret to 0."
+  (set! *input* "") (set! *cursor* 0) (set! *psel* 0))
 
 (defun backspace! ()
   (when (> *cursor* 0)
@@ -550,8 +585,6 @@
 (defun word-left! ()  (set! *cursor* (word-left-index *input* *cursor*)))
 (defun word-right! () (set! *cursor* (word-right-index *input* *cursor*)))
 
-(defun clear-input! () (set! *input* "") (set! *cursor* 0) (set! *psel* 0))
-
 (defun on-enter ()
   ;; Ignored while a turn is in flight — typed text stays in the prompt as
   ;; type-ahead for the next turn.
@@ -561,11 +594,12 @@
         ((= text "") nil)
         ((palette-open?)
           (let ((chosen (palette-choice (palette-view) *psel* *input*)))
-            (clear-input!)
+            ;; A :keep-input command manages the prompt itself — don't wipe it.
+            (unless (command-keeps-input? (:name (parse-command chosen))) (prompt-clear!))
             (run-command! chosen)))
         (else
           (add-block! {:kind :user :text text})
-          (clear-input!)
+          (prompt-clear!)
           (set! *scroll* 0)          ;; sending always returns you to the tail
           (run-agent-turn! text))))))
 
@@ -582,7 +616,7 @@
     (:interrupt
       (cond
         (*busy* (set! *interrupt* #t) (when *turn* (async/cancel *turn*)))
-        ((> (string/length *input*) 0) (clear-input!))
+        ((> (string/length *input*) 0) (prompt-clear!))
         (else (set! *should-quit* #t))))
     (:quit       (unless *busy* (set! *should-quit* #t)))
     (:palette    (set! *input* "/") (set! *cursor* 1) (set! *psel* 0))
@@ -591,7 +625,7 @@
     ;; wrong session file. (Typed /mcp and /resume are already gated by on-enter.)
     (:mcp        (unless *busy* (open-mcp-modal!)))
     (:resume     (unless *busy* (open-resume-modal!)))
-    (:clear-line (clear-input!))
+    (:clear-line (prompt-clear!))
     (:line-start (set! *cursor* 0))
     (:line-end   (set! *cursor* (string/length *input*)))
     (:repaint    (full-repaint!))
@@ -627,7 +661,7 @@
         (scroll-by! -1)))
     (:page-up   (scroll-by! (transcript-height)))
     (:page-down (scroll-by! (- (transcript-height))))
-    (:esc       (when (palette-open?) (clear-input!)))
+    (:esc       (when (palette-open?) (prompt-clear!)))
     (_ nil)))
 
 (defun handle-mouse (k)
@@ -648,7 +682,7 @@
       (:ctrl  (handle-ctrl (:char k)))
       (:key   (handle-named k))
       (:alt   (handle-alt k))
-      (:char  (insert-char! (:char k)))
+      (:char  (prompt-insert! (:char k)))
       (:mouse (handle-mouse k))
       (_ nil))))
 
@@ -689,16 +723,17 @@
 
 (defun reload-config! ()
   (ensure-config!)
-  (let ((r (load-config (config-path))))
+  ;; apply-config! is the shared load+reconcile path (boot / /reload / here); it
+  ;; never prints, so it's safe to call from this file-watch context where the
+  ;; emit sink isn't rerouted — warnings come back as data and become blocks.
+  (let ((r (apply-config! (config-path) *config*)))
     (if (:ok r)
       (let ((cfg (:ok r)))
         (set! *config-error* #f)
-        (reconcile-commands! (:commands cfg))
-        (reconcile-servers! (:mcp-servers cfg))
-        (mcp-autostart!)   ;; connect any newly-declared :autostart servers
         (set! *config* cfg)
         (set! *agent* (create-agent *cwd* *model* cfg))
         (add-block! {:kind :ok :text f"config reloaded · model → ${(if (= (:model cfg) "") "auto" (:model cfg))}"})
+        (for-each (lambda (w) (add-block! {:kind :warn :text f"config: ${w}"})) (:warnings r))
         (warn-keymap-conflicts!))
       (set! *config-error* (str (:error r)))))
   (render!))

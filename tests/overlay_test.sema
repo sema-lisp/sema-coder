@@ -1,0 +1,80 @@
+(load "harness.sema")
+(load "../src/tui.sema")   ;; overlay + *cols*/*rows* + the mcp/resume descriptors
+
+(set! *cols* 70) (set! *rows* 30)
+
+;; ── list-modal: Style-B chrome, ▌ gutter on the selected row ──
+(let* ((rows (list-modal {:title "Test"
+                          :items (list {:name "alpha" :meta "one"} {:name "beta" :meta "two"})
+                          :sel 0 :layout (overlay-layout)
+                          :render-item (lambda (it s? inner) (modal-cell (:name it) (:meta it) inner))
+                          :actions (list {:key "esc" :label "close"})}))
+       (txt (string/join (map term/strip rows) "\n")))
+  (check-contains "title carries the count" txt "Test · 2")
+  (check-contains "renders item alpha"      txt "alpha")
+  (check-contains "renders item beta"       txt "beta")
+  (check-contains "selection gutter shown"  txt "▌")
+  (check-contains "footer from actions"     txt "esc close")
+  (check-contains "rounded top"             txt "╭")
+  (check-contains "rounded bottom"          txt "╰"))
+
+(check-contains "empty list shows an empty marker"
+  (string/join (map term/strip
+    (list-modal {:title "Empty" :items '() :sel 0 :layout (overlay-layout)
+                 :render-item (lambda (it s? inner) "") :actions '()})) "\n")
+  "(empty)")
+
+;; ── stack + registry ──
+(close-all-overlays!)
+(check-true "no overlay initially"   (not (overlay-active?)))
+(check-true "mcp registered"         (overlay-registered? :mcp))
+(check-true "resume registered"      (overlay-registered? :resume))
+(check-true "unknown not registered" (not (overlay-registered? :nope)))
+
+(open-overlay! :mcp)
+(check-true "active after open" (overlay-active?))
+(check "top kind is mcp"        (:kind (overlay)) :mcp)
+(check "descriptor resolves"    (:kind (overlay-desc)) :mcp)
+
+(push-overlay! {:kind :resume :view :list :sel 0 :sessions '()})
+(check "stack depth 2 after push" (length (overlay-stack)) 2)
+(check "top is the child"         (:kind (overlay)) :resume)
+(close-overlay!)
+(check "pop returns to parent"    (:kind (overlay)) :mcp)
+(check "depth back to 1"          (length (overlay-stack)) 1)
+
+(overlay-merge! {:sel 5})
+(check "merge mutates the top frame" (:sel (overlay)) 5)
+(close-all-overlays!)
+(check-true "closed after close-all" (not (overlay-active?)))
+
+;; ── the mcp descriptor: dispatch render + key routing ──
+(mcp-reset!)
+(reconcile-servers! (list (mcp-server "sema" {:command "sema" :args ["mcp"]})
+                          (mcp-server "fs"   {:command "npx"  :args ["x"]})))
+(open-overlay! :mcp)
+(let ((txt (string/join (map term/strip (overlay-rows)) "\n")))
+  (check-contains "dispatch renders the mcp title" txt "MCP servers")
+  (check-contains "dispatch renders a server"      txt "sema"))
+(check "selection starts at 0" (:sel (overlay)) 0)
+(handle-overlay-key {:kind :key :name :down})
+(check "down moves selection"  (:sel (overlay)) 1)
+(handle-overlay-key {:kind :key :name :down})
+(check "clamped at last"        (:sel (overlay)) 1)
+(handle-overlay-key {:kind :key :name :up})
+(check "up moves back"          (:sel (overlay)) 0)
+(handle-overlay-key {:kind :key :name :enter})   ;; enter → tools view
+(check "enter opens tools view" (:view (overlay)) :tools)
+(close-all-overlays!)
+
+;; ── a throwing :open surfaces an error, never crashes / pushes ──
+(register-overlay!
+  (overlay-spec {:kind :boom
+                 :open   (lambda (args) (raise {:message "scan failed"}))
+                 :render (lambda (state layout) '())
+                 :on-key (lambda (state k) nil)}))
+(close-all-overlays!)
+(open-overlay! :boom)   ;; must not throw
+(check-true "failed :open pushes nothing" (not (overlay-active?)))
+
+(done)

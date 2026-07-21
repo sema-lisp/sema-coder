@@ -23,6 +23,16 @@
     (check "has the model picker list" (length (model-entries (:ok r))) 7)
     (check "first picker entry"
            (car (model-entries (:ok r)))
-           {:id "claude-opus-4-6" :label "Claude Opus 4.6" :provider "Anthropic"})))
+           {:id "claude-opus-4-6" :label "Claude Opus 4.6" :provider "Anthropic"})
+    ;; The template is generated from provider-descriptors, so it can never
+    ;; drift from the catalog: every descriptor model appears, and the loaded
+    ;; :models round-trips to exactly default-models.
+    (check "generated init carries the default models verbatim"
+           (:models (:ok r)) default-models)
+    (for-each
+      (lambda (m)
+        (check-contains f"template has ${(:id m)}"
+          default-init-source f"(model \"${(:id m)}\""))
+      (model-entries default-config))))
 
 (done)
