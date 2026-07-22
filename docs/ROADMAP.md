@@ -76,9 +76,14 @@ sema-coder's extension seams.
    eager free-variable probe trick) → one human approval dialog showing full source → tiered storage (project
    `.sema-coder/tools/` vs global) → live registration, callable next turn. Bounded self-repair: N rounds with real
    diagnostics fed back, then stop and ask. Depends on Tier-1 items 1+2.
-6. **Workflows as a first-party feature** — authoring flow with static check + shape preview before approval;
-   journal-tailing live run display (fold `events.jsonl` into state instead of parsing stdout — resume, live HUD,
-   crash-tolerance fall out of one mechanism); `/workflows` dashboard overlay.
+6. **Workflows as a first-party feature** — **re-planned 2026-07-22**, see
+   `docs/workflow-integration-design.md`. The host runtime already ships the engine (`sema-workflow`: `defworkflow`,
+   the frozen `.sema/runs/<id>/events.jsonl` journal contract, memo-based resume, `sema workflow check/run/view`), so
+   sema-coder becomes its second thin client (pi-sema is the first): spawn `sema workflow run` as a child, tail + fold
+   the journal (the only display source of truth), live `:workflow` transcript block as the primary surface,
+   `/workflows` dashboard overlay as the secondary, and one verify-preview-approve authoring component shared with
+   Forge. Phases W0–W4 in the design doc; W0 (idle repaint, global-chord passthrough, `:busy-ok`, list-modal selection
+   ownership, `:full` placement) fixes the overlay-system findings that gate any live surface.
 
 ### Tier 3 — UX polish
 
