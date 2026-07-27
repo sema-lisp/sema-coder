@@ -14,41 +14,65 @@ constructor — both already supported); item 4 was narrowed to PARTIAL. One
 incidental gap surfaced during verification and was filed as **#94** (prelude
 macro names can't be `(define (name …) …)` heads).
 
-## Upstream status (checked 2026-07-10; re-checked 2026-07-21)
+## Upstream status (checked 2026-07-10; re-checked 2026-07-21, 2026-07-26)
 
-Fixed on `main` — in the Unreleased changelog, **not yet in any release**
-(latest release is **still 1.30.0**, which has none of these fixes). This
-codebase keeps its workarounds until a release ships; each carries a "fold onto
-the builtin" note at the definition site:
+Seven items are fixed on `main`, each **verified by running the feature against
+a `main`-built binary** on 2026-07-26 (not just read off the changelog). But
+they are in the Unreleased changelog and **not yet in any release** — the latest
+release is **still v1.30.0** (2026-07-09), which has none of them.
 
-- **#82 stale global reads from `load`ed units** — CLOSED (repro +
-  characterization on the issue). `should-quit?` accessor workaround stays in
-  `src/tui.sema`.
+**The fold is release-gated, not fix-gated.** CI runs `sema-lisp/setup-sema@v1`
+with no version input, which resolves to the latest *release* (1.30.0), and the
+README pins `sema ≥ 1.30`. Deleting a workaround makes sema-coder fail for
+everyone on the released binary and turns CI red the same day. So: keep the
+workarounds until a sema release ships these, then fold them all at once and
+bump the README/CI floor to that version in the same commit.
+
+Fixed on `main`, verified live (probe result in parentheses):
+
+- **#82 stale global reads from `load`ed units** — CLOSED. A `set!` from the
+  caller is now seen by a recursive function defined in the `load`ed unit
+  (`(:saw #t :n 5)`). `should-quit?` accessor workaround stays in
+  `src/tui.sema:71`.
+- **#104 async/spawn snapshots captured locals** — CLOSED 2026-07-12 (PR #106).
+  A `set!` after `async/spawn` is observed by the task (reads `99`, not the
+  spawn-time `1`) — the root-cause class behind the #82 workaround.
 - **#88 `event/select`/`io/read-key-timeout` block the scheduler** — CLOSED
   2026-07-12 (PR #99). They now arm the same `AwaitIo` yield the file/http/shell
-  offloads use, so a "wait for key OR agent progress" loop no longer freezes
-  sibling tasks. The busy-pump workaround (`read-key-timeout 0` + `async/sleep
-  16`) in the TUI loop stays until a release ships.
+  offloads use. Verified: during one `(io/read-key-timeout 200)` a sibling task
+  on 5 ms sleeps ticked **32 times** (it ticked 0 before). The busy-pump
+  workaround (`read-key-timeout 0` + `async/sleep 16`, `src/tui.sema:405-421`)
+  stays until a release ships.
 - **#89 `shell/quote` + `shell` `:cwd`/`:env` options map** — CLOSED (PR #100).
-  The hand-rolled `sh-quote` and the `cd <dir> && …` pinning idiom stay until a
-  release ships.
-- **#90 `enumerate`/`map-indexed`** — CLOSED. Local copies stay in
-  `src/text.sema`.
-- **#91 sequence HOFs over `mutable-array`** — CLOSED. The
-  `mutable-array/->vector` copies stay in `src/transcript.sema` / `src/mcp.sema`.
-- **#92 `string/truncate-width`** — CLOSED. `clip-width`/`clip-plain` stay in
-  `src/text.sema`.
-- **#94 prelude-macro names as define heads** — still OPEN, but the fix is in
-  the Unreleased changelog ("Prelude macro names are usable as ordinary
-  identifiers").
-- **#104 async/spawn snapshots captured locals** — CLOSED 2026-07-12 (PR #106).
-  A `set!` to a captured local that runs after `async/spawn` is now observed by
-  the task (the root-cause class behind the #82 workaround).
+  Both verified (`(shell "pwd" {:cwd "/tmp"})` → `/private/tmp`). The
+  hand-rolled `sh-quote` (`src/util.sema:30`) and the `cd <dir> && …` pinning
+  idiom (`src/tools.sema:94,100`; `src/commands.sema:120-123,222`) stay.
+- **#90 `enumerate`/`map-indexed`** — CLOSED, both present. Local copies stay in
+  `src/text.sema:152-161`.
+- **#91 sequence HOFs over `mutable-array`** — CLOSED. `map`/`filter`/
+  `for-each`/`length` all take a `mutable-array` directly. The
+  `mutable-array/->vector` copies stay in `src/mcp.sema:14` /
+  `src/transcript.sema:35`.
+- **#92 `string/truncate-width`** — CLOSED, and it has a 3-arity ellipsis form,
+  so `clip-width s w` ≡ `(string/truncate-width s w "…")` and `clip-plain s w`
+  ≡ the 2-arity call. **Caveat: the builtin is not ANSI-aware** —
+  `(string/truncate-width "\e[31mredtext\e[0m" 3)` → `"[3"` — so `clip-styled`
+  in `src/text.sema:37` is NOT subsumed and stays regardless of the release.
+- **#94 prelude-macro names as define heads** — issue still OPEN, but the fix is
+  live on `main` (`(define (when-let x) x)` compiles and calls).
 
-Still open upstream: **#83** (string/index-of start offset), **#84**
-(take/drop order), **#85** (deftool `:default`), **#86** (`agent/run`
-`:usage`), **#87** (cancelled turn loses transcript), **#93**
-(`markdown/to-ansi`).
+Still open upstream, all re-verified missing on 2026-07-26:
+
+- **#83** `string/index-of` is strictly 2-arity ("expects 2 args, got 3"), so
+  the `count-occurrences`-via-`string/split` workaround stays.
+- **#84** `take`/`drop` still count-first only; list-first raises
+  `expected int, got list` at runtime.
+- **#85** `deftool :default` — the value IS stored and readable via
+  `tool/parameters` (`{:x {:default 42 :optional #t …}}`) but is still never
+  injected into an omitted arg, so the nil-guards stay.
+- **#86** `agent/run` result map has no `:usage`.
+- **#87** a cancelled streaming turn still loses its partial transcript.
+- **#93** no `markdown/to-ansi` (unbound), so `src/markdown.sema` stays.
 
 ## Blocker (filed separately)
 
@@ -126,16 +150,19 @@ Still open upstream: **#83** (string/index-of start offset), **#84**
 
 ## Smaller ergonomics
 
-11. **No `map-indexed`/`enumerate` builtin.** Hand-rolled twice in tui.sema
-    (`enumerate`, `enumerate-map`).
-12. **Sequence functions don't accept mutable arrays.** `map`/`for-each`/
+11. **No `map-indexed`/`enumerate` builtin.** ✅ FIXED upstream (unreleased) —
+    [#90]. Hand-rolled twice in tui.sema (`enumerate`, `enumerate-map`).
+12. **Sequence functions don't accept mutable arrays.** ✅ FIXED upstream
+    (unreleased) — [#91]. `map`/`for-each`/
     `filter` need `(mutable-array/->vector a)` first — an O(n) copy per frame
     in a render loop, exactly where mutable arrays are pitched.
-13. **No width-aware truncation.** `string/width`/`string/word-wrap`/
-    `string/pad-*` are display-width-aware, but there's no
+13. **No width-aware truncation.** ✅ FIXED upstream (unreleased) — [#92] adds
+    `string/truncate-width`, with a 3-arity ellipsis form. `string/width`/
+    `string/word-wrap`/`string/pad-*` are display-width-aware, but there's no
     `string/truncate-width`, so TUI cells that clamp long text (palette
     descriptions, tool args) still count codepoints and misalign on CJK/emoji.
-    (sema-coder hand-rolls `clip-width` in tui.sema.)
+    (sema-coder hand-rolls `clip-width` in tui.sema.) The builtin is not
+    ANSI-aware, so it replaces `clip-width`/`clip-plain` but not `clip-styled`.
 14. **No markdown → terminal renderer.** `markdown/to-html` and the structured
     `markdown/headings`/`markdown/frontmatter` exist, but there is no
     `markdown/to-ansi` / `term/markdown` that renders CommonMark to styled
