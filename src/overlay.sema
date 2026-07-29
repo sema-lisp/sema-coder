@@ -9,10 +9,7 @@
 ;; and a child modal can push over its parent. See docs/overlay-registry-design.md.
 ;;
 ;; Reads the TUI globals (*cols*, *rows*, *agent*, …) defined in tui.sema — all
-;; load units share one global env. Overlay state lives in a stable container
-;; (a list in a 1-slot array) mutated in place, never set!-rebound: rebinding a
-;; module global with set! can serve stale values to readers in other top-level
-;; forms.
+;; load units share one global env. Overlay state is a list in a one-slot array.
 
 (load "theme.sema")
 (load "text.sema")
@@ -21,11 +18,9 @@
 (load "session.sema")
 
 ;; ── Overlay stack ────────────────────────────────────────────────
-;; A stack of overlay state maps (top = active), held as a list in a stable
-;; 1-slot array: reads through (overlay-stack) always see the latest write, and
-;; since there is no mutable-array/pop!, a list gives push (cons) + pop (cdr)
-;; for free. A child modal pushes over its parent (Forge approve→rename, a
-;; confirm over a dashboard); the last pop closes.
+;; A stack of overlay state maps (top = active), held as a list in a one-slot
+;; array. Since there is no mutable-array/pop!, a list gives push (cons) + pop
+;; (cdr) for free. A child modal pushes over its parent; the last pop closes.
 (define *overlay-stack* (mutable-array/new 1 '()))   ;; slot 0: (state …) top-first
 
 (defun overlay-stack ()       (mutable-array/get *overlay-stack* 0))
@@ -159,7 +154,7 @@
          (ri     (:render-item spec))
          (rows   (if (= n 0)
                    (list (box-row (muted "   (empty)") inner))
-                   (enumerate-map
+                   (map-indexed
                      (lambda (i it)
                        (let ((idx (+ i start)))
                          (box-row (string/append (if (= idx sel) (accent "▌ ") "  ")
@@ -227,7 +222,7 @@
                    :render-item mcp-tool-item
                    :actions (list {:key "↑↓" :label "scroll"} {:key "esc" :label "back"})}))
     (list-modal {:title "MCP servers"
-                 :items (vector->list (mcp-records)) :sel (:sel state) :layout layout
+                 :items (mcp-records) :sel (:sel state) :layout layout
                  :render-item mcp-render-item
                  :actions (list {:key "↑↓" :label "move"} {:key "c" :label "connect"}
                                 {:key "d" :label "disconnect"} {:key "⏎" :label "tools"}

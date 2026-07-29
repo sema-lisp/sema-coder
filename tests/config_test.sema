@@ -9,6 +9,7 @@
 (check "command argv"
        (command "test" {:desc "t" :run ["make" "test"]})
        {:name "test" :desc "t" :run ["make" "test"]})
+(check "default model" (:model (coder-config {})) "claude-opus-5")
 (check "coder-config fills defaults" (:max-turns (coder-config {:model "m"})) 50)
 (check "effort defaults to provider default" (:effort (coder-config {})) "")
 
@@ -19,7 +20,8 @@
 (check "provider record"
        (provider "OpenAI" (list (model "gpt-5.5" "GPT-5.5")))
        {:name "OpenAI" :models (list {:id "gpt-5.5" :label "GPT-5.5"})})
-(check "defaults carry the model list" (length (model-entries (coder-config {}))) 7)
+(check "defaults carry the model list"
+       (length (model-entries (coder-config {}))) (length (model-entries default-config)))
 (check "entries carry :provider" (:provider (car (model-entries (coder-config {})))) "Anthropic")
 (check "declaration order preserved"
        (map :id (model-entries {:models (list (provider "P" (list (model "b" "B") (model "a" "A"))))}))
@@ -30,13 +32,15 @@
 (check "model-entry missing"   (model-entry cfg-me "nope") #f)
 (check "model-effort declared" (model-effort cfg-me "m1") "xhigh")
 (check "model-effort absent"   (model-effort cfg-me "m2") "")
-(check "model-effort unknown"  (model-effort (coder-config {}) "claude-opus-4-6") "")
+(check "model-effort unknown"  (model-effort (coder-config {}) "claude-opus-4-8") "")
 
 ;; model→provider routing: the picker's display name, lowercased to the llm id
 (check "provider-name lowercased" (model-provider-name cfg-me "m1") "p")
 (check "provider-name unknown id" (model-provider-name cfg-me "nope") #f)
 (check "provider-name openai"     (model-provider-name (coder-config {}) "gpt-5.6-luna") "openai")
-(check "provider-name anthropic"  (model-provider-name (coder-config {}) "claude-opus-4-6") "anthropic")
+(check "provider-name anthropic"
+       (model-provider-name (coder-config {}) (:id (car (:models (car default-models)))))
+       "anthropic")
 
 ;; ── provider descriptors: one table drives the whole provider/model catalog ──
 (check "descriptors carry env keys"
@@ -67,5 +71,19 @@
 ;; ── load-config on a broken file → {:error e}, no throw ──
 (file/write "/tmp/sc-init-bad.sema" "(this is (not balanced")
 (check-true "error result" (:error (load-config "/tmp/sc-init-bad.sema")))
+
+;; Invalid values are rejected before apply-config! can partially reconcile
+;; commands, hooks, tools, or MCP state.
+(file/write "/tmp/sc-init-not-map.sema" "(configure! 42)")
+(check-contains "config must be a map"
+                (:error (load-config "/tmp/sc-init-not-map.sema")) "config map")
+(file/write "/tmp/sc-init-bad-turns.sema"
+  "(configure! (coder-config {:max-turns 0}))")
+(check-contains "max-turns must be positive"
+                (:error (load-config "/tmp/sc-init-bad-turns.sema")) "positive integer")
+(file/write "/tmp/sc-init-bad-commands.sema"
+  "(configure! (coder-config {:commands {}}))")
+(check-contains "commands must be a sequence"
+                (:error (load-config "/tmp/sc-init-bad-commands.sema")) ":commands")
 
 (done)

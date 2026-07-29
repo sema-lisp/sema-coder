@@ -12,21 +12,11 @@
 
 (defun clip-width (s w)
   "Truncate PLAIN S to display width <= W, adding an ellipsis when cut."
-  (if (<= (string/width s) w) s
-    (let loop ((i 0) (acc 0))
-      (if (>= i (string/length s)) s
-        (let ((cw (string/width (string/slice s i (+ i 1)))))
-          (if (> (+ acc cw 1) w)
-            (string/append (string/slice s 0 i) "…")
-            (loop (+ i 1) (+ acc cw))))))))
+  (string/truncate-width s (max 0 w) "…"))
 
 (defun clip-plain (s w)
   "Truncate PLAIN S to display width <= W (no ellipsis)."
-  (if (<= (string/width s) w) s
-    (let loop ((i 0) (acc 0))
-      (if (>= i (string/length s)) s
-        (let ((cw (string/width (string/slice s i (+ i 1)))))
-          (if (> (+ acc cw) w) (string/slice s 0 i) (loop (+ i 1) (+ acc cw))))))))
+  (string/truncate-width s (max 0 w)))
 
 (defun ansi-escape-end (s i)
   "Index just past the ANSI escape (ESC [ … letter) starting at S[i]."
@@ -100,7 +90,7 @@
   (let ((start (if (null? opts) 1 (car opts)))
         (lines (string/split text "\n")))
     (string/join
-      (enumerate-map (lambda (i l) (string/append (number->string (+ start i)) "\t" l)) lines)
+      (map-indexed (lambda (i l) (string/append (number->string (+ start i)) "\t" l)) lines)
       "\n")))
 
 (defun numbered-window (text offset limit max-lines)
@@ -146,16 +136,3 @@
          (skip-wd (let loop ((j skip-ws))
                     (if (and (< j n) (word-char? (string/slice s j (+ j 1)))) (loop (+ j 1)) j))))
     skip-wd))
-
-;; ── Indexed iteration ────────────────────────────────────────────
-
-(defun enumerate (xs)
-  "XS → ((0 x0) (1 x1) …), destructurable as (lambda ([i x]) …)."
-  (let loop ((i 0) (rest xs) (out '()))
-    (if (null? rest) (reverse out)
-      (loop (+ i 1) (cdr rest) (cons (list i (car rest)) out)))))
-
-(defun enumerate-map (f xs)
-  (let loop ((i 0) (rest xs) (out '()))
-    (if (null? rest) (reverse out)
-      (loop (+ i 1) (cdr rest) (cons (f i (car rest)) out)))))

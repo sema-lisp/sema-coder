@@ -12,6 +12,14 @@
 (check "b dropped"     (mcp-get "b") #f)
 (check "a kept idle"   (:status (mcp-get "a")) :idle)
 
+;; Changing a declaration must not preserve a connection and tools from the old
+;; endpoint under the new label.
+(mcp-set! "a" #(assoc % :status :connected :tools (list "stale")))
+(reconcile-servers! (list (mcp-server "a" {:command "y"})))
+(check "changed endpoint resets status" (:status (mcp-get "a")) :idle)
+(check "changed endpoint drops tools" (:tools (mcp-get "a")) '())
+(check "changed endpoint stores new opts" (:opts (mcp-get "a")) {:command "y"})
+
 ;; ── connect / disconnect + tool-merge (keyless — real `sema mcp`) ──
 (mcp-reset!)
 (reconcile-servers! (list (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))

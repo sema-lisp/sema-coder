@@ -24,12 +24,12 @@
 (handle-ctrl "t")
 (check-true "keybind runs custom command"
   (any (lambda (b) (and (equal? (:kind b) :info) (string/contains? (get b :text "") "pong")))
-       (vector->list (transcript-blocks))))
+       (transcript-blocks)))
 ;; a key whose action names no command is a no-op
 (set! *config* {:keys {:nope "ctrl-t"}})
 (clear-transcript!)
 (handle-ctrl "t")
-(check "key with no matching command is a no-op" (length (vector->list (transcript-blocks))) 0)
+(check "key with no matching command is a no-op" (length (transcript-blocks)) 0)
 (set! *config* {})
 
 ;; ── :key on a command record binds it (reconciled; removal unbinds) ──

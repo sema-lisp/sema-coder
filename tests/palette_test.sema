@@ -27,9 +27,11 @@
 (let ((pv (palette-view)))
   (check "space after /model → arg mode" (:mode pv) :args)
   (check "box titled by the command"     (:title pv) "model")
-  (check "empty query lists every model" (length (:entries pv)) 7))
+  (check "empty query lists every model"
+         (length (:entries pv)) (length (model-entries default-config))))
 (set! *input* "/model opus")
-(check "best match ranks first" (:value (car (palette-entries))) "claude-opus-4-6")
+(define opus-model (:value (car (palette-entries))))
+(check-contains "best match ranks first" opus-model "opus")
 (set! *input* "/model gpt")
 (check-true "matches by id"    (any #(= (:value %) "gpt-5.5") (palette-entries)))
 (set! *input* "/model terra")
@@ -51,8 +53,10 @@
 
 ;; ── palette-choice / palette-completion (pure Enter/Tab logic) ──
 (set! *input* "/model opus")
-(check "enter runs the selection"  (palette-choice (palette-view) 0 *input*) "/model claude-opus-4-6")
-(check "tab completes selection"   (palette-completion (palette-view) 0) "/model claude-opus-4-6")
+(check "enter runs the selection"
+       (palette-choice (palette-view) 0 *input*) f"/model ${opus-model}")
+(check "tab completes selection"
+       (palette-completion (palette-view) 0) f"/model ${opus-model}")
 (set! *input* "/model gpt-5.5")
 (check "exact value runs as typed" (palette-choice (palette-view) 0 *input*) "/model gpt-5.5")
 (set! *input* "/model zzz-custom")

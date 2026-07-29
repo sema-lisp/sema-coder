@@ -15,15 +15,18 @@
   (ensure-config!)
   (let ((r (load-config (config-path))))
     (check-true "default loads ok" (:ok r))
+    (check "generated config uses the default model"
+           (:model (:ok r)) "claude-opus-5")
     (let ((srv (car (:mcp-servers (:ok r)))))
       (check "first server is sema" (:name srv) "sema")
       (check "sema autostarts" (:autostart srv) #t)
       (check "sema is stdio" (:transport srv) "stdio"))
     (check "has the test command" (:name (car (:commands (:ok r)))) "test")
-    (check "has the model picker list" (length (model-entries (:ok r))) 7)
+    (check "has the model picker list"
+           (length (model-entries (:ok r))) (length (model-entries default-config)))
     (check "first picker entry"
            (car (model-entries (:ok r)))
-           {:id "claude-opus-4-6" :label "Claude Opus 4.6" :provider "Anthropic"})
+           (car (model-entries default-config)))
     ;; The template is generated from provider-descriptors, so it can never
     ;; drift from the catalog: every descriptor model appears, and the loaded
     ;; :models round-trips to exactly default-models.

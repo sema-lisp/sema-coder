@@ -37,6 +37,13 @@
   (save-session! "empty" 1700000001 "m" "" '())
   (check "empty not persisted" (length (list-sessions)) 1)
 
+  ;; A typed /resume id cannot escape the sessions directory.
+  (check-true "plain session id accepted" (valid-session-id? "1700-42_test.v1"))
+  (check "slash in session id rejected" (valid-session-id? "../outside") #f)
+  (check "backslash in session id rejected" (valid-session-id? "..\\outside") #f)
+  (check-true "session path traversal throws"
+    (try (begin (session-path "../outside") #f) (catch e #t)))
+
   (file/delete (session-path "sess1")))
 
 (done)

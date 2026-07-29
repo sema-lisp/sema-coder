@@ -45,10 +45,19 @@
   (check "apply flags one typo'd key"
          (length (:warnings (apply-config! "/tmp/sc-apply-warn.sema" default-config))) 1)
 
+  ;; Restore a known live command set before exercising last-good fallback.
+  (apply-config! "/tmp/sc-apply-ok.sema" default-config)
   (file/write "/tmp/sc-apply-bad.sema" "(broken")
   (let ((r (apply-config! "/tmp/sc-apply-bad.sema" default-config)))
     (check-true "apply error"           (:error r))
-    (check "broken file keeps fallback" (:cfg r) default-config))
+    (check "broken file keeps fallback" (:cfg r) default-config)
+    (check "broken file keeps runtime commands" (config-command-names) (list "solo")))
+
+  (file/write "/tmp/sc-apply-wrong-shape.sema"
+    "(configure! (coder-config {:commands 42}))")
+  (let ((r (apply-config! "/tmp/sc-apply-wrong-shape.sema" default-config)))
+    (check-true "wrong shape is rejected" (:error r))
+    (check "wrong shape keeps runtime commands" (config-command-names) (list "solo")))
 
   ;; apply-config! autoloads (tools-dir) on the ok path
   (file/mkdir (tools-dir))

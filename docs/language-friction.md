@@ -14,73 +14,55 @@ constructor — both already supported); item 4 was narrowed to PARTIAL. One
 incidental gap surfaced during verification and was filed as **#94** (prelude
 macro names can't be `(define (name …) …)` heads).
 
-## Upstream status (checked 2026-07-10; re-checked 2026-07-21, 2026-07-26)
+## Upstream status (re-checked 2026-07-29)
 
-Seven items are fixed on `main`, each **verified by running the feature against
-a `main`-built binary** on 2026-07-26 (not just read off the changelog). But
-they are in the Unreleased changelog and **not yet in any release** — the latest
-release is **still v1.30.0** (2026-07-09), which has none of them.
+The global and latest released binary is **v1.33.0**. The first release with
+the audited fixes was **v1.31.0** (2026-07-26). Sema Coder now requires
+`sema >= 1.31`; CI tests both 1.31.0 (the floor) and the latest release.
 
-**The fold is release-gated, not fix-gated.** CI runs `sema-lisp/setup-sema@v1`
-with no version input, which resolves to the latest *release* (1.30.0), and the
-README pins `sema ≥ 1.30`. Deleting a workaround makes sema-coder fail for
-everyone on the released binary and turns CI red the same day. So: keep the
-workarounds until a sema release ships these, then fold them all at once and
-bump the README/CI floor to that version in the same commit.
+Folded onto released APIs and verified live on 1.33.0:
 
-Fixed on `main`, verified live (probe result in parentheses):
+- **#82 / #104 global and captured-local visibility** — direct reads in loaded
+  recursive loops now observe `set!`. The TUI quit loop reads `*should-quit*`
+  directly.
+- **#88 cooperative terminal waits** — `io/read-key-timeout` parks without
+  blocking sibling tasks. The turn input pump uses a 16 ms wait instead of a
+  zero-timeout poll plus `async/sleep`.
+- **#89 shell quoting and working directories** — shell commands use
+  `{:cwd workspace-root}`, argv commands execute directly, and the remaining
+  POSIX interpolation uses `shell/quote`. The local `sh-quote` and `cd &&`
+  workarounds are gone.
+- **#90 indexed iteration** — call sites use `map-indexed` and `enumerate`.
+- **#91 mutable-array sequence HOFs** — MCP and transcript render paths pass
+  mutable arrays directly instead of copying them to vectors every frame.
+- **#92 width-aware truncation** — `clip-width` and `clip-plain` delegate to
+  `string/truncate-width`, including its grapheme-safe ellipsis form.
+  `clip-styled` stays custom because the builtin is not ANSI-aware.
+- **#94 prelude-macro names in binding positions** — the issue is still open,
+  but the fix shipped in 1.31.0 and `(define (when-let x) x)` works on 1.33.0.
 
-- **#82 stale global reads from `load`ed units** — CLOSED. A `set!` from the
-  caller is now seen by a recursive function defined in the `load`ed unit
-  (`(:saw #t :n 5)`). `should-quit?` accessor workaround stays in
-  `src/tui.sema:71`.
-- **#104 async/spawn snapshots captured locals** — CLOSED 2026-07-12 (PR #106).
-  A `set!` after `async/spawn` is observed by the task (reads `99`, not the
-  spawn-time `1`) — the root-cause class behind the #82 workaround.
-- **#88 `event/select`/`io/read-key-timeout` block the scheduler** — CLOSED
-  2026-07-12 (PR #99). They now arm the same `AwaitIo` yield the file/http/shell
-  offloads use. Verified: during one `(io/read-key-timeout 200)` a sibling task
-  on 5 ms sleeps ticked **32 times** (it ticked 0 before). The busy-pump
-  workaround (`read-key-timeout 0` + `async/sleep 16`, `src/tui.sema:405-421`)
-  stays until a release ships.
-- **#89 `shell/quote` + `shell` `:cwd`/`:env` options map** — CLOSED (PR #100).
-  Both verified (`(shell "pwd" {:cwd "/tmp"})` → `/private/tmp`). The
-  hand-rolled `sh-quote` (`src/util.sema:30`) and the `cd <dir> && …` pinning
-  idiom (`src/tools.sema:94,100`; `src/commands.sema:120-123,222`) stay.
-- **#90 `enumerate`/`map-indexed`** — CLOSED, both present. Local copies stay in
-  `src/text.sema:152-161`.
-- **#91 sequence HOFs over `mutable-array`** — CLOSED. `map`/`filter`/
-  `for-each`/`length` all take a `mutable-array` directly. The
-  `mutable-array/->vector` copies stay in `src/mcp.sema:14` /
-  `src/transcript.sema:35`.
-- **#92 `string/truncate-width`** — CLOSED, and it has a 3-arity ellipsis form,
-  so `clip-width s w` ≡ `(string/truncate-width s w "…")` and `clip-plain s w`
-  ≡ the 2-arity call. **Caveat: the builtin is not ANSI-aware** —
-  `(string/truncate-width "\e[31mredtext\e[0m" 3)` → `"[3"` — so `clip-styled`
-  in `src/text.sema:37` is NOT subsumed and stays regardless of the release.
-- **#94 prelude-macro names as define heads** — issue still OPEN, but the fix is
-  live on `main` (`(define (when-let x) x)` compiles and calls).
-
-Still open upstream, all re-verified missing on 2026-07-26:
+Still open upstream, re-verified on 1.33.0:
 
 - **#83** `string/index-of` is strictly 2-arity ("expects 2 args, got 3"), so
   the `count-occurrences`-via-`string/split` workaround stays.
-- **#84** `take`/`drop` still count-first only; list-first raises
-  `expected int, got list` at runtime.
-- **#85** `deftool :default` — the value IS stored and readable via
-  `tool/parameters` (`{:x {:default 42 :optional #t …}}`) but is still never
-  injected into an omitted arg, so the nil-guards stay.
-- **#86** `agent/run` result map has no `:usage`.
-- **#87** a cancelled streaming turn still loses its partial transcript.
-- **#93** no `markdown/to-ansi` (unbound), so `src/markdown.sema` stays.
+- **#84** `take`/`drop` remain count-first; list-first raises
+  `expected int, got list`.
+- **#85** `deftool :default` is stored in `tool/parameters` but is not injected
+  into an omitted argument (`tool/invoke` binds `nil`), so nil-guards stay.
+- **#86** `agent/run` results still have no per-turn cumulative `:usage`.
+- **#87** is partially addressed by 1.32.0: `agent/run {:memory handle}` saves
+  text turns produced before cancellation. A cancelled run still does not
+  return its partial full-protocol `:messages`, which Sema Coder needs for its
+  exact resumable session format.
+- **#93** `markdown/to-ansi` remains unbound, so `src/markdown.sema` stays.
 
 ## Blocker (filed separately)
 
 0. **Stale global reads in recursive functions from `load`ed units** — [#82].
    The TUI's quit flag (`set!` from a command handler, read by the key loop) is
    never observed, so the TUI can't exit; 9-line repro and characterization on
-   the issue (sema-lisp/sema#82). sema-coder reads the flag through an accessor
-   as a workaround (fixed upstream, unreleased — see "Upstream status" above).
+   the issue (sema-lisp/sema#82). Fixed in 1.31.0; the accessor workaround has
+   been removed.
 
 ## Stdlib gaps that caused shipped bugs
 
@@ -127,42 +109,38 @@ Still open upstream, all re-verified missing on 2026-07-26:
 ## Async / TUI
 
 8. **`io/read-key-timeout` and `event/select` block the cooperative
-   scheduler.** ✅ FIXED upstream (unreleased) — [#88], PR #99: both now yield
+   scheduler.** ✅ FIXED in 1.31.0 — [#88], PR #99: both now yield
    `AwaitIo` in async context. Unlike `file/*`, `http/*`, `shell`, and the LLM path, they have
-   no `in_async_context()` offload — so a "wait for key OR agent progress" loop
-   must busy-pump (`read-key-timeout 0` + `async/sleep 16`), costing latency
-   and wakeups. Suggest: make `event/select` (at least the `:key` source)
-   offload/yield in async context — it's billed as "the unified wait for a TUI
-   loop" and would make the pump pattern unnecessary.
+   no `in_async_context()` offload — before the fix, a "wait for key OR agent
+   progress" loop had to busy-pump (`read-key-timeout 0` + `async/sleep 16`),
+   costing latency and wakeups.
 
 ## Shell
 
-9. **No shell-quoting helper.** ✅ FIXED upstream (unreleased) — [#89], PR #100
-   adds `shell/quote`. `shell`'s single-string form goes through
-   `sh -c`, and the `cd <dir> && …` workspace-pinning idiom breaks on paths
-   with spaces/quotes unless you hand-roll POSIX quoting (sema-coder now
-   carries its own `sh-quote`). Suggest: `shell/quote` builtin.
-10. **`shell` has no options map (`:cwd`, `:env`).** ✅ FIXED upstream
-    (unreleased) — [#89], PR #100 adds a trailing `{:cwd :env}` options map to
-    `shell`. `proc/spawn` has them but
-    is a different (streaming, handle-based) API; for a one-shot command in a
-    directory you're forced into the `cd &&` idiom from (9).
+9. **No shell-quoting helper.** ✅ FIXED in 1.31.0 — [#89], PR #100
+    adds `shell/quote`. `shell`'s single-string form goes through
+    `sh -c`, and the `cd <dir> && …` workspace-pinning idiom breaks on paths
+    with spaces/quotes unless you hand-roll POSIX quoting (sema-coder now
+    uses the released builtin). Suggest: `shell/quote` builtin.
+10. **`shell` has no options map (`:cwd`, `:env`).** ✅ FIXED in 1.31.0 —
+    [#89], PR #100 adds a trailing `{:cwd :env}` options map to
+    `shell`. `proc/spawn` already had them but is a different (streaming,
+    handle-based) API; before the fix, a one-shot command needed the `cd &&`
+    idiom from (9).
 
 ## Smaller ergonomics
 
-11. **No `map-indexed`/`enumerate` builtin.** ✅ FIXED upstream (unreleased) —
-    [#90]. Hand-rolled twice in tui.sema (`enumerate`, `enumerate-map`).
-12. **Sequence functions don't accept mutable arrays.** ✅ FIXED upstream
-    (unreleased) — [#91]. `map`/`for-each`/
-    `filter` need `(mutable-array/->vector a)` first — an O(n) copy per frame
-    in a render loop, exactly where mutable arrays are pitched.
-13. **No width-aware truncation.** ✅ FIXED upstream (unreleased) — [#92] adds
+11. **No `map-indexed`/`enumerate` builtin.** ✅ FIXED in 1.31.0 —
+    [#90]. The hand-written copies have been removed.
+12. **Sequence functions don't accept mutable arrays.** ✅ FIXED in 1.31.0 —
+    [#91]. `map`/`for-each`/`filter` previously needed
+    `(mutable-array/->vector a)`, an O(n) copy per frame. Those copies are gone.
+13. **No width-aware truncation.** ✅ FIXED in 1.31.0 — [#92] adds
     `string/truncate-width`, with a 3-arity ellipsis form. `string/width`/
-    `string/word-wrap`/`string/pad-*` are display-width-aware, but there's no
-    `string/truncate-width`, so TUI cells that clamp long text (palette
-    descriptions, tool args) still count codepoints and misalign on CJK/emoji.
-    (sema-coder hand-rolls `clip-width` in tui.sema.) The builtin is not
-    ANSI-aware, so it replaces `clip-width`/`clip-plain` but not `clip-styled`.
+    `string/word-wrap`/`string/pad-*` were already display-width-aware; the
+    missing truncation counterpart made TUI cells misalign on CJK/emoji.
+    `clip-width` and `clip-plain` now delegate to the builtin. The builtin is
+    not ANSI-aware, so it does not replace `clip-styled`.
 14. **No markdown → terminal renderer.** `markdown/to-html` and the structured
     `markdown/headings`/`markdown/frontmatter` exist, but there is no
     `markdown/to-ansi` / `term/markdown` that renders CommonMark to styled

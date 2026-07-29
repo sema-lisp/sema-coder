@@ -9,7 +9,14 @@
 (load "display.sema")   ;; tool-arg for rebuilding tool blocks
 
 (defun sessions-dir () (path/join (config-dir) "sessions"))
-(defun session-path (id) (path/join (sessions-dir) (string/append id ".jsonl")))
+
+(defun valid-session-id? (id)
+  "Session ids are plain file names, never paths."
+  (if (and (string? id) (regex/match #"^[A-Za-z0-9][A-Za-z0-9._-]*$" id)) #t #f))
+
+(defun session-path (id)
+  (unless (valid-session-id? id) (error f"invalid session id: ${id}"))
+  (path/join (sessions-dir) (string/append id ".jsonl")))
 
 (defun session-title (messages)
   "First user message, one line, truncated — the human-readable label."

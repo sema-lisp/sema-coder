@@ -1,0 +1,30 @@
+(load "harness.sema")
+(load "../src/tui.sema")
+
+(defun arm-turn! ()
+  (set! *interrupt* #f)
+  (set! *busy* #t)
+  (set! *turn* (async (async/sleep 5000)))
+  *turn*)
+
+;; Legacy terminals decode Ctrl-C directly as a :ctrl event.
+(let ((turn (arm-turn!)))
+  (handle-key {:kind :ctrl :char "c"})
+  (check-true "ctrl-c marks the turn interrupted" *interrupt*)
+  (check-true "ctrl-c cancels the turn task" (not (async/pending? turn))))
+
+;; Kitty-keyboard terminals can forward macOS Command-C as :super + "c".
+(let ((turn (arm-turn!)))
+  (handle-key {:kind :char :char "c" :mods (list :super)})
+  (check-true "cmd-c marks the turn interrupted" *interrupt*)
+  (check-true "cmd-c cancels the turn task" (not (async/pending? turn))))
+
+;; When idle, forwarded Command-C must not type a stray character.
+(set! *busy* #f)
+(set! *turn* #f)
+(prompt-set! "draft")
+(handle-key {:kind :char :char "c" :mods (list :super)})
+(check "idle cmd-c leaves the prompt alone" (prompt-text) "draft")
+(prompt-clear!)
+
+(done)

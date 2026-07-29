@@ -11,7 +11,7 @@
 
 (defun mcp-reset! () (set! *mcp* (mutable-array/new 8)))
 
-(defun mcp-records () (mutable-array/->vector *mcp*))
+(defun mcp-records () *mcp*)
 
 (defun mcp-find (name)
   "Index of the record named NAME, or #f."
@@ -39,24 +39,36 @@
    :tools     '()
    :error     #f})
 
+(defun mcp-close-record! (rec)
+  (when (:handle rec)
+    (try (mcp/close (:handle rec)) (catch e nil))))
+
+(defun mcp-same-endpoint? (rec srv)
+  (and (equal? (:opts rec) (:opts srv))
+       (= (:transport rec) (:transport srv))))
+
 (defun reconcile-servers! (servers)
   "Reconcile records against the config's server list: keep existing (preserving
-   any live connection), add new (idle), close + drop removed."
+   a live connection only when its endpoint is unchanged), add new (idle), and
+   close removed or changed connections."
   (let ((declared (map :name servers)))
     (for-each
       (lambda (rec)
         (when (and (not (member (:name rec) declared)) (:handle rec))
-          (try (mcp/close (:handle rec)) (catch e nil))))
+          (mcp-close-record! rec)))
       (mcp-records))
     (let ((next (mutable-array/new 8)))
       (for-each
         (lambda (srv)
           (let ((existing (mcp-get (:name srv))))
             (mutable-array/push! next
-              (if existing
-                (assoc existing :opts (:opts srv) :autostart (:autostart srv)
-                                :transport (:transport srv))
-                (server->record srv)))))
+              (cond
+                ((not existing) (server->record srv))
+                ((mcp-same-endpoint? existing srv)
+                  (assoc existing :autostart (:autostart srv)))
+                (else
+                  (mcp-close-record! existing)
+                  (server->record srv))))))
         servers)
       (set! *mcp* next))))
 

@@ -21,7 +21,7 @@ safety) is Rust. It depends on nothing but the `sema` binary.
 
 ## Requirements
 
-- **`sema` ≥ 1.30** — install with
+- **`sema` ≥ 1.31** — install with
   `curl -fsSL https://sema-lang.com/install.sh | sh` (or
   `brew install helgesverre/tap/sema-lang`, or `cargo install sema-lang`;
   see the [sema README](https://github.com/sema-lisp/sema#installation)).
@@ -90,7 +90,7 @@ Built-ins: `/help`, `/model [name]`, `/effort [level]`, `/clear`, `/tools`,
 `/mcp`, `/resume`, `/cwd`, `/config`, `/reload`, `/quit`, `/exit`. In the TUI,
 type `/` to open a fuzzy command palette; once you type `/model ` the same
 palette fuzzy-completes the **model argument** from the config's `:models`
-list, shown as `Anthropic: Claude Opus 4.6` (Tab inserts the selection, Enter
+list, shown as `Anthropic: Claude Opus 5` (Tab inserts the selection, Enter
 runs it — any model id typed by hand still works). The active model is marked
 `●` and providers whose API key isn't set are annotated `· no key`. `/effort`
 sets Sema's portable reasoning-effort level the same way (`none` / `minimal` /
@@ -121,7 +121,7 @@ A complete `init.sema`:
 ```sema
 (configure!
   (coder-config
-    {:model      ""          ; "" = auto-detect from API keys; or e.g. "claude-sonnet-5"
+    {:model      "claude-opus-5" ; default model; "" = auto-detect from API keys
      :effort     ""          ; reasoning effort (none…xhigh); "" = provider default
      :max-turns  50          ; max tool-use rounds in a single turn
      :tool-preview-lines 5   ; result lines shown under each tool call
@@ -133,7 +133,9 @@ A complete `init.sema`:
      (list
        (provider "Anthropic"
          (list
-           (model "claude-opus-4-6"  "Claude Opus 4.6")
+           (model "claude-opus-5"    "Claude Opus 5")
+           (model "claude-fable-5"   "Claude Fable 5")
+           (model "claude-opus-4-8"  "Claude Opus 4.8")
            (model "claude-sonnet-5"  "Claude Sonnet 5")
            (model "claude-haiku-4-5" "Claude Haiku 4.5")))
        (provider "OpenAI"
@@ -166,7 +168,7 @@ A complete `init.sema`:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `:model` | `""` | LLM model; `""` auto-detects from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
+| `:model` | `"claude-opus-5"` | LLM model; `""` auto-detects from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
 | `:effort` | `""` | Reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`); `""` = provider default |
 | `:max-turns` | `50` | Max agent tool-use rounds per user turn |
 | `:tool-preview-lines` | `5` | Result lines shown under each tool call in the TUI |
@@ -250,7 +252,7 @@ logs a warning at boot/reload (first match wins).
 | `:resume` | `⌃R` | Open the session picker |
 | `:palette` | `⌃K` | Open the slash-command palette |
 | `:quit` | `⌃D` | Quit |
-| `:interrupt` | `⌃C` | Interrupt the turn / clear input / quit |
+| `:interrupt` | `⌃C` | Interrupt the turn / clear input / quit; `⌘C` also interrupts mid-turn when the terminal forwards it |
 | `:clear-line` | `⌃U` | Clear the input line |
 | `:line-start` / `:line-end` | `⌃A` / `⌃E` | Move the caret |
 | `:repaint` | `⌃L` | Force a full repaint |

@@ -41,7 +41,9 @@
   (list
     {:id "anthropic" :display-name "Anthropic" :env-key "ANTHROPIC_API_KEY"
      :models (list
-               (model "claude-opus-4-6"  "Claude Opus 4.6")
+               (model "claude-opus-5"    "Claude Opus 5")
+               (model "claude-fable-5"   "Claude Fable 5")
+               (model "claude-opus-4-8"  "Claude Opus 4.8")
                (model "claude-sonnet-5"  "Claude Sonnet 5")
                (model "claude-haiku-4-5" "Claude Haiku 4.5"))}
     {:id "openai" :display-name "OpenAI" :env-key "OPENAI_API_KEY"
@@ -72,7 +74,7 @@
   (map (lambda (d) (provider (:display-name d) (:models d))) provider-descriptors))
 
 (define default-config
-  {:model              ""        ;; "" = auto-detect from API keys
+  {:model              "claude-opus-5" ;; default model; "" = auto-detect from API keys
    :effort             ""        ;; reasoning effort; "" = provider default (see /effort)
    :max-turns          50
    :tool-preview-lines 5         ;; result lines shown under a tool call in the TUI
@@ -143,6 +145,32 @@
    instead of letting it vanish silently."
   (filter (lambda (k) (not (member k (known-config-keys)))) (keys cfg)))
 
+(defun config-sequence? (v) (or (list? v) (vector? v)))
+
+(defun config-records? (v)
+  (and (config-sequence? v) (every map? v)))
+
+(defun config-validation-error (cfg)
+  "The first invalid config field, or nil when CFG is safe to reconcile."
+  (cond
+    ((not (map? cfg)) "configure! expects a config map")
+    ((not (string? (get cfg :model ""))) ":model must be a string")
+    ((not (string? (get cfg :effort ""))) ":effort must be a string")
+    ((let ((n (get cfg :max-turns 50))) (not (and (integer? n) (> n 0))))
+      ":max-turns must be a positive integer")
+    ((let ((n (get cfg :tool-preview-lines 5))) (not (and (integer? n) (> n 0))))
+      ":tool-preview-lines must be a positive integer")
+    ((not (config-records? (get cfg :models '())))
+      ":models must be a list or vector of provider maps")
+    ((not (config-records? (get cfg :mcp-servers '())))
+      ":mcp-servers must be a list or vector of server maps")
+    ((not (config-records? (get cfg :commands '())))
+      ":commands must be a list or vector of command maps")
+    ((not (config-records? (get cfg :hooks '())))
+      ":hooks must be a list or vector of hook maps")
+    ((not (map? (get cfg :keys {}))) ":keys must be a map")
+    (else nil)))
+
 ;; ── Single sink + pure loader ────────────────────────────────────
 ;; configure! writes a scratch cell, not the active config, so a load that
 ;; throws mid-file can't leave the app's config half-applied.
@@ -158,7 +186,8 @@
     (begin
       (load path)
       (if *pending-config*
-        {:ok *pending-config*}
+        (let ((invalid (config-validation-error *pending-config*)))
+          (if invalid {:error invalid} {:ok *pending-config*}))
         {:error "init.sema did not call (configure! …)"}))
     (catch e {:error e})))
 
@@ -199,7 +228,7 @@
 
 (configure!
   (coder-config
-    {:model      \"\"                 ; \"\" = auto-detect from API keys; or \"claude-sonnet-5\"
+    {:model      \"claude-opus-5\"    ; default model; \"\" = auto-detect from API keys
      :effort     \"\"                 ; none/minimal/low/medium/high/xhigh; \"\" = provider default
      :max-turns  50
      :tool-preview-lines 5          ; result lines shown under each tool call

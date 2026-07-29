@@ -16,6 +16,7 @@
 (define MAX-MATCH-LINES  100)    ;; grep result cap
 (define MAX-FIND-LINES   200)    ;; find-files result cap
 (define DEFAULT-BASH-TIMEOUT-MS 120000) ;; bash default kill-after (2 min) so a hung command can't wedge the turn
+(define MAX-CAPTURE-CHARS (+ MAX-OUTPUT-CHARS 1)) ;; retain one extra char so truncate-chars can report the cut
 
 (deftool read-file
   "Read a file and return its contents with line numbers. Always read a file before editing it. Reads up to 2000 lines from the top by default; pass offset/limit to page through a larger file."
@@ -91,35 +92,70 @@
 
 (defun run-in-workspace (command)
   "Run a shell command with cwd pinned to the workspace root."
-  (shell "sh" "-c" (string/append "cd " (sh-quote workspace-root) " && " command)))
+  (shell command {:cwd workspace-root}))
+
+(defun run-argv-in-workspace (argv)
+  "Run ARGV directly in the workspace, with no shell interpretation."
+  (let ((args (if (vector? argv) (vector->list argv) argv)))
+    (when (null? args) (error "command argv must not be empty"))
+    (apply shell (append args (list {:cwd workspace-root})))))
+
+(defun system-shell-argv (command)
+  "The platform shell invocation for COMMAND, suitable for proc/spawn."
+  (if (= (sys/platform) "windows")
+    (list "cmd" "/C" command)
+    (list "sh" "-c" command)))
+
+(defun append-captured (acc chunk)
+  "Append CHUNK while retaining at most MAX-CAPTURE-CHARS codepoints."
+  (let ((room (- MAX-CAPTURE-CHARS (string/length acc))))
+    (if (<= room 0)
+      acc
+      (string/append acc
+        (string/slice chunk 0 (min room (string/length chunk)))))))
+
+(defun terminate-proc! (handle)
+  "Terminate HANDLE and arrange for it to be reaped. On Unix, cancelling an
+   active proc/wait invokes Sema's process-group kill, including descendants.
+   Other platforms fall back to killing the direct child."
+  (if (= (sys/platform) "windows")
+    (begin
+      (proc/kill handle)
+      (try (async (proc/wait handle)) (catch wait-error nil)))
+    (let ((waiter (async (proc/wait handle))))
+      ;; A zero-duration timeout still drives ready work before it fires. This
+      ;; lets proc/wait install its process-group cancellation hook.
+      (try
+        (async/timeout 0 waiter)
+        (catch timeout-error
+          (async/cancel waiter)
+          (try (await waiter) (catch cancelled nil)))))))
 
 (defun run-in-workspace-timed (command timeout-ms)
   "Like run-in-workspace but kills COMMAND after TIMEOUT-MS. Spawned via proc/*
-   so the child can be reaped; stdout/stderr are drained each poll (pipe
-   backpressure) and accumulated. Returns {:stdout :stderr :exit-code :timed-out}."
-  (let ((h (proc/spawn (list "sh" "-c" (string/append "cd " (sh-quote workspace-root) " && " command)))))
-    (let loop ((waited 0) (out "") (err ""))
-      (let ((out2 (string/append out (proc/read-stdout h)))
-            (err2 (string/append err (proc/read-stderr h)))
+   so stdout/stderr can be drained without pipe backpressure. Capture is bounded,
+   and timeout cancellation kills the process group on Unix (the direct child
+   elsewhere). Returns {:stdout :stderr :exit-code :timed-out}."
+  (let ((h (proc/spawn (system-shell-argv command) {:cwd workspace-root}))
+        (deadline (+ (time-ms) timeout-ms)))
+    (let loop ((out "") (err ""))
+      (let ((out2 (append-captured out (proc/read-stdout h)))
+            (err2 (append-captured err (proc/read-stderr h)))
             (code (proc/exit-code h)))
         (cond
           (code
             (proc/wait h)   ;; let the reader threads flush the tail
-            {:stdout (string/append out2 (proc/read-stdout h))
-             :stderr (string/append err2 (proc/read-stderr h))
+            {:stdout (append-captured out2 (proc/read-stdout h))
+             :stderr (append-captured err2 (proc/read-stderr h))
              :exit-code code :timed-out #f})
-          ((>= waited timeout-ms)
-            (proc/kill h)
-            ;; Don't proc/wait here: killing sh orphans its child, which keeps the
-            ;; stdout pipe open, and wait blocks on the reader flush until that
-            ;; child exits — for a runaway command (e.g. `npm run dev`) that's
-            ;; never. Return the buffered output now so the turn is freed, and
-            ;; reap in the background.
-            (try (async (proc/wait h)) (catch e nil))
-            {:stdout (string/append out2 (proc/read-stdout h))
-             :stderr (string/append err2 (proc/read-stderr h))
+          ((>= (time-ms) deadline)
+            (terminate-proc! h)
+            {:stdout out2
+             :stderr err2
              :exit-code -1 :timed-out #t})
-          (else (sleep 15) (loop (+ waited 15) out2 err2)))))))
+          (else
+            (async/sleep (min 15 (max 0 (- deadline (time-ms)))))
+            (loop out2 err2)))))))
 
 (deftool bash
   "Run a shell command in the workspace. Returns stdout, stderr, and exit code. Killed after 120s (or the given timeout) so a hung command can't stall the session. Use for tests, builds, git — not for reading/searching files (use read-file/grep)."

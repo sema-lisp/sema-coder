@@ -1,8 +1,12 @@
 (load "harness.sema")
 (load "../src/tools.sema")
 
-(set-workspace-root! "/tmp/sc-tools-test")
-(file/mkdir "/tmp/sc-tools-test")
+(define tools-test-root
+  (path/join (sys/temp-dir) (string-append "sema-coder-tools " (number->string (sys/pid)))))
+(shell "rm" "-rf" tools-test-root)
+(set-workspace-root! tools-test-root)
+(file/mkdir tools-test-root)
+(file/write (path/join tools-test-root "cwd-marker") "ok")
 
 ;; ── apply-edit: the pure core of edit-file (unique match, or replace_all) ──
 (check "apply-edit empty old" (:error (apply-edit "abc" "" "x" #f)) "old_string must not be empty.")
@@ -23,6 +27,14 @@
        (search-argv :grep "foo" "." #f "*.sema")
        (list "grep" "-rn" "-m" "10" "--include=*.sema" "--" "foo" "."))
 
+;; ── workspace execution: cwd is an option, not a quoted `cd &&` prefix ──
+(check "shell command runs in workspace with spaces"
+       (:exit-code (run-in-workspace "test -f cwd-marker")) 0)
+(check "argv command runs directly in workspace"
+       (:exit-code (run-argv-in-workspace ["sh" "-c" "test -f cwd-marker"])) 0)
+(check "argv preserves shell metacharacters as data"
+       (string/trim (:stdout (run-argv-in-workspace ["echo" "a; b"]))) "a; b")
+
 ;; ── run-in-workspace-timed: bash timeout (spawns a real child) ──
 (let ((r (run-in-workspace-timed "echo hi; exit 2" 3000)))
   (check "timed: exit code passthrough" (:exit-code r) 2)
@@ -32,4 +44,22 @@
   (check "timed: slow command is killed"  (:timed-out r) #t)
   (check-contains "timed: partial stdout before kill" (:stdout r) "start"))
 
+;; A timeout must kill grandchildren too. The old proc/kill path killed only
+;; the outer sh; this nested shell survived and wrote the marker afterwards.
+(define leak-marker (path/join tools-test-root "descendant-leaked"))
+(when (file/exists? leak-marker) (file/delete leak-marker))
+(let* ((inner (string-append "sleep 0.4; echo leaked > " (shell/quote leak-marker)))
+       (cmd   (string-append "sh -c " (shell/quote inner) " & wait"))
+       (r     (run-in-workspace-timed cmd 60)))
+  (check "tree timeout reported" (:timed-out r) #t)
+  (async/sleep 600)
+  (check "timed out descendant cannot keep running" (file/exists? leak-marker) #f))
+
+;; Keep draining after the capture budget is full so a noisy process cannot
+;; block on its pipe or grow the Sema heap without bound.
+(let ((r (run-in-workspace-timed "yes x | head -c 120000" 3000)))
+  (check-true "stdout capture is bounded"
+    (<= (string/length (:stdout r)) MAX-CAPTURE-CHARS)))
+
+(shell "rm" "-rf" tools-test-root)
 (done)

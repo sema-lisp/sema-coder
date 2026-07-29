@@ -64,12 +64,6 @@
 (define *session-created* 0)  ;; its creation timestamp (ms)
 (define *persist-warned* #f)  ;; emitted at most one persist-failure warning per session
 
-;; The key loop must read the quit flag through a function call: on current
-;; sema releases, a direct global read inside a recursive loop in a `load`ed
-;; unit never observes a cross-function set! (fresh invocations do — hence
-;; the accessor).
-(defun should-quit? () *should-quit*)
-
 ;; ── Palette (slash popup: command names, then argument completions) ──────────
 ;; "/mod"        → command mode: fuzzy over registered command names.
 ;; "/model opu"  → argument mode (when the command registered completions):
@@ -197,7 +191,7 @@
          (top (string/append (faint "┌") (accent-dim label)
                              (faint (string/append (string/repeat "─" (max 0 (- bw 2 (string/length label)))) "┐"))))
          (bot (faint (string/append "└" (string/repeat "─" (max 0 (- bw 2))) "┘")))
-         (rows (enumerate-map
+         (rows (map-indexed
                  (lambda (i e)
                    (let* ((sel?  (= i sel))
                           (txt   (fit-plain (string/append (if sel? "▸ " "  ")
@@ -341,7 +335,7 @@
 
 (defun render! ()
   (let* ((frame (build-frame))
-         (updates (enumerate-map
+         (updates (map-indexed
                     (lambda (i new)
                       (if (equal? new (frame-ref *last-frame* i)) ""
                         (string/append (goto (+ i 1) 1) CLEAR-LINE new)))
@@ -403,22 +397,25 @@
 ;; streaming callback.
 
 (defun pump-input! (turn)
-  ;; Best-effort UI sibling of the turn task: it's spawned and cancelled, never
-  ;; awaited, so a throw here would be swallowed and freeze updates for the rest
-  ;; of the turn. Guard each pass so one bad key/frame can't stop the pump; the
-  ;; turn's own await/catch owns real errors.
+  ;; Best-effort UI sibling of the turn task. Guard each pass so one bad
+  ;; key/frame cannot stop updates for the rest of the turn; the turn's own
+  ;; await/catch owns real errors.
   (let loop ()
     (when (or (async/pending? turn) (> (string/length *type-buffer*) 0))
       (try
         (begin
           (check-resize!)
-          (let drain ()
-            (let ((k (io/read-key-timeout 0)))
-              (when k (handle-key k) (drain))))
+          ;; A positive timeout parks cooperatively on Sema >=1.31, so the turn
+          ;; keeps running while this task waits for input.
+          (let ((k (io/read-key-timeout 16)))
+            (when k
+              (handle-key k)
+              (let drain ()
+                (let ((k2 (io/read-key-timeout 0)))
+                  (when k2 (handle-key k2) (drain))))))
           (reveal-tick!)
           (render!))
         (catch e nil))
-      (async/sleep 16)
       (loop))))
 
 (defun run-agent-turn! (text)
@@ -615,11 +612,17 @@
       (when (get *commands* name #f)
         (run-command! (string/append "/" name))))))
 
+(defun request-interrupt! ()
+  "Cancel the active turn and mark its cancellation as user-requested."
+  (when *busy*
+    (set! *interrupt* #t)
+    (when *turn* (async/cancel *turn*))))
+
 (defun handle-ctrl (ch)
   (match (keymap-action (string/append "ctrl-" ch))
     (:interrupt
       (cond
-        (*busy* (set! *interrupt* #t) (when *turn* (async/cancel *turn*)))
+        (*busy* (request-interrupt!))
         ((> (string/length *input*) 0) (prompt-clear!))
         (else (set! *should-quit* #t))))
     (:quit       (unless *busy* (set! *should-quit* #t)))
@@ -679,16 +682,27 @@
   ;; Option+Delete arrives as Alt+DEL (0x7f) → delete the word before the cursor.
   (when (= (:char k) "\u007f") (delete-word-backward!)))
 
+(defun command-c? (k)
+  "True for Command-C when a kitty-keyboard terminal forwards it to the app."
+  (and (equal? (:kind k) :char)
+       (equal? (string/lower (:char k)) "c")
+       (member :super (get k :mods '()))))
+
 (defun handle-key (k)
-  (if (overlay-active?)
-    (handle-overlay-key k)
-    (match (:kind k)
-      (:ctrl  (handle-ctrl (:char k)))
-      (:key   (handle-named k))
-      (:alt   (handle-alt k))
-      (:char  (prompt-insert! (:char k)))
-      (:mouse (handle-mouse k))
-      (_ nil))))
+  (cond
+    ;; Kitty-capable terminals can report macOS Command-C as a printable "c"
+    ;; carrying :super. Interrupt only mid-turn; when idle, never insert a
+    ;; stray "c" if the terminal forwarded its usual copy shortcut.
+    ((command-c? k) (when *busy* (request-interrupt!)))
+    ((overlay-active?) (handle-overlay-key k))
+    (else
+      (match (:kind k)
+        (:ctrl  (handle-ctrl (:char k)))
+        (:key   (handle-named k))
+        (:alt   (handle-alt k))
+        (:char  (prompt-insert! (:char k)))
+        (:mouse (handle-mouse k))
+        (_ nil)))))
 
 ;; ── Resize ───────────────────────────────────────────────────────────────────
 
@@ -763,28 +777,29 @@
   ;; terminal broken. (mouse wheel scrolls the transcript → {:kind :mouse}.)
   (io/with-raw-mode
     (term/with-alt-screen
-      (term/with-mouse
-        (term/set-title "(sema) coder")
-        (add-block! {:kind :info :text f"(sema) coder — ${cwd} · ${(if (= model "") "auto" model)}"})
-        (add-block! {:kind :info :text f"type / for commands · ${(key-hint :mcp)} MCP · ${(key-hint :resume)} resume · ${(key-hint :palette)} palette · ${(key-hint :quit)} quit"})
-        (add-block! {:kind :info :text f"; ${(epigraph)}"})
-        (warn-keymap-conflicts!)
-        (let ((na (mcp-needs-auth)))
-          (unless (null? na)
-            (add-block! {:kind :warn :text f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")} — ${(key-hint :mcp)} to sign in"})))
-        (start-config-watch!)
-        (full-repaint!)
-        (let loop ()
-          (check-resize!)
-          (poll-config!)
-          (let ((k (io/read-key-timeout 250)))
-            (when k
-              (handle-key k)
-              ;; Coalesce a burst (e.g. rapid wheel events) into one render.
-              (let drain () (let ((k2 (io/read-key-timeout 0)))
-                              (when k2 (handle-key k2) (drain))))
-              (render!)))
-          (unless (should-quit?) (loop))))))
+      (term/with-kitty-keys
+        (term/with-mouse
+          (term/set-title "(sema) coder")
+          (add-block! {:kind :info :text f"(sema) coder — ${cwd} · ${(if (= model "") "auto" model)}"})
+          (add-block! {:kind :info :text f"type / for commands · ${(key-hint :mcp)} MCP · ${(key-hint :resume)} resume · ${(key-hint :palette)} palette · ${(key-hint :quit)} quit"})
+          (add-block! {:kind :info :text f"; ${(epigraph)}"})
+          (warn-keymap-conflicts!)
+          (let ((na (mcp-needs-auth)))
+            (unless (null? na)
+              (add-block! {:kind :warn :text f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")} — ${(key-hint :mcp)} to sign in"})))
+          (start-config-watch!)
+          (full-repaint!)
+          (let loop ()
+            (check-resize!)
+            (poll-config!)
+            (let ((k (io/read-key-timeout 250)))
+              (when k
+                (handle-key k)
+                ;; Coalesce a burst (e.g. rapid wheel events) into one render.
+                (let drain () (let ((k2 (io/read-key-timeout 0)))
+                                (when k2 (handle-key k2) (drain))))
+                (render!)))
+            (unless *should-quit* (loop)))))))
   ;; Back on the main screen — a quiet sign-off in the scrollback.
   (io/println-error (faint f"   ; ${goodbye-line}"))
   (display RESET-CURSOR)

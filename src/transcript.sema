@@ -12,9 +12,7 @@
 (load "markdown.sema")
 
 ;; ── Block storage + mutation ─────────────────────────────────────────────────
-;; All transcript state lives in one stable container, mutated in place and
-;; never rebound: rebinding a module global with set! can serve stale values
-;; to readers in other top-level forms. Slots: 0 blocks (mutable-array,
+;; All transcript state lives in one container. Slots: 0 blocks (mutable-array,
 ;; oldest → newest) · 1 cached rendered lines · 2 cache width · 3 cache dirty.
 
 (define *tstate* (mutable-array/new 4 #f))
@@ -32,7 +30,7 @@
   (mutable-array/set! *tstate* 0 (mutable-array/new 64))
   (mark-tdirty!))
 
-(defun transcript-blocks () (mutable-array/->vector (tblocks)))
+(defun transcript-blocks () (tblocks))
 
 (defun kind? (b k) (equal? (get b :kind :none) k))
 

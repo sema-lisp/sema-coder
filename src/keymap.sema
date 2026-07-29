@@ -28,12 +28,9 @@
    :line-end   "ctrl-e"
    :repaint    "ctrl-l"})
 
-;; The two mutable layers live inside one stable container, mutated in place
-;; and never rebound: on current sema, rebinding a module global with set! can
-;; serve stale values to readers in other load units, while reads through a
-;; stable container always see the latest write. Slot 0 = command-declared
-;; keys (replaced wholesale on every config reconcile, so a :key removed from
-;; init.sema unbinds); slot 1 = runtime binds (survive reloads).
+;; The two mutable layers share one container. Slot 0 holds command-declared
+;; keys (replaced on config reconcile); slot 1 holds runtime binds (which
+;; survive reloads).
 (define *keymap-layers* (mutable-array/new 2 {}))
 
 (defun command-keys () (mutable-array/get *keymap-layers* 0))

@@ -19,7 +19,7 @@
   (any (lambda (p) (string/contains? (nth p 1) "apply effort at their default")) pairs))
 
 (check-true "openai + real effort → caveat noted"     (noted? (effort-emits "gpt-5.6-luna" "high")))
-(check-true "anthropic + real effort → no caveat"     (not (noted? (effort-emits "claude-opus-4-6" "high"))))
+(check-true "anthropic + real effort → no caveat"     (not (noted? (effort-emits "claude-opus-4-8" "high"))))
 (check-true "openai + none → no caveat"               (not (noted? (effort-emits "gpt-5.6-luna" "none"))))
 (check-true "auto/unknown model → no caveat"          (not (noted? (effort-emits "" "high"))))
 (check-true "the effort still gets set (:ok emitted)"

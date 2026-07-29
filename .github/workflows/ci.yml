@@ -8,11 +8,16 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        sema-version: ["1.31.0", "latest"]
     steps:
       - uses: actions/checkout@v7
 
       - name: Setup Sema
         uses: sema-lisp/setup-sema@v1
+        with:
+          sema-version: ${{ matrix.sema-version }}
 
       - name: Run tests
         run: sema test.sema

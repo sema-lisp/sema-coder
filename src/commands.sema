@@ -13,7 +13,7 @@
 ;; Users can ALSO define commands declaratively in init.sema without touching
 ;; this file — see the `:commands` list of (command name spec) records below.
 
-(load "util.sema")     ;; sh-quote (open-config!)
+(load "util.sema")
 (load "display.sema")
 (load "config.sema")
 (load "agent.sema")
@@ -117,10 +117,8 @@
       (if (= args "") lst (append lst (list args))))))
 
 (defun run-argv-command (argv args)
-  ;; sh-quote every token so the argv list runs in the workspace just like the
-  ;; :shell variant — `run-in-workspace` pins cwd via `cd <root> &&`.
   (let* ((full (argv-for argv args))
-         (res  (run-in-workspace (string/join (map sh-quote full) " ")))
+         (res  (run-argv-in-workspace full))
          (out  (string/trim (:stdout res)))
          (err  (string/trim (:stderr res))))
     (emit :info (string/append "$ " (string/join full " ")))
@@ -219,7 +217,7 @@
     (or
       (when-let (ed (editor-command))
         (opened-ok?
-          (try (shell "sh" "-c" f"${ed} ${(sh-quote path)} </dev/null")
+          (try (shell "sh" "-c" f"${ed} ${(shell/quote path)} </dev/null")
             (catch e {:exit-code 1}))))
       (opened-ok?
         (try

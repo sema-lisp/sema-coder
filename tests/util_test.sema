@@ -20,13 +20,5 @@
 (check "resolve-dir: nil means root"    (resolve-dir root nil) root)
 (check "resolve-dir: subdir resolves"   (resolve-dir root "sub") (path/join root "sub"))
 
-;; ── sh-quote: one shell word, no interpretation ──
-
-(check "plain word"      (sh-quote "abc") "'abc'")
-(check "embedded quote"  (sh-quote "a'b") "'a'\\''b'")
-(check "spaces and semicolons survive the shell"
-       (string/trim (:stdout (shell "sh" "-c" (string/append "echo " (sh-quote "a b; rm -rf /")))))
-       "a b; rm -rf /")
-
 (shell "rm" "-rf" root)
 (done)
