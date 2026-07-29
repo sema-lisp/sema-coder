@@ -1,0 +1,208 @@
+;; selection.sema — transcript text selection, highlighting, and clipboard I/O.
+;;
+;; Positions use rendered transcript line + codepoint offset coordinates.
+;; A selection records the transcript revision and render width that produced
+;; those coordinates; streaming or resize invalidates it instead of copying the
+;; wrong text after a reflow.
+
+(load "text.sema")
+
+;; Brand-gold background (#c8a855) with warm near-black text. Unlike inverse
+;; video, this is stable across terminal themes and reads as Sema rather than a
+;; generic white selection.
+(define SELECT-ON  "\x1b;[48;2;200;168;85;38;2;28;24;16m")
+(define SELECT-OFF "\x1b;[0m")
+(define OSC52-MAX-BYTES (* 74 1024))
+(define SELECTION-PUNCTUATION "/:,.-(){}[];\"'<>+=*&|!@#$%^~`\\?")
+
+;; ── Coordinates + extraction ────────────────────────────────────────────────
+
+(defun position-compare (a b)
+  (cond ((< (:line a) (:line b)) -1)
+        ((> (:line a) (:line b)) 1)
+        ((< (:offset a) (:offset b)) -1)
+        ((> (:offset a) (:offset b)) 1)
+        (else 0)))
+
+(defun display-col->offset (plain target)
+  "Codepoint offset of the visible cell at zero-based display column TARGET.
+   A click in either half of a wide character resolves to that character."
+  (let ((target (max 0 target)) (n (string/length plain)))
+    (let loop ((i 0) (col 0))
+      (if (>= i n) n
+        (let* ((ch (string/slice plain i (+ i 1)))
+               (cw (string/width ch)))
+          (cond ((= cw 0) (loop (+ i 1) col))
+                ((< target (+ col cw)) i)
+                (else (loop (+ i 1) (+ col cw)))))))))
+
+(defun offset->display-col (plain offset)
+  (string/width (string/slice plain 0 (max 0 (min offset (string/length plain))))))
+
+(defun advance-position (p)
+  "Turn a pointed-at position into an exclusive end. Mouse resolution records
+   :after so an endpoint in empty space stays at end-of-line without scanning
+   the transcript; pure callers default to the next codepoint."
+  (assoc p :offset (get p :after (+ (:offset p) 1))))
+
+(defun inclusive-selection (anchor focus)
+  "Build an ordered, end-exclusive selection containing both pointed-at cells."
+  (if (<= (position-compare anchor focus) 0)
+    {:start anchor :end (advance-position focus)}
+    {:start focus :end (advance-position anchor)}))
+
+(defun selection-empty? (sel)
+  (or (not sel) (>= (position-compare (:start sel) (:end sel)) 0)))
+
+(defun selection-text-with (line-at sel)
+  "Extract SEL using LINE-AT, joining crossed rendered rows with newlines."
+  (if (selection-empty? sel) ""
+    (let* ((start (:start sel))
+           (end (:end sel))
+           (a (:line start))
+           (b (:line end)))
+      (string/trim-right
+        (string/join
+          (map (lambda (line)
+                 (let* ((plain (line-at line))
+                        (from (if (= line a) (:offset start) 0))
+                        (to (if (= line b) (:offset end) (string/length plain))))
+                   (string/slice plain
+                     (max 0 (min from (string/length plain)))
+                     (max 0 (min to (string/length plain))))))
+               (range a (+ b 1)))
+          "\n")))))
+
+(defun selection-text (plain-lines sel)
+  "Extract SEL from PLAIN-LINES. Kept as the convenient pure/test surface."
+  (selection-text-with (lambda (line) (nth plain-lines line)) sel))
+
+;; ── Highlighting ─────────────────────────────────────────────────────────────
+
+(defun highlight-styled-range (styled from to)
+  "Brand-highlight the end-exclusive plain-text range FROM..TO in STYLED.
+   Reapply selection colors after embedded SGR and restore the underlying line
+   style afterward so a partial selection cannot recolor the remaining text."
+  (if (>= from to) styled
+    (let ((n (string/length styled)))
+      (let loop ((i 0) (plain-i 0) (active #f) (restore "") (out ""))
+        (if (>= i n)
+          (if active (string/append out SELECT-OFF restore) out)
+          (let ((ch (string/slice styled i (+ i 1))))
+            (if (= ch TEXT-ESC)
+              (let* ((j (ansi-escape-end styled i))
+                     (esc (string/slice styled i (min j n)))
+                     ;; All app-generated style closures use SGR 0. Reset the
+                     ;; replay history there; otherwise replay SGR in order
+                     ;; (the last foreground/background command wins).
+                     (restore2 (if (= esc TEXT-RESET-SGR) ""
+                                 (string/append restore esc))))
+                (loop j plain-i active restore2
+                  (string/append out esc (if active SELECT-ON ""))))
+              (let* ((turn-on (and (not active) (= plain-i from)))
+                     (turn-off (and active (= plain-i to)))
+                     (active2 (if turn-off #f (if turn-on #t active)))
+                     (prefix (string/append
+                               (if turn-off (string/append SELECT-OFF restore) "")
+                               (if turn-on SELECT-ON ""))))
+                (loop (+ i 1) (+ plain-i 1) active2 restore
+                  (string/append out prefix ch))))))))))
+
+(defun highlight-selection-line (styled absolute-line sel)
+  ;; Most visible rows lie outside a short drag. Reject them before the
+  ;; comparatively expensive ANSI strip.
+  (let ((start (:start sel)) (end (:end sel)))
+    (if (or (< absolute-line (:line start)) (> absolute-line (:line end)))
+      styled
+      (let* ((plain (term/strip styled))
+             (from (if (= absolute-line (:line start)) (:offset start) 0))
+             (to (if (= absolute-line (:line end)) (:offset end) (string/length plain))))
+        (highlight-styled-range styled from to)))))
+
+;; ── Double-click word/token ranges ───────────────────────────────────────────
+
+(defun selection-char-class (ch)
+  (cond ((string/contains? " \t\n\r " ch) :space)
+        ((string/contains? SELECTION-PUNCTUATION ch) :punct)
+        (else :word)))
+
+(defun class-range (plain offset)
+  "End-exclusive same-class run containing OFFSET."
+  (let ((n (string/length plain)))
+    (if (= n 0) {:start 0 :end 0}
+      (let* ((pivot (min (max 0 offset) (- n 1)))
+             (klass (selection-char-class (string/slice plain pivot (+ pivot 1))))
+             (start (let loop ((i pivot))
+                      (if (and (> i 0)
+                               (equal? (selection-char-class (string/slice plain (- i 1) i)) klass))
+                        (loop (- i 1)) i)))
+             (end (let loop ((i (+ pivot 1)))
+                    (if (and (< i n)
+                             (equal? (selection-char-class (string/slice plain i (+ i 1))) klass))
+                      (loop (+ i 1)) i))))
+        {:start start :end end}))))
+
+;; ── Clipboard ─────────────────────────────────────────────────────────────────
+
+(defun clipboard-command-candidates ()
+  (match (sys/platform)
+    ("macos"   (list (list "pbcopy")))
+    ("windows" (list (list "clip")))
+    ("linux"   (list (list "wl-copy")
+                     (list "xclip" "-selection" "clipboard")
+                     (list "xsel" "--clipboard" "--input")))
+    (_ '())))
+
+(defun copy-with-command (argv text)
+  "Write TEXT to one clipboard command without invoking a shell."
+  (let ((h #f))
+    (try
+      (begin
+        (set! h (proc/spawn argv))
+        (proc/write-stdin h text)
+        (proc/close-stdin h)
+        (let ((code (proc/wait h)))
+          (proc/close h)
+          (= code 0)))
+      (catch e
+        (when h
+          (try (proc/kill h) (catch kill-error nil))
+          (try (proc/close h) (catch close-error nil)))
+        #f))))
+
+(defun copy-with-host-command (text)
+  (let loop ((commands (clipboard-command-candidates)))
+    (cond ((null? commands) #f)
+          ((copy-with-command (car commands) text) #t)
+          (else (loop (cdr commands))))))
+
+(defun env-present? (name)
+  (let ((value (env name)))
+    (if (and value (not (= value ""))) #t #f)))
+
+(defun remote-terminal? ()
+  (or (env-present? "TMUX")
+      (env-present? "SSH_CONNECTION")
+      (env-present? "SSH_TTY")))
+
+(defun osc52-sequence (text tmux?)
+  "OSC52 clipboard payload, or #f when TEXT exceeds the conservative limit."
+  (if (> (string/byte-length text) OSC52-MAX-BYTES) #f
+    (let ((raw (string/append "\x1b;]52;c;" (base64/encode text) "\x1b;\\")))
+      (if tmux?
+        (string/append "\x1b;Ptmux;" (string/replace raw "\x1b;" "\x1b;\x1b;") "\x1b;\\")
+        raw))))
+
+(defun copy-with-osc52 (text)
+  (if-let (payload (osc52-sequence text (env-present? "TMUX")))
+    (try (begin (display payload) (io/flush) #t) (catch e #f))
+    #f))
+
+(defun copy-to-clipboard! (text)
+  "Copy TEXT using OSC52 first over SSH/tmux, native commands first locally."
+  (if (remote-terminal?)
+    (or (copy-with-osc52 text) (copy-with-host-command text))
+    (or (copy-with-host-command text) (copy-with-osc52 text))))
+
+;; Injectable so selection tests never touch the user's real clipboard.
+(define current-clipboard-copy (make-parameter copy-to-clipboard!))

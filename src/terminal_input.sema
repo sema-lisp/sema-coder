@@ -1,0 +1,413 @@
+;; terminal_input.sema — buffered terminal input for the full-screen TUI.
+;;
+;; Sema 1.33's io/read-key runtime path polls one byte per cooperative wake.
+;; Mouse reports are 10–15 byte escape sequences, so a busy drag can take
+;; seconds to work through even though stdin already holds the complete burst.
+;;
+;; This module gives one background task ownership of stdin, reads up to 16 KiB
+;; at once, and decodes the same event maps the TUI already consumes. Keeping the
+;; byte buffer here also handles UTF-8 and terminal sequences split across reads.
+
+(define TERMINAL-INPUT-READ-SIZE (* 16 1024))
+(define TERMINAL-INPUT-BYTE-CAP (* 8 1024 1024))
+(define TERMINAL-ESCAPE-WAIT-MS 50)
+
+(define *terminal-input-bytes* #u8())
+(define *terminal-input-channel* #f)
+(define *terminal-input-task* #f)
+(define *terminal-escape-at* #f)
+(define current-terminal-input-clock (make-parameter time-ms))
+
+;; ── Event-map helpers ────────────────────────────────────────────────────────
+
+(defun terminal-mods (bits)
+  (let ((mods '()))
+    (when (> (bit/and bits 1) 0) (set! mods (append mods (list :shift))))
+    (when (> (bit/and bits 2) 0) (set! mods (append mods (list :alt))))
+    (when (> (bit/and bits 4) 0) (set! mods (append mods (list :ctrl))))
+    (when (> (bit/and bits 8) 0) (set! mods (append mods (list :super))))
+    (when (> (bit/and bits 16) 0) (set! mods (append mods (list :hyper))))
+    (when (> (bit/and bits 32) 0) (set! mods (append mods (list :meta))))
+    (when (> (bit/and bits 64) 0) (set! mods (append mods (list :caps-lock))))
+    (when (> (bit/and bits 128) 0) (set! mods (append mods (list :num-lock))))
+    mods))
+
+(defun terminal-with-mods (event bits)
+  (let ((mods (terminal-mods bits)))
+    (if (null? mods) event (assoc event :mods mods))))
+
+(defun terminal-named-key (name)
+  {:kind :key :name (if (keyword? name) name (string/to-keyword name))})
+
+(defun terminal-char-event (kind text)
+  {:kind kind :char text})
+
+(defun terminal-codepoint-string (cp)
+  (try (string/from-codepoints (list cp)) (catch e "?")))
+
+(defun terminal-byte-string (bytes start end)
+  (try (bytes/->string bytes start end) (catch e "?")))
+
+(defun terminal-field (fields index fallback)
+  (if (< index (length fields))
+    (let ((n (string->number (nth fields index))))
+      (if n n fallback))
+    fallback))
+
+(defun terminal-utf8-width (lead)
+  (cond
+    ((and (>= lead 194) (<= lead 223)) 2)
+    ((and (>= lead 224) (<= lead 239)) 3)
+    ((and (>= lead 240) (<= lead 244)) 4)
+    (else 1)))
+
+;; ── CSI decoders ─────────────────────────────────────────────────────────────
+
+(defun decode-sgr-mouse-bytes (csi)
+  (let* ((n (bytes/length csi))
+         (final (bytes/ref csi (- n 1)))
+         (parts (string/split (terminal-byte-string csi 1 (- n 1)) ";"))
+         (b (terminal-field parts 0 0))
+         (x (terminal-field parts 1 0))
+         (y (terminal-field parts 2 0))
+         ;; Mouse modifiers use shift=4, alt=8, ctrl=16. Normalize them to the
+         ;; keyboard bit layout shift=1, alt=2, ctrl=4.
+         (mbits
+           (+ (if (> (bit/and b 4) 0) 1 0)
+             (if (> (bit/and b 8) 0) 2 0)
+             (if (> (bit/and b 16) 0) 4 0)))
+         (base (bit/and b 3))
+         (action
+           (cond
+             ((> (bit/and b 64) 0)
+               (nth (list :wheel-up :wheel-down :wheel-left :wheel-right) base))
+             ((> (bit/and b 32) 0) :move)
+             ((= final 109) :release) ;; m
+             (else :press))))
+    (terminal-with-mods {:kind :mouse :action action :x x :y y :button base}
+      mbits)))
+
+(defun legacy-csi-name (final first)
+  (cond
+    ((= final 65) :up)
+    ((= final 66) :down)
+    ((= final 67) :right)
+    ((= final 68) :left)
+    ((= final 72) :home)
+    ((= final 70) :end)
+    ((= final 90) :shift-tab)
+    ((= final 80) :f1)
+    ((= final 81) :f2)
+    ((= final 82) :f3)
+    ((= final 83) :f4)
+    ((= final 126)
+      (get
+        {"1" :home
+         "7" :home
+         "2" :insert
+         "3" :delete
+         "4" :end
+         "8" :end
+         "5" :page-up
+         "6" :page-down
+         "11" :f1
+         "12" :f2
+         "13" :f3
+         "14" :f4
+         "15" :f5
+         "17" :f6
+         "18" :f7
+         "19" :f8
+         "20" :f9
+         "21" :f10
+         "23" :f11
+         "24" :f12}
+        first
+        :unknown))
+    (else :unknown)))
+
+(defun decode-legacy-csi-bytes (csi)
+  (let* ((n (bytes/length csi))
+         (final (bytes/ref csi (- n 1)))
+         (body (terminal-byte-string csi 0 (- n 1)))
+         (fields (string/split body ";"))
+         (first (if (null? fields) "" (car fields)))
+         (raw-mod (terminal-field fields 1 1))
+         (mbits (max 0 (- raw-mod 1))))
+    (terminal-with-mods (terminal-named-key (legacy-csi-name final first))
+      mbits)))
+
+(defun decode-modify-other-keys-bytes (csi)
+  (let* ((n (bytes/length csi))
+         (fields (string/split (terminal-byte-string csi 0 (- n 1)) ";"))
+         (mbits (max 0 (- (terminal-field fields 1 1) 1)))
+         (cp (terminal-field fields 2 0))
+         (lower (if (and (>= cp 65) (<= cp 90)) (+ cp 32) cp))
+         (event
+           (cond
+             ((= cp 27) (terminal-named-key :esc))
+             ((or (= cp 13) (= cp 10)) (terminal-named-key :enter))
+             ((= cp 9) (terminal-named-key :tab))
+             ((or (= cp 127) (= cp 8)) (terminal-named-key :backspace))
+             ((and (> (bit/and mbits 4) 0)
+                (or (and (>= cp 65) (<= cp 90))
+                  (and (>= cp 97) (<= cp 122))))
+               (terminal-char-event :ctrl (terminal-codepoint-string lower)))
+             (else (terminal-char-event :char (terminal-codepoint-string cp))))))
+    (terminal-with-mods event mbits)))
+
+(defun decode-kitty-bytes (csi)
+  (let* ((n (bytes/length csi))
+         (sections (string/split (terminal-byte-string csi 0 (- n 1)) ";"))
+         (key-parts (string/split (if (null? sections) "" (car sections)) ":"))
+         (mods-parts
+           (string/split (if (> (length sections) 1) (nth sections 1) "")
+             ":"))
+         (text-parts
+           (string/split (if (> (length sections) 2) (nth sections 2) "")
+             ":"))
+         (cp (terminal-field key-parts 0 0))
+         (shifted-cp (terminal-field key-parts 1 #f))
+         (base-cp (terminal-field key-parts 2 #f))
+         (mbits (max 0 (- (terminal-field mods-parts 0 1) 1)))
+         (event-type (terminal-field mods-parts 1 #f))
+         (text-cps
+           (filter number?
+             (map string->number (filter #(not (= % "")) text-parts))))
+         (reported-text
+           (if (null? text-cps)
+             #f
+             (try (string/from-codepoints text-cps) (catch e #f))))
+         (ascii-letter?
+           (or (and (>= cp 65) (<= cp 90))
+             (and (>= cp 97) (<= cp 122))))
+         (lower (if (and (>= cp 65) (<= cp 90)) (+ cp 32) cp))
+         (derived
+           (cond
+             (reported-text reported-text)
+             ((and (> (bit/and mbits 1) 0) (>= cp 97) (<= cp 122))
+               (terminal-codepoint-string (- cp 32)))
+             (else (terminal-codepoint-string cp))))
+         (event
+           (cond
+             ((= cp 27) (terminal-named-key :esc))
+             ((or (= cp 13) (= cp 10)) (terminal-named-key :enter))
+             ((= cp 9) (terminal-named-key :tab))
+             ((or (= cp 127) (= cp 8)) (terminal-named-key :backspace))
+             ((and (> (bit/and mbits 4) 0) ascii-letter?)
+               (terminal-char-event :ctrl (terminal-codepoint-string lower)))
+             ((and (> (bit/and mbits 2) 0) (= (bit/and mbits 4) 0))
+               (terminal-char-event :alt derived))
+             (else (terminal-char-event :char derived))))
+         (event (terminal-with-mods event mbits))
+         (event
+           (if event-type
+             (assoc event
+               :event (get {1 :press 2 :repeat 3 :release} event-type :press))
+             event))
+         (event
+           (if shifted-cp
+             (assoc event :shifted-key (terminal-codepoint-string shifted-cp))
+             event)))
+    (if base-cp
+      (assoc event :base-key (terminal-codepoint-string base-cp))
+      event)))
+
+(defun decode-csi-bytes (csi)
+  (let* ((n (bytes/length csi))
+         (first (bytes/ref csi 0))
+         (final (bytes/ref csi (- n 1))))
+    (cond
+      ((= first 60) (decode-sgr-mouse-bytes csi)) ;; <
+      ((= final 117) ;; u
+        (if (= first 63) ;; ?
+          {:kind :kitty-flags
+           :flags (terminal-field
+             (string/split (terminal-byte-string csi 1 (- n 1)) ";")
+             0
+             0)}
+          (decode-kitty-bytes csi)))
+      ((and (= final 126) ;; ~
+         (string/starts-with? (terminal-byte-string csi 0 n) "27;"))
+        (decode-modify-other-keys-bytes csi))
+      ((and (= n 1) (= first 73)) {:kind :focus :focused #t}) ;; I
+      ((and (= n 1) (= first 79)) {:kind :focus :focused #f}) ;; O
+      (else (decode-legacy-csi-bytes csi)))))
+
+;; ── One-event framing ────────────────────────────────────────────────────────
+
+(defun terminal-find-csi-end (bytes)
+  "Index of the CSI final byte, or #f when the buffered sequence is incomplete."
+  (let ((n (bytes/length bytes)))
+    (let loop ((i 2))
+      (cond
+        ((>= i n) #f)
+        ((and (>= (bytes/ref bytes i) 64) (<= (bytes/ref bytes i) 126)) i)
+        (else (loop (+ i 1)))))))
+
+(defun terminal-prefix? (bytes prefix)
+  (let ((n (bytes/length bytes)) (m (bytes/length prefix)))
+    (and (>= n m)
+      (let loop ((i 0))
+        (cond
+          ((>= i m) #t)
+          ((= (bytes/ref bytes i) (bytes/ref prefix i)) (loop (+ i 1)))
+          (else #f))))))
+
+(define BRACKETED-PASTE-START (string/to-utf8 "\x1b;[200~"))
+(define BRACKETED-PASTE-END (string/to-utf8 "\x1b;[201~"))
+
+(defun parse-terminal-event (bytes allow-lone-escape?)
+  "Decode the first complete terminal event in BYTES.
+   Returns {:event <map> :used <byte-count>}, or #f when more bytes are needed."
+  (let ((n (bytes/length bytes)))
+    (if (= n 0)
+      #f
+      (let ((first (bytes/ref bytes 0)))
+        (if (not (= first 27))
+          (let ((width (terminal-utf8-width first)))
+            (if (< n width)
+              #f
+              {:event (cond
+                 ((or (= first 127) (= first 8)) (terminal-named-key :backspace))
+                 ((= first 9) (terminal-named-key :tab))
+                 ((or (= first 10) (= first 13)) (terminal-named-key :enter))
+                 ((< first 32)
+                   (terminal-char-event :ctrl
+                     (terminal-codepoint-string (+ first 96))))
+                 (else
+                   (terminal-char-event :char
+                     (terminal-byte-string bytes 0 width))))
+               :used width}))
+          ;; ESC: lone escape, CSI, SS3, or Alt+UTF-8.
+          (cond
+            ((= n 1)
+              (if allow-lone-escape?
+                {:event (terminal-named-key :esc) :used 1}
+                #f))
+            ((= (bytes/ref bytes 1) 91) ;; [
+              (if (terminal-prefix? bytes BRACKETED-PASTE-START)
+                (let ((end
+                        (bytes/find bytes
+                          BRACKETED-PASTE-END
+                          (bytes/length BRACKETED-PASTE-START))))
+                  (if (number? end)
+                    {:event {:kind :paste
+                      :text (terminal-byte-string bytes
+                        (bytes/length BRACKETED-PASTE-START)
+                        end)}
+                     :used (+ end (bytes/length BRACKETED-PASTE-END))}
+                    #f))
+                (let ((end (terminal-find-csi-end bytes)))
+                  (if (number? end)
+                    {:event (decode-csi-bytes (bytes/slice bytes 2 (+ end 1)))
+                     :used (+ end 1)}
+                    #f))))
+            ((= (bytes/ref bytes 1) 79) ;; O / SS3
+              (if (< n 3)
+                #f
+                {:event (terminal-named-key
+                   (get
+                     {65 :up
+                      66 :down
+                      67 :right
+                      68 :left
+                      72 :home
+                      70 :end
+                      80 :f1
+                      81 :f2
+                      82 :f3
+                      83 :f4}
+                     (bytes/ref bytes 2)
+                     :unknown))
+                 :used 3}))
+            (else
+              (let ((width (terminal-utf8-width (bytes/ref bytes 1))))
+                (if (< n (+ width 1))
+                  #f
+                  {:event (terminal-char-event :alt
+                     (terminal-byte-string bytes 1 (+ width 1)))
+                   :used (+ width 1)})))))))))
+
+;; ── Background reader + timeout-compatible public poll ──────────────────────
+
+(defun terminal-input-reader-loop (ch)
+  (let loop ()
+    (let ((chunk (stream/read *stdin* TERMINAL-INPUT-READ-SIZE)))
+      (if (= (bytes/length chunk) 0)
+        (channel/close ch)
+        (begin
+          (channel/send ch chunk)
+          (loop))))))
+
+(defun start-terminal-input! ()
+  (set! *terminal-input-bytes* #u8())
+  (set! *terminal-escape-at* #f)
+  ;; Capture the channel in the task closure. Referring back through the global
+  ;; would let an immediate stop/restart redirect the old task into the new
+  ;; reader's channel before the scheduler first runs it.
+  (let ((ch (channel/new 8)))
+    (set! *terminal-input-channel* ch)
+    (set! *terminal-input-task*
+      (async/spawn (lambda () (terminal-input-reader-loop ch)))))
+  *terminal-input-task*)
+
+(defun stop-terminal-input! ()
+  (when *terminal-input-task* (async/cancel *terminal-input-task*))
+  (when *terminal-input-channel*
+    (try (channel/close *terminal-input-channel*) (catch e nil)))
+  (set! *terminal-input-task* #f)
+  (set! *terminal-input-channel* #f)
+  (set! *terminal-input-bytes* #u8())
+  (set! *terminal-escape-at* #f))
+
+(defun fill-terminal-input! ()
+  "Move all currently queued raw chunks into the parser buffer."
+  (when *terminal-input-channel*
+    (let loop ()
+      (if-let (chunk (channel/try-recv *terminal-input-channel*))
+        (begin
+          (let ((next-size
+                  (+ (bytes/length *terminal-input-bytes*)
+                    (bytes/length chunk))))
+            (when (> next-size TERMINAL-INPUT-BYTE-CAP)
+              (error f"terminal input exceeds ${TERMINAL-INPUT-BYTE-CAP} bytes"))
+            (set! *terminal-input-bytes*
+              (bytevector/append *terminal-input-bytes* chunk)))
+          (loop))
+        nil))))
+
+(defun terminal-input-ready! ()
+  "Return one already-buffered event, without waiting."
+  (fill-terminal-input!)
+  (let* ((now ((current-terminal-input-clock)))
+         (n (bytes/length *terminal-input-bytes*))
+         (lone-escape? (and (= n 1) (= (bytes/ref *terminal-input-bytes* 0) 27)))
+         (_
+           (cond
+             ((and lone-escape? (not *terminal-escape-at*))
+               (set! *terminal-escape-at* now))
+             ((not lone-escape?) (set! *terminal-escape-at* #f))))
+         (allow?
+           (and *terminal-escape-at*
+             (>= (- now *terminal-escape-at*) TERMINAL-ESCAPE-WAIT-MS)))
+         (parsed (parse-terminal-event *terminal-input-bytes* allow?)))
+    (when parsed
+      (set! *terminal-input-bytes*
+        (bytes/slice *terminal-input-bytes* (:used parsed)))
+      (set! *terminal-escape-at* #f)
+      (:event parsed))))
+
+(defun terminal-input-read-key-timeout (timeout-ms)
+  "Buffered replacement for io/read-key-timeout with the same nil-on-timeout
+   contract. A short cooperative sleep leaves agent streaming and timers live."
+  (let ((deadline (+ ((current-terminal-input-clock)) (max 0 timeout-ms))))
+    (let loop ()
+      (if-let (event (terminal-input-ready!))
+        event
+        (let ((remaining (- deadline ((current-terminal-input-clock)))))
+          (if (<= remaining 0)
+            nil
+            (begin
+              (async/sleep (min 5 remaining))
+              (loop))))))))

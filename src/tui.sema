@@ -1,8 +1,8 @@
 ;; tui.sema — the full-screen (sema) coder terminal UI.
 ;;
 ;; A bespoke, hand-rendered TUI built directly on the host primitives:
-;; alt-screen + cursor control (term/*), raw-mode key input
-;; (io/tty-raw!, io/read-key-timeout), terminal size + resize (sys/term-size,
+;; alt-screen + cursor control (term/*), buffered raw-mode input
+;; (stream/read via terminal_input.sema), terminal size + resize (sys/term-size,
 ;; sys/on-signal :winch), and streaming agent turns (agent/run :on-text).
 ;;
 ;; Rendering model: every frame is rebuilt as a list of exactly
@@ -26,6 +26,8 @@
 (load "text.sema")
 (load "keymap.sema")
 (load "transcript.sema")
+(load "selection.sema")
+(load "terminal_input.sema")
 (load "overlay.sema")
 
 ;; ── Terminal control as strings (emitted through one stream) ─────────────────
@@ -63,6 +65,21 @@
 (define *session-id* #f)      ;; current session's file id (persisted after each turn)
 (define *session-created* 0)  ;; its creation timestamp (ms)
 (define *persist-warned* #f)  ;; emitted at most one persist-failure warning per session
+(define *selection* #f)       ;; ordered rendered-line range, only while dragging
+(define *selection-drag* #f)  ;; mouse-down origin while button 0 is held
+(define *click-chain* #f)     ;; same-cell click count for double/triple click
+(define *copy-notice* #f)     ;; {:text :ok :until}, rendered in the status row
+
+;; The buffered reader makes raw events cheap to frame. Drain a generously
+;; bounded batch and collapse adjacent mouse moves to the newest coordinate;
+;; this keeps release/keyboard ordering exact without reflowing the transcript
+;; hundreds of times for coordinates that could never be painted.
+(define INPUT-DRAIN-LIMIT 512)
+(define current-key-poll (make-parameter terminal-input-read-key-timeout))
+(define FRAME-INTERVAL-MS 16)
+(define current-ui-clock (make-parameter time-ms))
+(define *last-render-at* 0)
+(define *frame-pending* #f)
 
 ;; ── Palette (slash popup: command names, then argument completions) ──────────
 ;; "/mod"        → command mode: fuzzy over registered command names.
@@ -254,14 +271,22 @@
 (define spinner-frames ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"])
 (defun spinner-frame () (nth spinner-frames (mod (quotient (time-ms) 80) 10)))
 
+(defun active-copy-notice ()
+  (when *copy-notice*
+    (if (< (time-ms) (:until *copy-notice*))
+      *copy-notice*
+      (begin (set! *copy-notice* #f) #f))))
+
 (defun status-line ()
   ;; A persistent config-error banner (until the next clean reload), else a
-  ;; spinner while a turn runs, else a scroll indicator, else nothing.
-  (indent (cond
-    (*config-error* (bad "⚠ config error — using last good (fix init.sema)"))
-    (*busy*         (faint (string/append (spinner-frame) " evaluating · ctrl-c interrupts")))
-    ((> *scroll* 0) (faint f"↕ scrolled +${*scroll*}"))
-    (else           ""))))
+  ;; copy result, spinner while a turn runs, scroll indicator, or nothing.
+  (let ((notice (active-copy-notice)))
+    (indent (cond
+      (*config-error* (bad "⚠ config error — using last good (fix init.sema)"))
+      (notice         ((if (:ok notice) ok warn) (:text notice)))
+      (*busy*         (faint (string/append (spinner-frame) " evaluating · ctrl-c interrupts")))
+      ((> *scroll* 0) (faint f"↕ scrolled +${*scroll*}"))
+      (else           "")))))
 
 (defun prompt-view ()
   "Window the input so the caret is always visible (input starts at column 4).
@@ -285,8 +310,8 @@
 (defun prompt-line ()
   (indent (string/append (accent (string/append prompt-glyph " ")) (:text (prompt-view)))))
 
-(defun viewport (lines h)
-  "Take the last H lines, honoring *scroll* (0 = bottom). Pad with blanks on top."
+(defun viewport-info (lines h)
+  "Window metadata for transcript rendering and mouse-coordinate resolution."
   (let* ((n (length lines))
          (maxscroll (max 0 (- n h)))
          (sc (min *scroll* maxscroll))
@@ -294,7 +319,56 @@
          (start (max 0 (- end h)))
          (window (if (> n 0) (take (- end start) (drop start lines)) '()))
          (pad (- h (length window))))
-    (if (> pad 0) (append (make-list pad "") window) window)))
+    {:lines (if (> pad 0) (append (make-list pad "") window) window)
+     :start start
+     :pad pad}))
+
+(defun viewport (lines h)
+  "Take the last H lines, honoring *scroll* (0 = bottom). Pad with blanks on top."
+  (:lines (viewport-info lines h)))
+
+(defun current-selection ()
+  "Return the selection while its rendered coordinates are still valid."
+  (when *selection*
+    (if (and (= (get *selection* :version -1) (transcript-version))
+             (= (get *selection* :render-width -1) (- *cols* 2)))
+      *selection*
+      (begin (set! *selection* #f) #f))))
+
+(defun remember-selection! (sel)
+  (set! *selection*
+    (assoc (assoc sel :version (transcript-version))
+               :render-width (- *cols* 2))))
+
+(defun plain-transcript-line (line)
+  (term/strip (nth (transcript-lines (- *cols* 2)) line)))
+
+(defun selected-viewport-lines (view sel)
+  (map-indexed
+    (lambda (row styled)
+      (let ((absolute-line (+ (:start view) (- row (:pad view)))))
+        (if (< absolute-line 0)
+          styled
+          (highlight-selection-line styled absolute-line sel))))
+    (:lines view)))
+
+(defun set-copy-notice! (text ok?)
+  (set! *copy-notice* {:text text :ok ok? :until (+ (time-ms) 1800)}))
+
+(defun copy-selection! ()
+  "Copy the current selection. The gesture owner clears its visual highlight."
+  (when-let (sel (current-selection))
+    (let* ((styled-lines (transcript-lines (- *cols* 2)))
+           ;; Only strip rows covered by the selection. Mouse movement never
+           ;; calls this, and release cost scales with copied text rather than
+           ;; total transcript history.
+           (text (selection-text-with
+                   (lambda (line) (term/strip (nth styled-lines line)))
+                   sel)))
+      (when (> (string/length text) 0)
+        (if ((current-clipboard-copy) text)
+          (set-copy-notice! f"copied ${(string/length text)} characters" #t)
+          (set-copy-notice! "clipboard unavailable" #f))))))
 
 (defun overlay-bottom (base over)
   "Replace the last (length OVER) rows of BASE with OVER."
@@ -305,7 +379,9 @@
   ;; Content width leaves 1 char of padding on BOTH sides (indent adds the left
   ;; space; wrapping to *cols*-2 leaves the right gap) so text feels less cramped.
   (let* ((h (transcript-height))
-         (tlines (viewport (transcript-lines (- *cols* 2)) h))
+         (view (viewport-info (transcript-lines (- *cols* 2)) h))
+         (sel (current-selection))
+         (tlines (if sel (selected-viewport-lines view sel) (:lines view)))
          (pv (palette-view))
          (body (if pv
                  (overlay-bottom tlines (palette-box pv *psel* (- *cols* 3)))
@@ -346,9 +422,53 @@
                             (goto (- *rows* 1) (:caret-col (prompt-view)))
                             (if (overlay-active?) HIDE-CURSOR SHOW-CURSOR)))
     (io/flush)
-    (set! *last-frame* frame)))
+    (set! *last-frame* frame)
+    (set! *last-render-at* ((current-ui-clock)))
+    (set! *frame-pending* #f)))
 
 (defun full-repaint! () (set! *last-frame* '()) (render!))
+
+(defun request-frame! () (set! *frame-pending* #t))
+
+(defun frame-wait-ms (max-wait)
+  "How long input may block without missing a pending 60 FPS frame deadline."
+  (if (not *frame-pending*) max-wait
+    (max 0
+      (min max-wait
+           (- (+ *last-render-at* FRAME-INTERVAL-MS)
+              ((current-ui-clock)))))))
+
+(defun render-pending-frame! ()
+  "Render a requested frame only when its 16ms deadline is due."
+  (when (and *frame-pending*
+             (>= ((current-ui-clock))
+                 (+ *last-render-at* FRAME-INTERVAL-MS)))
+    (render!)))
+
+;; Drain a bounded number of already-buffered events. Adjacent motion reports
+;; are coalesced, but the latest move is always dispatched before a release or
+;; key so drag state and event ordering remain faithful.
+(defun mouse-move-event? (k)
+  (and (equal? (get k :kind #f) :mouse)
+       (equal? (get k :action #f) :move)))
+
+(defun drain-input-burst! ()
+  (let loop ((remaining INPUT-DRAIN-LIMIT) (handled 0) (pending-move #f))
+    (if (<= remaining 0)
+      (begin
+        (when pending-move (handle-key pending-move))
+        handled)
+      (let ((k ((current-key-poll) 0)))
+        (if k
+          (if (mouse-move-event? k)
+            (loop (- remaining 1) (+ handled 1) k)
+            (begin
+              (when pending-move (handle-key pending-move))
+              (handle-key k)
+              (loop (- remaining 1) (+ handled 1) #f)))
+          (begin
+            (when pending-move (handle-key pending-move))
+            handled))))))
 
 ;; ── Typewriter reveal (streaming callbacks fire inside the agent task) ───────
 ;; Network deltas land in *type-buffer*; the pump reveals them at a steady
@@ -407,14 +527,16 @@
           (check-resize!)
           ;; A positive timeout parks cooperatively on Sema >=1.31, so the turn
           ;; keeps running while this task waits for input.
-          (let ((k (io/read-key-timeout 16)))
+          (let ((k ((current-key-poll) (frame-wait-ms 16))))
             (when k
               (handle-key k)
-              (let drain ()
-                (let ((k2 (io/read-key-timeout 0)))
-                  (when k2 (handle-key k2) (drain))))))
+              (drain-input-burst!)))
           (reveal-tick!)
-          (render!))
+          ;; Busy frames animate the spinner/typewriter even without input.
+          ;; Continuous input updates state freely, but terminal output remains
+          ;; capped at one frame per 16ms.
+          (request-frame!)
+          (render-pending-frame!))
         (catch e nil))
       (loop))))
 
@@ -668,15 +790,116 @@
         (scroll-by! -1)))
     (:page-up   (scroll-by! (transcript-height)))
     (:page-down (scroll-by! (- (transcript-height))))
-    (:esc       (when (palette-open?) (prompt-clear!)))
+    (:esc
+      (if (palette-open?)
+        (prompt-clear!)
+        (begin
+          (set! *selection* #f)
+          (set! *selection-drag* #f))))
     (_ nil)))
 
+(defun mouse-shifted? (k) (member :shift (get k :mods '())))
+
+(defun resolve-transcript-position (x y)
+  "Resolve one-based screen X/Y to a rendered transcript position."
+  (let* ((h (transcript-height))
+         (row (- y 2))
+         (styled-lines (transcript-lines (- *cols* 2)))
+         (view (viewport-info styled-lines h))
+         (absolute-line (+ (:start view) (- row (:pad view)))))
+    (when (and (>= row 0) (< row h)
+               (>= absolute-line 0) (< absolute-line (length styled-lines)))
+      (let ((plain (term/strip (nth styled-lines absolute-line))))
+        (let ((off (display-col->offset plain (- x 1))))
+          {:line absolute-line
+           :offset off
+           :after (min (string/length plain) (+ off 1))})))))
+
+(defun mouse-distance (a b c d)
+  (+ (max (- a c) (- c a)) (max (- b d) (- d b))))
+
+(defun register-click! (x y)
+  "Return the 1→2→3→1 click count for rapid clicks at the same cell."
+  (let* ((now (time-ms))
+         (same? (and *click-chain*
+                     (= x (:x *click-chain*))
+                     (= y (:y *click-chain*))
+                     (<= (- now (:at *click-chain*)) 300)))
+         (count (if same?
+                  (if (= (:count *click-chain*) 3) 1 (+ (:count *click-chain*) 1))
+                  1)))
+    (set! *click-chain* {:x x :y y :at now :count count})
+    count))
+
+(defun select-class-at! (p)
+  (let* ((plain (plain-transcript-line (:line p)))
+         (range (class-range plain (:offset p))))
+    ;; Empty space to the right of a rendered line is a valid drag endpoint,
+    ;; but a double-click there must not unexpectedly select the final word.
+    (when (< (:offset p) (string/length plain))
+      (remember-selection!
+        {:start {:line (:line p) :offset (:start range)}
+         :end   {:line (:line p) :offset (:end range)}})
+      (copy-selection!))))
+
+(defun select-line-at! (p)
+  (let ((plain (plain-transcript-line (:line p))))
+    (remember-selection!
+      {:start {:line (:line p) :offset 0}
+       :end   {:line (:line p) :offset (string/length plain)}})
+    (copy-selection!)))
+
 (defun handle-mouse (k)
-  ;; Wheel scrolls the transcript; other mouse events are ignored for now.
-  (match (:action k)
-    (:wheel-up   (scroll-by! 3))
-    (:wheel-down (scroll-by! -3))
-    (_ nil)))
+  ;; Shift is the escape hatch for the terminal's native selection behavior.
+  (if (mouse-shifted? k)
+    (begin
+      (set! *selection* #f)
+      (set! *selection-drag* #f))
+    (match (:action k)
+      (:wheel-up   (scroll-by! 3))
+      (:wheel-down (scroll-by! -3))
+      (:press
+        (when (= (get k :button -1) 0)
+          (when-let (p (resolve-transcript-position (:x k) (:y k)))
+            (set! *selection* #f)
+            (set! *copy-notice* #f)
+            (set! *selection-drag*
+              {:x (:x k) :y (:y k) :origin p :dragged #f
+               :version (transcript-version)}))))
+      (:move
+        (when *selection-drag*
+          (if (not (= (:version *selection-drag*) (transcript-version)))
+            (begin
+              (set! *selection* #f)
+              (set! *selection-drag* #f))
+            (when-let (p (resolve-transcript-position (:x k) (:y k)))
+              (when (>= (mouse-distance (:x *selection-drag*) (:y *selection-drag*)
+                                        (:x k) (:y k)) 2)
+                (set! *selection-drag* (assoc *selection-drag* :dragged #t)))
+              (when (:dragged *selection-drag*)
+                (remember-selection!
+                  (inclusive-selection (:origin *selection-drag*) p)))))))
+      (:release
+        (when *selection-drag*
+          (let ((drag *selection-drag*)
+                (p (resolve-transcript-position (:x k) (:y k))))
+            (set! *selection-drag* #f)
+            (if (:dragged drag)
+              (begin
+                (set! *click-chain* #f)
+                (when p
+                  (remember-selection!
+                    (inclusive-selection (:origin drag) p))
+                  (copy-selection!)))
+              (when p
+                (match (register-click! (:x k) (:y k))
+                  (2 (select-class-at! p))
+                  (3 (select-line-at! p))
+                  (_ nil))))
+            ;; Selection is gesture feedback, not persistent UI state. Copy is
+            ;; complete at this point, so the next frame removes the highlight.
+            (set! *selection* #f))))
+      (_ nil))))
 
 (defun handle-alt (k)
   ;; Option+Delete arrives as Alt+DEL (0x7f) → delete the word before the cursor.
@@ -688,12 +911,25 @@
        (equal? (string/lower (:char k)) "c")
        (member :super (get k :mods '()))))
 
+(defun ctrl-shift-c? (k)
+  "True for Ctrl-Shift-C in either legacy or kitty keyboard event shape."
+  (and (or (equal? (:kind k) :ctrl)
+           (member :ctrl (get k :mods '())))
+       (equal? (string/lower (get k :char "")) "c")
+       (member :shift (get k :mods '()))))
+
 (defun handle-key (k)
   (cond
+    ;; Ctrl-Shift-C is copy-only: never turn it into Ctrl-C/quit when there is
+    ;; no active selection.
+    ((ctrl-shift-c? k) (copy-selection!))
     ;; Kitty-capable terminals can report macOS Command-C as a printable "c"
-    ;; carrying :super. Interrupt only mid-turn; when idle, never insert a
-    ;; stray "c" if the terminal forwarded its usual copy shortcut.
-    ((command-c? k) (when *busy* (request-interrupt!)))
+    ;; carrying :super. During a drag it copies the live selection; otherwise it
+    ;; keeps the existing mid-turn interrupt behavior and never inserts a stray
+    ;; "c".
+    ((command-c? k)
+      (if (current-selection) (copy-selection!)
+        (when *busy* (request-interrupt!))))
     ((overlay-active?) (handle-overlay-key k))
     (else
       (match (:kind k)
@@ -713,6 +949,10 @@
     (when (map? sz)
       (set! *rows* (max 6 (:rows sz)))
       (set! *cols* (max 20 (:cols sz)))))
+  ;; Rendered-line coordinates are not meaningful after reflow.
+  (set! *selection* #f)
+  (set! *selection-drag* #f)
+  (set! *click-chain* #f)
   (set! *resize-pending* #f))
 
 (defun check-resize! ()
@@ -781,7 +1021,6 @@
         (term/with-mouse
           (term/set-title "(sema) coder")
           (add-block! {:kind :info :text f"(sema) coder — ${cwd} · ${(if (= model "") "auto" model)}"})
-          (add-block! {:kind :info :text f"type / for commands · ${(key-hint :mcp)} MCP · ${(key-hint :resume)} resume · ${(key-hint :palette)} palette · ${(key-hint :quit)} quit"})
           (add-block! {:kind :info :text f"; ${(epigraph)}"})
           (warn-keymap-conflicts!)
           (let ((na (mcp-needs-auth)))
@@ -789,17 +1028,28 @@
               (add-block! {:kind :warn :text f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")} — ${(key-hint :mcp)} to sign in"})))
           (start-config-watch!)
           (full-repaint!)
-          (let loop ()
-            (check-resize!)
-            (poll-config!)
-            (let ((k (io/read-key-timeout 250)))
-              (when k
-                (handle-key k)
-                ;; Coalesce a burst (e.g. rapid wheel events) into one render.
-                (let drain () (let ((k2 (io/read-key-timeout 0)))
-                                (when k2 (handle-key k2) (drain))))
-                (render!)))
-            (unless *should-quit* (loop)))))))
+          (start-terminal-input!)
+          (try
+            (let loop ()
+              (check-resize!)
+              (poll-config!)
+              (let ((k ((current-key-poll) (frame-wait-ms 250))))
+                (when k
+                  (handle-key k)
+                  ;; Decode a bulk-read burst, coalescing intermediate motion,
+                  ;; then paint even if more bytes are already queued.
+                  (drain-input-burst!)
+                  (request-frame!)))
+              (render-pending-frame!)
+              ;; Expire a copy status even when no key arrives.
+              (when (and *copy-notice* (>= (time-ms) (:until *copy-notice*)))
+                (set! *copy-notice* #f)
+                (render!))
+              (unless *should-quit* (loop)))
+            (catch e
+              (stop-terminal-input!)
+              (throw e)))
+          (stop-terminal-input!)))))
   ;; Back on the main screen — a quiet sign-off in the scrollback.
   (io/println-error (faint f"   ; ${goodbye-line}"))
   (display RESET-CURSOR)

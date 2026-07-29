@@ -13,16 +13,21 @@
 
 ;; ── Block storage + mutation ─────────────────────────────────────────────────
 ;; All transcript state lives in one container. Slots: 0 blocks (mutable-array,
-;; oldest → newest) · 1 cached rendered lines · 2 cache width · 3 cache dirty.
+;; oldest → newest) · 1 cached rendered lines · 2 cache width · 3 cache dirty ·
+;; 4 revision (selection coordinates are valid only for one revision).
 
-(define *tstate* (mutable-array/new 4 #f))
+(define *tstate* (mutable-array/new 5 #f))
 (mutable-array/set! *tstate* 0 (mutable-array/new 64))
 (mutable-array/set! *tstate* 1 '())
 (mutable-array/set! *tstate* 2 -1)
 (mutable-array/set! *tstate* 3 #t)
+(mutable-array/set! *tstate* 4 0)
 
 (defun tblocks () (mutable-array/get *tstate* 0))
-(defun mark-tdirty! () (mutable-array/set! *tstate* 3 #t))
+(defun mark-tdirty! ()
+  (mutable-array/set! *tstate* 3 #t)
+  (mutable-array/set! *tstate* 4 (+ 1 (mutable-array/get *tstate* 4))))
+(defun transcript-version () (mutable-array/get *tstate* 4))
 
 (defun add-block! (b) (mutable-array/push! (tblocks) b) (mark-tdirty!))
 
@@ -76,7 +81,7 @@
    errored. Shows the first :tool-preview-lines lines (config, default 5);
    anything longer collapses into a final “… +N lines” row."
   (let* ((r (get b :result ""))
-         (s (if (string? r) r (str r)))
+         (s (sanitize-terminal-text r))
          (paint (if (get b :error #f) bad faint))
          (limit (max 1 (get *config* :tool-preview-lines 5)))
          (lines (string/split (string/trim-right s) "\n"))
@@ -99,18 +104,19 @@
                (if (= i 0)
                  (indent (string/append (accent (string/append user-glyph " ")) (bright l)))
                  (indent (string/append "  " (bright l)))))
-             (enumerate (wrap-text (:text b) (- w 2))))
+             (enumerate (wrap-text (sanitize-terminal-text (:text b)) (- w 2))))
         (list "")))
     (:assistant
       ;; Markdown-rendered. An empty assistant block (the pre-first-token
       ;; streaming target, or a post-tool round with no text) renders nothing.
-      (if (= (string/trim (:text b)) "") '()
-        (append (map indent (md-lines (:text b) w)) (list ""))))
+      (let ((text (sanitize-terminal-text (:text b))))
+        (if (= (string/trim text) "") '()
+          (append (map indent (md-lines text w)) (list "")))))
     (:raw
       ;; Preformatted output (command stdout, pretty JSON): preserve internal
       ;; whitespace — split on newlines only, clip each line to width instead of
       ;; reflowing (word-wrap would collapse the spaces columns depend on).
-      (append (map #(fit-line % w) (string/split (:text b) "\n"))
+      (append (map #(fit-line % w) (string/split (sanitize-terminal-text (:text b)) "\n"))
               (list "")))
     (:tool
       ;; Budget the row: glyphs/spaces and the duration are fixed, then the
@@ -119,22 +125,22 @@
       (let* ((running? (equal? (get b :state :done) :running))
              (ms-txt   (if running? "" f"${(get b :ms 0)}ms"))
              (avail    (max 8 (- w 5 (string/width ms-txt))))
-             (name     (clip-width (:tool b) (max 8 (- avail 12))))
-             (arg      (clip-width (get b :arg "") (max 4 (- avail (string/width name)))))
+             (name     (clip-width (sanitize-terminal-text (:tool b)) (max 8 (- avail 12))))
+             (arg      (clip-width (sanitize-terminal-text (get b :arg "")) (max 4 (- avail (string/width name)))))
              (styled   (string/append (accent-dim (term/style name :bold)) " " (muted arg))))
         (if running?
           (list (indent (string/append (faint "·") " " styled)))
           (cons
             (indent (string/append (ok "✔") " " styled " " (faint ms-txt)))
             (tool-result-lines b w)))))
-    (:info  (map #(indent (muted %)) (wrap-text (:text b) w)))
-    (:ok    (map #(indent (ok %)) (wrap-text (:text b) w)))
-    (:warn  (map #(indent (warn %)) (wrap-text (:text b) w)))
+    (:info  (map #(indent (muted %)) (wrap-text (sanitize-terminal-text (:text b)) w)))
+    (:ok    (map #(indent (ok %)) (wrap-text (sanitize-terminal-text (:text b)) w)))
+    (:warn  (map #(indent (warn %)) (wrap-text (sanitize-terminal-text (:text b)) w)))
     ;; Pre-styled chrome (help rows, /tools): keep its ANSI and column padding
     ;; intact — split on newlines only, never word-wrap; fit-line guards the
     ;; rare too-narrow-terminal overflow.
     (:line  (map #(fit-line % w) (string/split (:text b) "\n")))
-    (:error (map #(indent (bad %)) (wrap-text (string/append "error: " (:text b)) w)))
+    (:error (map #(indent (bad %)) (wrap-text (string/append "error: " (sanitize-terminal-text (:text b))) w)))
     (_ '())))
 
 (defun transcript-lines (w)

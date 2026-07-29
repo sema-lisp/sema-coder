@@ -52,4 +52,38 @@
 (check ":raw wide line stays one row + blank"
   (length (block-lines {:kind :raw :text (string/repeat "x" 200)} 20)) 2)
 
+;; ── Untrusted terminal sequences are stripped before styling ──
+(define osc52-attack (string/append "safe" "\x1b;]52;c;ZXZpbA==" "\x07;" " text"))
+(define clear-attack (string/append "before" "\x1b;[2J" "after"))
+
+(let ((rendered (apply string/append
+                  (block-lines {:kind :assistant :text osc52-attack} 60))))
+  (check "assistant output cannot emit OSC52"
+    (string/contains? rendered "]52;c;") #f)
+  (check-contains "assistant visible text survives sanitizing"
+    (term/strip rendered) "safe text"))
+
+(let ((rendered (apply string/append
+                  (block-lines {:kind :raw :text clear-attack} 60))))
+  (check "raw tool output cannot clear the screen"
+    (string/contains? rendered "[2J") #f)
+  (check-contains "raw visible text survives sanitizing"
+    (term/strip rendered) "beforeafter"))
+
+(let ((rendered (apply string/append
+                  (block-lines {:kind :raw
+                                :text (string/append "a" "\x07;" "b" "\x0d;" "c" "\x08;" "d")}
+                               60))))
+  (check "bare terminal controls are removed"
+    (term/strip rendered) " abcd"))
+
+(let ((rendered (apply string/append
+                  (block-lines {:kind :tool :tool osc52-attack :arg clear-attack
+                                :state :done :ms 1 :result osc52-attack :error #f}
+                               60))))
+  (check "tool name/arg/result cannot emit OSC52"
+    (string/contains? rendered "]52;c;") #f)
+  (check "tool name/arg/result cannot clear screen"
+    (string/contains? rendered "[2J") #f))
+
 (done)

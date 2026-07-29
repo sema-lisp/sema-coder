@@ -61,7 +61,9 @@ sema-coder/
 │   ├── markdown.sema   Markdown → styled terminal lines
 │   ├── mcp.sema        MCP client runtime (connect, tool-merge, autostart)
 │   ├── overlay.sema    Modal overlays — MCP manager + session picker
+│   ├── selection.sema  Transcript selection, highlighting + clipboard
 │   ├── session.sema    Session persistence — conversations as JSONL
+│   ├── terminal_input.sema Buffered raw input + terminal event decoder
 │   ├── text.sema       Width-aware clip/pad/truncate string helpers
 │   ├── theme.sema      Brand palette (sema gold #c8a855)
 │   ├── tools.sema      7 LLM-callable tools
@@ -83,6 +85,12 @@ screen control), `path/within?` (workspace path resolution), `llm/session-usage`
 In the TUI, an agent turn runs as an async task while a sibling task keeps pumping
 input, so scrolling, resize, and type-ahead all work while tokens stream in, and
 **Ctrl-C interrupts the turn** without killing the app.
+
+Drag across transcript text to select and copy it automatically. Double-click
+selects a word or punctuation run; triple-click selects a rendered line.
+The highlight clears on mouse release; Shift-drag remains available for the
+terminal's native selection. Clipboard copy uses the platform command locally
+and OSC52 under SSH/tmux or as a fallback.
 
 ## Slash commands
 

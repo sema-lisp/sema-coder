@@ -1,0 +1,159 @@
+(load "harness.sema")
+(load "../src/tui.sema")
+
+;; ── Display-width coordinate mapping ─────────────────────────────────────────
+
+(check "ASCII column maps to codepoint" (display-col->offset " abc" 2) 2)
+(check "wide char first cell maps to char" (display-col->offset " 你x" 1) 1)
+(check "wide char second cell maps to char" (display-col->offset " 你x" 2) 1)
+(check "column after wide char maps onward" (display-col->offset " 你x" 3) 2)
+(check "offset converts back to display col" (offset->display-col " 你x" 2) 3)
+
+;; ── Ordering, extraction, and reverse-video rendering ────────────────────────
+
+(define sample-lines (list " alpha" " beta" " gamma"))
+(let ((sel (inclusive-selection
+             {:line 0 :offset 1} {:line 1 :offset 4})))
+  (check "forward drag includes both endpoint cells"
+    (selection-text sample-lines sel) "alpha\n beta")
+  (check "selection starts at anchor" (:start sel) {:line 0 :offset 1})
+  (check "selection end is exclusive" (:end sel) {:line 1 :offset 5}))
+
+(let ((sel (inclusive-selection
+             {:line 1 :offset 4} {:line 0 :offset 1})))
+  (check "reverse drag orders the range"
+    (selection-text sample-lines sel) "alpha\n beta"))
+
+(let ((calls 0)
+      (sel {:start {:line 100 :offset 1} :end {:line 102 :offset 2}}))
+  (selection-text-with
+    (lambda (line) (set! calls (+ calls 1)) "abcdef")
+    sel)
+  (check "copy extraction visits selected rows only" calls 3))
+
+(let* ((styled (string/append " " (term/style "alpha" :bold)))
+       (highlighted (highlight-styled-range styled 1 4)))
+  (check "highlight preserves visible text" (term/strip highlighted) " alpha")
+  (check-contains "highlight uses brand-gold background" highlighted "48;2;200;168;85")
+  (check-contains "highlight uses warm dark foreground" highlighted "38;2;28;24;16")
+  (check-contains "highlight resets its colors" highlighted SELECT-OFF))
+
+(let* ((styled (accent "alpha"))
+       (highlighted (highlight-styled-range styled 1 4)))
+  (check "highlight restores surrounding styled text"
+    (term/strip highlighted) "alpha")
+  (check-true "highlight replays underlying accent after selection"
+    (> (length (string/split highlighted "\x1b;[38;2;200;168;85m")) 2)))
+
+;; ── Double/triple-click helpers ──────────────────────────────────────────────
+
+(check "word class range" (class-range "foo.bar" 1) {:start 0 :end 3})
+(check "punctuation class range" (class-range "foo...bar" 4) {:start 3 :end 6})
+(check "whitespace class range" (class-range "foo   bar" 4) {:start 3 :end 6})
+
+(clear-transcript!)
+(set! *rows* 6)
+(set! *cols* 40)
+(set! *scroll* 0)
+(add-block! {:kind :raw :text "alpha\nbeta"})
+(set! *selection* #f)
+(select-class-at! {:line 0 :offset 6})
+(check "double-click beyond line text selects nothing" *selection* #f)
+
+;; ── Clipboard encoding ────────────────────────────────────────────────────────
+
+(check "OSC52 encodes UTF-8 text"
+  (osc52-sequence "hi" #f)
+  (string/append "\x1b;]52;c;aGk=" "\x1b;\\"))
+(let ((wrapped (osc52-sequence "hi" #t)))
+  (check-true "tmux OSC52 has passthrough prefix" (string/starts-with? wrapped "\x1b;Ptmux;"))
+  (check-true "tmux OSC52 doubles inner escape"
+    (string/contains? wrapped (string/append "\x1b;\x1b;]52"))))
+(check "oversized OSC52 is refused"
+  (osc52-sequence (string/repeat "x" (+ OSC52-MAX-BYTES 1)) #f) #f)
+
+;; ── Mouse integration: drag copies and release clears gesture feedback ────────
+
+(clear-transcript!)
+(set! *rows* 6)
+(set! *cols* 40)
+(set! *scroll* 0)
+(set! *selection* #f)
+(set! *selection-drag* #f)
+(set! *click-chain* #f)
+(set! *copy-notice* #f)
+(add-block! {:kind :raw :text "alpha\nbeta"})
+
+(define copied-text "")
+(define copy-count 0)
+(parameterize
+  ((current-clipboard-copy
+     (lambda (text)
+       (set! copied-text text)
+       (set! copy-count (+ copy-count 1))
+       #t)))
+  ;; transcript-height=3 and this block renders exactly 3 rows, so y=2 is
+  ;; " alpha"; x=2..6 selects alpha.
+  (handle-mouse {:kind :mouse :action :press :button 0 :x 2 :y 2})
+  (handle-mouse {:kind :mouse :action :move :button 0 :x 6 :y 2})
+  (handle-mouse {:kind :mouse :action :release :button 0 :x 6 :y 2})
+  (check "drag auto-copies selected text" copied-text "alpha")
+  (check "selection clears on mouse release" *selection* #f)
+  (check "drag copied once" copy-count 1)
+
+  ;; With no retained selection, Command-C keeps its existing non-insertion
+  ;; behavior rather than copying stale text.
+  (handle-key {:kind :char :char "c" :mods (list :super)})
+  (check "Command-C does not recopy stale selection" copy-count 1)
+
+  (handle-named {:kind :key :name :esc})
+  (check "Escape after release remains a no-op" *selection* #f))
+
+;; Every gesture-cancellation path clears both drag state and visual feedback.
+(set! *selection* {:start {:line 0 :offset 0} :end {:line 0 :offset 1}})
+(set! *selection-drag* {:version (transcript-version)})
+(handle-mouse {:kind :mouse :action :move :x 2 :y 2 :mods (list :shift)})
+(check "Shift mouse clears highlight" *selection* #f)
+(check "Shift mouse cancels app drag" *selection-drag* #f)
+
+(set! *selection* {:start {:line 0 :offset 0} :end {:line 0 :offset 1}})
+(set! *selection-drag* {:version (transcript-version)})
+(handle-named {:kind :key :name :esc})
+(check "Escape clears active highlight" *selection* #f)
+(check "Escape cancels active drag" *selection-drag* #f)
+
+;; Ctrl-Shift-C with no selection is copy-only, never Ctrl-C's quit action.
+(set! *should-quit* #f)
+(handle-key {:kind :ctrl :char "c" :mods (list :ctrl :shift)})
+(check "Ctrl-Shift-C without selection does not quit" *should-quit* #f)
+
+;; An always-ready input source used to recurse forever and starve render!.
+;; The bounded drain must return after exactly INPUT-DRAIN-LIMIT events.
+(define polled-events 0)
+(parameterize
+  ((current-key-poll
+     (lambda (timeout)
+       (set! polled-events (+ polled-events 1))
+       {:kind :key :name :noop})))
+  (check "input burst drain is bounded"
+    (drain-input-burst!) INPUT-DRAIN-LIMIT))
+(check "bounded drain performs no extra poll" polled-events INPUT-DRAIN-LIMIT)
+
+;; Frame scheduling prevents per-event terminal flushes while guaranteeing that
+;; the input wait wakes exactly at the next 16ms paint deadline.
+(define fake-ui-now 110)
+(define saved-last-render *last-render-at*)
+(define saved-frame-pending *frame-pending*)
+(parameterize
+  ((current-ui-clock (lambda () fake-ui-now)))
+  (set! *last-render-at* 100)
+  (set! *frame-pending* #f)
+  (check "idle frame wait keeps caller timeout" (frame-wait-ms 250) 250)
+  (request-frame!)
+  (check "pending frame shortens input wait" (frame-wait-ms 250) 6)
+  (set! fake-ui-now 116)
+  (check "due frame makes input poll nonblocking" (frame-wait-ms 250) 0))
+(set! *last-render-at* saved-last-render)
+(set! *frame-pending* saved-frame-pending)
+
+(done)

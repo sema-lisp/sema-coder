@@ -8,6 +8,30 @@
 (define TEXT-RESET-SGR "\x1b;[0m")
 (define TEXT-ESC "\x1b;")
 
+;; ── Terminal safety ──────────────────────────────────────────────
+
+(defun strip-terminal-controls (s)
+  "Remove C0 controls except tab/newline, plus DEL. ANSI/OSC sequences have
+   already been removed by term/strip; this catches bare BEL, CR, backspace,
+   partial ESC sequences, and the remaining state-changing control bytes."
+  (let loop ((text s))
+    (if-let (m (regex/match #"[\x00-\x08\x0B-\x1F\x7F]" text))
+      (let* ((matched (:match m))
+             ;; regex offsets are bytes; locate the one-codepoint match using
+             ;; the codepoint-aware string API before slicing.
+             (at (string/index-of text matched)))
+        (loop (string/append
+                (string/slice text 0 at)
+                (string/slice text (+ at (string/length matched))
+                                   (string/length text)))))
+      text)))
+
+(defun sanitize-terminal-text (s)
+  "Strip terminal control sequences from untrusted transcript content.
+   Styling is added only after this boundary, preventing model/tool output
+   from clearing the screen, changing terminal state, or writing OSC52."
+  (strip-terminal-controls (term/strip (if (string? s) s (str s)))))
+
 ;; ── Clipping ─────────────────────────────────────────────────────
 
 (defun clip-width (s w)

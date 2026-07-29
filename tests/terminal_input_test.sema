@@ -1,0 +1,117 @@
+(load "harness.sema")
+(load "../src/terminal_input.sema")
+
+(defun parsed-event (text allow-escape?)
+  (parse-terminal-event (string/to-utf8 text) allow-escape?))
+
+;; ── Plain, control, UTF-8, and Alt input ─────────────────────────────────────
+
+(check "plain character"
+  (:event (parsed-event "a" #f))
+  {:kind :char :char "a"})
+
+(check "ctrl-c"
+  (:event (parse-terminal-event #u8(3) #f))
+  {:kind :ctrl :char "c"})
+
+(check "backspace"
+  (:event (parse-terminal-event #u8(127) #f))
+  {:kind :key :name :backspace})
+
+(check "UTF-8 character is one event"
+  (parsed-event "ø" #f)
+  {:event {:kind :char :char "ø"} :used 2})
+
+(check "split UTF-8 waits for remaining bytes"
+  (parse-terminal-event #u8(195) #f)
+  #f)
+
+(check "Alt plus UTF-8"
+  (parsed-event "\x1b;ø" #f)
+  {:event {:kind :alt :char "ø"} :used 3})
+
+(check "lone escape waits"
+  (parse-terminal-event #u8(27) #f)
+  #f)
+
+(check "lone escape resolves after disambiguation window"
+  (parse-terminal-event #u8(27) #t)
+  {:event {:kind :key :name :esc} :used 1})
+
+;; ── Legacy and kitty keyboard sequences ─────────────────────────────────────
+
+(check "legacy arrow"
+  (:event (parsed-event "\x1b;[A" #f))
+  {:kind :key :name :up})
+
+(check "modified legacy arrow"
+  (:event (parsed-event "\x1b;[1;5C" #f))
+  {:kind :key :name :right :mods (list :ctrl)})
+
+(check "modifyOtherKeys ctrl-tab"
+  (:event (parsed-event "\x1b;[27;5;9~" #f))
+  {:kind :key :name :tab :mods (list :ctrl)})
+
+(check "kitty super-c"
+  (:event (parsed-event "\x1b;[99;9;99u" #f))
+  {:kind :char :char "c" :mods (list :super)})
+
+(check "kitty ctrl-c normalizes to ctrl event"
+  (:event (parsed-event "\x1b;[99;5;99u" #f))
+  {:kind :ctrl :char "c" :mods (list :ctrl)})
+
+(check "kitty associated Unicode text"
+  (:event (parsed-event "\x1b;[248;1;248u" #f))
+  {:kind :char :char "ø"})
+
+;; ── Mouse framing and decoding ────────────────────────────────────────────────
+
+(check "mouse press"
+  (:event (parsed-event "\x1b;[<0;15;7M" #f))
+  {:kind :mouse :action :press :x 15 :y 7 :button 0})
+
+(check "mouse move with modifiers"
+  (:event (parsed-event "\x1b;[<52;20;9M" #f))
+  {:kind :mouse
+   :action :move
+   :x 20
+   :y 9
+   :button 0
+   :mods (list :shift :ctrl)})
+
+(check "mouse release"
+  (:event (parsed-event "\x1b;[<0;15;7m" #f))
+  {:kind :mouse :action :release :x 15 :y 7 :button 0})
+
+(check "mouse wheel"
+  (:event (parsed-event "\x1b;[<65;2;3M" #f))
+  {:kind :mouse :action :wheel-down :x 2 :y 3 :button 1})
+
+(check "split mouse report waits"
+  (parsed-event "\x1b;[<32;15;" #f)
+  #f)
+
+;; ── Bracketed paste and concatenated burst framing ────────────────────────────
+
+(check "bracketed paste is one event"
+  (parsed-event "\x1b;[200~hello\nworld\x1b;[201~" #f)
+  {:event {:kind :paste :text "hello\nworld"} :used 23})
+
+(let* ((burst
+         (string/to-utf8
+           (string/append "\x1b;[<32;10;5M"
+             "\x1b;[<32;11;5M"
+             "\x1b;[<0;11;5m")))
+       (a (parse-terminal-event burst #f))
+       (rest-a (bytes/slice burst (:used a)))
+       (b (parse-terminal-event rest-a #f))
+       (rest-b (bytes/slice rest-a (:used b)))
+       (c (parse-terminal-event rest-b #f)))
+  (check "burst first event" (:action (:event a)) :move)
+  (check "burst second coordinate" (:x (:event b)) 11)
+  (check "burst preserves release" (:action (:event c)) :release)
+  (check "burst is consumed exactly"
+    (+ (:used a) (:used b) (:used c))
+    (bytes/length burst)))
+
+(done)
