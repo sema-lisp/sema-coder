@@ -6,9 +6,10 @@
 
 **A terminal coding agent written entirely in [Sema](https://sema-lang.com)** — a Lisp with first-class LLM primitives.
 
+[![CI](https://img.shields.io/github/actions/workflow/status/sema-lisp/sema-coder/ci.yml?branch=main&label=CI&logo=github)](https://github.com/sema-lisp/sema-coder/actions)
 [![License](https://img.shields.io/github/license/sema-lisp/sema-coder?color=c8a855)](LICENSE)
 [![Website](https://img.shields.io/badge/website-sema--lang.com-c8a855)](https://sema-lang.com)
-[![Built with Sema](https://img.shields.io/badge/built%20with-Sema-c8a855)](https://sema-lang.com)
+[![Built with Sema](https://img.shields.io/badge/built_with-Sema-c8a855)](https://sema-lang.com)
 
 </div>
 
