@@ -54,6 +54,7 @@ Minimal plugin:
   so the handler can read/rewrite the prompt itself. Key-bound invocations never
   clear regardless — **to act on the user's in-progress prompt, bind a key.**
 - `register-completions!` feeds the palette once the input reads `/cmd <partial>`.
+  The palette renders `:value` first and `:label` as its description.
 
 ## Keybindings
 

@@ -14,13 +14,14 @@ constructor — both already supported); item 4 was narrowed to PARTIAL. One
 incidental gap surfaced during verification and was filed as **#94** (prelude
 macro names can't be `(define (name …) …)` heads).
 
-## Upstream status (re-checked 2026-07-29)
+## Upstream status (re-checked 2026-08-31)
 
-The global and latest released binary is **v1.33.0**. The first release with
-the audited fixes was **v1.31.0** (2026-07-26). Sema Coder now requires
-`sema >= 1.31`; CI tests both 1.31.0 (the floor) and the latest release.
+The global and latest released binary is **v1.35.0**. The first release with
+the original audited fixes was **v1.31.0** (2026-07-26). Sema Coder now requires
+`sema >= 1.35`; CI tests both 1.35.0 (the floor) and the latest release because
+turn interruption recovery depends on `agent/run :on-partial`.
 
-Folded onto released APIs and verified live on 1.33.0:
+Folded onto released APIs and verified live on 1.35.0:
 
 - **#82 / #104 global and captured-local visibility** — direct reads in loaded
   recursive loops now observe `set!`. The TUI quit loop reads `*should-quit*`
@@ -39,9 +40,9 @@ Folded onto released APIs and verified live on 1.33.0:
   `string/truncate-width`, including its grapheme-safe ellipsis form.
   `clip-styled` stays custom because the builtin is not ANSI-aware.
 - **#94 prelude-macro names in binding positions** — the issue is still open,
-  but the fix shipped in 1.31.0 and `(define (when-let x) x)` works on 1.33.0.
+  but the fix shipped in 1.31.0 and `(define (when-let x) x)` works on 1.35.0.
 
-Still open upstream, re-verified on 1.33.0:
+Still open upstream, re-verified on 1.35.0:
 
 - **#83** `string/index-of` is strictly 2-arity ("expects 2 args, got 3"), so
   the `count-occurrences`-via-`string/split` workaround stays.
@@ -50,10 +51,10 @@ Still open upstream, re-verified on 1.33.0:
 - **#85** `deftool :default` is stored in `tool/parameters` but is not injected
   into an omitted argument (`tool/invoke` binds `nil`), so nil-guards stay.
 - **#86** `agent/run` results still have no per-turn cumulative `:usage`.
-- **#87** is partially addressed by 1.32.0: `agent/run {:memory handle}` saves
-  text turns produced before cancellation. A cancelled run still does not
-  return its partial full-protocol `:messages`, which Sema Coder needs for its
-  exact resumable session format.
+- **#87 partial agent history** — fixed in 1.35.0 with
+  `agent/run {:on-partial callback}`. Sema Coder captures the correlated
+  completed messages on cancellation, combines them with the current streamed
+  text, completes any unfinished tool-call/result pair, and persists the turn.
 - **#93** `markdown/to-ansi` remains unbound, so `src/markdown.sema` stays.
 
 ## Blocker (filed separately)
@@ -101,10 +102,10 @@ Still open upstream, re-verified on 1.33.0:
    {...})` IS a first-class constructor (documented: "the plain constructor;
    the named form is `defagent`"). Verified live. sema-coder's `create-agent`
    can drop the `defagent`-in-a-function pattern for `(agent {...})`. Not filed.
-7. **A cancelled streaming turn loses the transcript delta.** After
-   `async/cancel` on an `agent/run` task there is no way to recover the
-   partial `:messages` (streamed text + completed tool rounds), so an
-   interrupted turn vanishes from history on the next turn.
+7. **A cancelled streaming turn loses the transcript delta.** ✅ FIXED in
+   1.35.0 — `:on-partial` returns the completed, correlated message history
+   before cancellation propagates. Current-round streamed text still comes
+   from `:on-text`, by design; the application combines both sources.
 
 ## Async / TUI
 

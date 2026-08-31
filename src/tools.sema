@@ -253,7 +253,7 @@
 
 ;; ── Tool registry ────────────────────────────────────────────────
 ;; all-tools reads this registry, so no hand-synced list drifts. Built-ins
-;; register once (below); the tools/ autoload seam (autoload-tools!) fills a
+;; register once (below); tools loaded by autoload-tools! fill a
 ;; separate resettable layer, so re-loading a tools/ dir can't duplicate and a
 ;; deleted tool file drops its tool — reconcile semantics, like config commands.
 ;;

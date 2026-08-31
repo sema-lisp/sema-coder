@@ -22,7 +22,7 @@ safety) is Rust. It depends on nothing but the `sema` binary.
 
 ## Requirements
 
-- **`sema` ≥ 1.31** — install with
+- **`sema` ≥ 1.35** — install with
   `curl -fsSL https://sema-lang.com/install.sh | sh` (or
   `brew install helgesverre/tap/sema-lang`, or `cargo install sema-lang`;
   see the [sema README](https://github.com/sema-lisp/sema#installation)).
@@ -69,6 +69,7 @@ sema-coder/
 │   ├── theme.sema      Brand palette (sema gold #c8a855)
 │   ├── tools.sema      7 LLM-callable tools
 │   ├── transcript.sema Transcript blocks → styled lines (cached)
+│   ├── turn.sema       Interrupted-turn history repair + control markers
 │   ├── tui.sema        Full-screen TUI — frame-diffed, async agent turns
 │   └── util.sema       Workspace path resolution + shell quoting
 ├── test.sema           Test runner (Sema running Sema)
@@ -85,7 +86,11 @@ screen control), `path/within?` (workspace path resolution), `llm/session-usage`
 
 In the TUI, an agent turn runs as an async task while a sibling task keeps pumping
 input, so scrolling, resize, and type-ahead all work while tokens stream in, and
-**Ctrl-C interrupts the turn** without killing the app.
+**Ctrl-C interrupts the turn** without killing the app. While a turn runs,
+**Enter queues** a FIFO follow-up and **Ctrl-Enter interrupts and sends** the
+typed message after cancellation is acknowledged. The queue has stable ids,
+is visible above the prompt, and is saved with the session. An interruption
+pauses ordinary queued work; `/queue resume` continues it.
 
 Drag across transcript text to select and copy it automatically. Double-click
 selects a word or punctuation run; triple-click selects a rendered line.
@@ -96,7 +101,13 @@ and OSC52 under SSH/tmux or as a fallback.
 ## Slash commands
 
 Built-ins: `/help`, `/model [name]`, `/effort [level]`, `/clear`, `/tools`,
-`/mcp`, `/resume`, `/cwd`, `/config`, `/reload`, `/quit`, `/exit`. In the TUI,
+`/queue`, `/debug`, `/mcp`, `/resume`, `/cwd`, `/config`, `/reload`, `/quit`,
+`/exit`. `/queue` lists stable queue ids and supports `resume`, `clear`,
+`drop ID`, and `edit ID TEXT`. Developer diagnostics live under `/debug`;
+`/debug status` prints the turn controller's current snapshot and ordered event
+log as indented JSON. `/debug session` prints the exact in-memory messages and
+queued input used by the next turn. `/debug transcript` prints the TUI's blocks
+and render-cache state. In the TUI,
 type `/` to open a fuzzy command palette; once you type `/model ` the same
 palette fuzzy-completes the **model argument** from the config's `:models`
 list, shown as `Anthropic: Claude Opus 5` (Tab inserts the selection, Enter
@@ -229,7 +240,8 @@ can also register commands at runtime from Sema, after loading `src/commands.sem
 A command can also register **argument completions** — the palette switches to
 them once you type `/name ` (this is how `/model`, `/effort`, `/resume`, and
 `/config` offer theirs). The function receives the live state map (`:config`,
-`:model`, `:effort`, …); an entry with `:active #t` is marked `●` in the palette:
+`:model`, `:effort`, …). The palette shows `:value` first and `:label` as its
+description; an entry with `:active #t` is marked `●`:
 
 ```sema
 (register-completions! "hello"
@@ -266,11 +278,21 @@ logs a warning at boot/reload (first match wins).
 | `:line-start` / `:line-end` | `⌃A` / `⌃E` | Move the caret |
 | `:repaint` | `⌃L` | Force a full repaint |
 
+`Enter` queues a message while a turn is active. `Ctrl-Enter` is a fixed
+interrupt-and-send gesture: it targets the current turn id, saves the pending
+message, requests cancellation once, waits for the interrupted terminal event,
+then starts the replacement turn. It is separate from the configurable global
+keymap because it is a modified form of the prompt's submit action.
+
 ## Sessions
 
 Every turn is written to `<config-dir>/sema/sema-coder/sessions/<id>.jsonl` — a
-meta line plus one message per line, in the exact `agent/run` shape (tool calls
-and results included), so a conversation resumes verbatim. `/resume` (or `⌃R`)
+meta line (including queued input) plus one message per line, in the exact
+`agent/run` shape (tool calls and results included), so a conversation resumes
+verbatim. Interrupted turns retain completed tool rounds, currently streamed
+assistant text, correlated cancellation results for unfinished tool calls, and
+a typed model-visible control item which warns that side effects can be partial.
+`/resume` (or `⌃R`)
 opens a picker of past sessions, newest first: `↑↓` to move, `Enter` to preview a
 session's messages, `r` to restore the conversation into the current session and
 keep going.
@@ -294,16 +316,21 @@ run it in a workspace you're prepared to let it modify.
 ```bash
 ./test.sema                # run the test suite (or: jake coder.test)
 ./test.sema -- markdown    # only files whose name contains a term
-jake coder.help             # show CLI help through Jake
+jake coder.e2e             # controller unit tests + process-level driver
+jake coder.help            # show CLI help through Jake
 ```
 
-The runner is itself Sema — it fans each `tests/*_test.sema` out to a child
+The runner is itself Sema — it runs each `tests/*_test.sema` in a child
 interpreter (crashes stay contained, no state leaks between files) and
 reports per-file checks and timings; failing files get their full output.
 Tests sit on a tiny `check`/`check-true`/`check-contains` harness
 (`tests/harness.sema`); each file ends with `(done)`, exiting non-zero on
-failure — that exit code is the whole runner contract. Design notes are
-in `docs/` (dated planning documents are archived under `docs/plans/`;
+failure. A passing child must also print the harness summary, so forgetting
+`(done)` cannot produce a false green result. Each child has a 30-second timeout
+(override with `SEMA_CODER_TEST_TIMEOUT_MS`). Turn-controller tests inject a
+scripted runner and no-op renderer, so queue, steer, cancellation, late-delta,
+partial-history, and event-order races need no network or terminal. Design
+notes are in `docs/` (dated planning documents are archived under `docs/plans/`;
 `docs/language-friction.md` tracks upstream sema issues this app found, with
 their fix status).
 

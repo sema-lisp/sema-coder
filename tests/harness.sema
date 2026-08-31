@@ -3,7 +3,7 @@
 ;; A test file is just a script: it loads this, makes `check` calls, and ends
 ;; with (done). done exits non-zero if any check failed — that exit code is
 ;; the whole contract with the runner (test.sema at the repo root), which runs
-;; each file in a child interpreter and parses the "N checks, M failed" line
+;; each file in a child interpreter and parses the marked summary line
 ;; this prints.
 ;;
 ;;   (check "label" actual expected)     equality (equal?)
