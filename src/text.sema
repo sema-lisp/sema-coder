@@ -32,6 +32,15 @@
    from clearing the screen, changing terminal state, or writing OSC52."
   (strip-terminal-controls (term/strip (if (string? s) s (str s)))))
 
+(defun flatten-terminal-row (s)
+  "Replace raw layout controls in one already-styled terminal row. ANSI styling
+   stays intact, but newline, carriage return, and tab cannot move the cursor
+   outside the row owned by the fixed-frame renderer."
+  (-> s
+      (string/replace "\n" " ")
+      (string/replace "\r" " ")
+      (string/replace "\t" " ")))
+
 ;; ── Clipping ─────────────────────────────────────────────────────
 
 (defun clip-width (s w)

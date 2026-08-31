@@ -12,6 +12,14 @@
 (check "clip-plain CJK"       (clip-plain "你你你" 4) "你你")
 (check-true "clip-width CJK ≤w" (<= (string/width (clip-width "你你你你" 5)) 5))
 
+;; A frame row may retain styling, but raw layout controls must become inert.
+(define styled-row
+  (string/append "\x1b;[31m" "first\nsecond\rthird\tfourth" "\x1b;[0m"))
+(define flat-row (flatten-terminal-row styled-row))
+(check "flatten-terminal-row keeps text on one row"
+  (term/strip flat-row) "first second third fourth")
+(check-contains "flatten-terminal-row retains ANSI styling" flat-row "\x1b;[31m")
+
 ;; styled clip never cuts an escape, closes the open style
 (define styled (string/append "\x1b;[31m" "abcdef" "\x1b;[0m"))
 (check-true "clip-styled ≤w"  (<= (string/width (clip-styled styled 4)) 4))

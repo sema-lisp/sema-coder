@@ -1,16 +1,22 @@
 (load "harness.sema")
 (load "../src/tui.sema")
 
-;; The frame invariant: every build-frame row fits *cols*. The diff renderer
-;; rewrites single rows in place, so an over-wide row soft-wraps in the
-;; terminal and paints over the row below it — which is the prompt row when
-;; the culprit is the last transcript row (the painted-over-prompt bug).
+;; The frame invariant: every build-frame row fits *cols* and contains no raw
+;; layout controls. The diff renderer rewrites single rows in place, so an
+;; over-wide row or embedded newline/tab moves the real terminal cursor and
+;; paints over another row even though the logical frame still looks valid.
 
 (set! *rows* 24) (set! *cols* 80) (set! *cwd* "/tmp")
 (set! *config* {})
 
 (defun overwide () (filter #(> (string/width %) *cols*) (build-frame)))
-(defun check-frame (label) (check label (length (overwide)) 0))
+(defun layout-moving? (row)
+  (or (string/contains? row "\n")
+      (string/contains? row "\r")
+      (string/contains? row "\t")))
+(defun unsafe-layout () (filter layout-moving? (build-frame)))
+(defun check-frame (label)
+  (check label (list (length (overwide)) (length (unsafe-layout))) (list 0 0)))
 
 ;; Nasty content: a heading wider than the terminal, then a running tool call
 ;; with a long MCP-style name and a long argument.
@@ -41,5 +47,16 @@
 (prompt-set! "/mo")
 (check-frame "palette open")
 (prompt-clear!)
+
+;; A queued multi-line paste used to embed its newline and tab directly in the
+;; frame write. The terminal then painted the tail over the prompt/status rows.
+(set! *input-queue*
+  (list {:id "queue-layout" :mode "follow-up"
+         :text "likely not sema web\n# Try the regular app\tnext"}))
+(check-frame "queued multiline input")
+(check-true "queued multiline preview keeps its prefix and flattened text"
+  (string/starts-with?
+    (term/strip (nth (build-frame) (- *rows* 3)))
+    " 1 queued likely not sema web # Try the regular app next"))
 
 (done)

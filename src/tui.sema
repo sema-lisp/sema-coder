@@ -596,12 +596,12 @@
          ;; An overlay taller than the terminal yields more than *rows* rows;
          ;; re-clamp so render! never writes past the bottom and desyncs the diff.
          (rows (fit-rows rows *rows*)))
-    ;; Normalize to exactly *rows* strings of exactly *cols* columns: clip
-    ;; (ANSI-safe) before padding. This is the frame invariant the diff
-    ;; renderer depends on — an over-wide row soft-wraps in the terminal and
-    ;; paints over the row below it, which the diff never repairs when that
-    ;; row's frame content is unchanged (the painted-over-prompt bug).
-    (map #(pad-to (clip-styled % *cols*) *cols*) rows)))
+    ;; Normalize to exactly *rows* strings of exactly *cols* columns. Flatten
+    ;; layout controls first: an embedded newline/tab moves the real terminal
+    ;; cursor even when string/width says the logical row fits. Then clip
+    ;; ANSI-safely before padding. Either defect can paint over another row,
+    ;; which the diff skips when that row's frame content is unchanged.
+    (map #(pad-to (clip-styled (flatten-terminal-row %) *cols*) *cols*) rows)))
 
 (defun fit-rows (rows n)
   (let ((have (length rows)))
