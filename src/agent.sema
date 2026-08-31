@@ -111,14 +111,19 @@ Platform: ${platform}
     (run-hooks :post-turn {:input input :result result})
     result))
 
-(defun run-turn-streaming (agent input messages on-tool on-text effort)
+(defun run-turn-streaming (agent input messages on-tool on-text on-partial effort)
   "Turn used by the TUI: :on-text streams assistant deltas, :on-tool-call streams
-   tool events, so the front-end can render the reply live. Fires the same
-   lifecycle hooks as run-turn."
+   tool events, and :on-partial recovers completed history if the cooperative
+   task fails or is cancelled. The partial callback must only capture the map;
+   Sema invokes it during cancellation teardown where it cannot park."
   (run-hooks :pre-turn {:input input :messages messages})
   (let ((result
           (try (agent/run agent input
-                 (turn-opts {:on-tool-call (with-tool-hooks on-tool) :on-text on-text :messages messages} effort))
+                 (turn-opts {:on-tool-call (with-tool-hooks on-tool)
+                             :on-text on-text
+                             :on-partial on-partial
+                             :messages messages}
+                            effort))
             (catch e (run-hooks :on-error {:input input :error e}) (throw e)))))
     (run-hooks :post-turn {:input input :result result})
     result))

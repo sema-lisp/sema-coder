@@ -29,6 +29,46 @@
 ;; empty results render nothing
 (check "empty result renders nothing" (preview-lines "   ") '())
 
+;; Existing blocks keep their rendered cache when only the streaming tail
+;; changes. The prefix object is equal before and after, while the last block
+;; contains the new text. Config changes still invalidate completed tool blocks.
+(clear-transcript!)
+(add-block! {:kind :assistant :text "stable **markdown**"})
+(add-block! {:kind :assistant :text "tail"})
+(define before-lines (transcript-lines 60))
+(define renders-before-tail (transcript-render-count))
+(append-assistant! " grows")
+(define after-lines (transcript-lines 60))
+(check "stream update preserves rendered prefix" (take 2 after-lines) (take 2 before-lines))
+(check-contains "stream update rerenders tail" (term/strip (apply string/append after-lines)) "tail grows")
+(check "stream update renders only the dirty tail block"
+  (- (transcript-render-count) renders-before-tail) 1)
+
+(clear-transcript!)
+(add-block! (tool-block "1\n2\n3"))
+(set! *config* {:tool-preview-lines 1})
+(check "config preview limit invalidates transcript cache" (length (transcript-lines 60)) 3)
+(set! *config* {})
+
+(let ((rows (block-lines {:kind :tool :tool "bash" :arg "sleep 10"
+                          :state :cancelled :ms 0
+                          :result "interrupted; partial side effects are possible"
+                          :error #t}
+                         60)))
+  (check-contains "cancelled tool has terminal state" (term/strip (car rows)) "interrupted")
+  (check-not-contains "cancelled tool is not shown as success" (term/strip (car rows)) "✔"))
+
+(let ((rows (block-lines {:kind :tool :tool "bash" :arg "sleep 10"
+                          :state :failed :ms 0 :result "turn failed" :error #t}
+                         60)))
+  (check-contains "failed tool has failed terminal state" (term/strip (car rows)) "failed")
+  (check-not-contains "failed tool is not shown as success" (term/strip (car rows)) "✔"))
+
+(clear-transcript!)
+(add-block! {:kind :tool :tool "bash" :arg "false" :state :running})
+(set-last-tool-done! 4 "Error: exit 1" #t)
+(check "tool callback error uses failed state" (:state (last-block)) :failed)
+
 ;; ── over-long tool names (MCP) clip to the row instead of overflowing ──
 ;; block-lines output is already indented, so each line must fit w+1; a wider
 ;; line soft-wraps in the terminal and paints over the row below it.

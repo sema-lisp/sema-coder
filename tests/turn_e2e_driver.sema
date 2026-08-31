@@ -1,0 +1,52 @@
+;; Process-level scripted driver. It uses the real TUI controller, transcript,
+;; persistence shape, async cancellation, and event reducer with only the
+;; provider, input pump, and terminal paint replaced.
+
+(load "../src/tui.sema")
+
+(set! *messages* '())
+(set! *input-queue* '())
+(set! *queue-paused* #f)
+(set! *session-id* #f)
+(clear-turn-events!)
+(clear-transcript!)
+
+(define calls '())
+(define runner
+  (lambda (agent input messages on-tool on-text on-partial effort)
+    (set! calls (append calls (list input)))
+    (if (= input "inspect and stop")
+      (begin
+        (enqueue-input! "ordinary follow-up" "follow-up")
+        (on-text "I started")
+        (on-tool {:event "start" :tool "bash" :args {:command "sleep 10"}})
+        (on-partial
+          {:messages
+           (append messages
+             (list {:role "user" :content input}
+                   {:role "assistant" :content "I started"
+                    :tool-calls (list {:id "tool-1" :name "bash"
+                                       :arguments {:command "sleep 10"}})}))})
+        (prompt-set! "inspect current state")
+        (on-steer-enter)
+        (async/sleep 5000))
+      {:response "state inspected"
+       :messages (append messages
+                   (list {:role "user" :content input}
+                         {:role "assistant" :content "state inspected"}))})))
+
+(parameterize ((current-turn-runner runner)
+               (current-turn-pump (lambda (turn) nil))
+               (current-turn-render (lambda () nil)))
+  (run-agent-turn! "inspect and stop"))
+
+(println
+  (json/encode
+    {:calls calls
+     :state (turn-controller-state)
+     :messages *messages*
+     :blocks (map (lambda (b)
+                    {:kind (get b :kind :none)
+                     :state (get b :state :none)
+                     :text (get b :text "")})
+                  (transcript-blocks))}))

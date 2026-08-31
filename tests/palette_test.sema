@@ -76,6 +76,20 @@
 (set! *input* "")
 (set! *config* {})
 
+;; ── argument row layout ──
+(let ((row (palette-row :args
+             {:value "status" :label "show turn-controller state and events"}
+             70)))
+  (check-true "argument row starts with completion value"
+    (string/starts-with? row "status"))
+  (check-contains "argument row follows value with description"
+    row "show turn-controller state and events"))
+(let ((row (palette-row :args
+             {:value "transcript" :label "show TUI blocks and render-cache state"}
+             20)))
+  (check-true "narrow argument row keeps completion value visible"
+    (string/starts-with? row "transcript")))
+
 ;; ── window-list (modal scrolling) ──
 (define xs (list "a" "b" "c" "d" "e"))
 (check "top of list"    (window-list xs 0 3) {:items (list "a" "b" "c") :start 0})

@@ -1,0 +1,70 @@
+(load "harness.sema")
+(load "../src/turn.sema")
+
+(define prior (list {:role "user" :content "old"}
+                    {:role "assistant" :content "old answer"}))
+
+;; Cancellation before the runtime can return a partial map still keeps the
+;; active user input and streamed text.
+(let ((m (interrupted-turn-messages prior "new task" #f "partial answer" "turn-1")))
+  (check "fallback keeps prior history" (take 2 m) prior)
+  (check "fallback keeps active input" (:content (nth m 2)) "new task")
+  (check "streamed partial is assistant history" (:content (nth m 3)) "partial answer")
+  (check "partial assistant is marked" (:status (nth m 3)) "interrupted")
+  (check "control item is typed" (:kind (nth m 4)) "agent-control")
+  (check-contains "control item warns about side effects"
+    (:content (nth m 4)) "partial side effects"))
+
+;; Completed tool results from :on-partial survive. Only the missing call gets
+;; a synthetic correlated cancellation result.
+(define tool-partial
+  {:messages
+   (append prior
+     (list {:role "user" :content "run tools"}
+           {:role "assistant" :content ""
+            :tool-calls (list {:id "a" :name "first" :arguments {}}
+                              {:id "b" :name "second" :arguments {}})}
+           {:role "tool" :content "ok" :tool-call-id "a" :tool-name "first"}))})
+
+(let* ((m (interrupted-turn-messages prior "run tools" tool-partial "" "turn-2"))
+       (tools (filter #(= (get % :role "") "tool") m))
+       (cancelled (filter #(= (get % :status "") "interrupted") tools)))
+  (check "completed tool result retained" (:content (car tools)) "ok")
+  (check "one missing tool result synthesized" (length cancelled) 1)
+  (check "synthetic result keeps call id" (:tool-call-id (car cancelled)) "b")
+  (check-contains "synthetic result is honest" (:content (car cancelled)) "partial side effects"))
+
+;; Do not duplicate text already present in the partial map.
+(let* ((p {:messages (append prior
+                       (list {:role "user" :content "x"}
+                             {:role "assistant" :content "already"}))})
+       (m (interrupted-turn-messages prior "x" p "already" "turn-3"))
+       (assistant (filter #(= (get % :role "") "assistant") m)))
+  (check "streamed text is not duplicated" (length assistant) 2))
+
+(let ((m (failed-turn-messages prior "x" #f "some output" "turn-4")))
+  (check "failure control event" (:event (last-message m)) "turn-failed")
+  (check "failed streamed assistant has failed status"
+    (:status (nth m 3)) "failed")
+  (check-contains "failure marker explains incomplete work"
+    (:content (last-message m)) "failed before completion"))
+
+(let* ((m (failed-turn-messages prior "run tools" tool-partial "" "turn-4b"))
+       (failed (filter #(= (get % :status "") "failed") m)))
+  (check "failed turn synthesizes a failed tool result" (length failed) 1)
+  (check-contains "failed tool result does not call it a user interruption"
+    (:content (car failed)) "turn failed"))
+
+(let* ((control (control-message "turn-interrupted" "turn-5" TURN-INTERRUPTED-CONTEXT))
+       (old (append prior (list control)))
+       ;; Simulate agent/run's protocol-only return, which drops app metadata.
+       (returned (append prior
+                   (list {:role "user" :content TURN-INTERRUPTED-CONTEXT}
+                         {:role "user" :content "next"}
+                         {:role "assistant" :content "done"})))
+       (kept (continued-turn-messages old returned)))
+  (check "continuation keeps control metadata" (:kind (nth kept 2)) "agent-control")
+  (check "continuation appends only new messages" (length kept) 5)
+  (check "continuation keeps new assistant" (:content (nth kept 4)) "done"))
+
+(done)

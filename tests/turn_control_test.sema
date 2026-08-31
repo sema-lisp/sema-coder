@@ -1,0 +1,265 @@
+(load "harness.sema")
+(load "../src/tui.sema")
+
+(defun reset-controller! ()
+  (set! *messages* '())
+  (set! *input-queue* '())
+  (set! *queue-paused* #f)
+  (set! *busy* #f)
+  (set! *turn* #f)
+  (set! *interrupt* #f)
+  (set! *interrupt-mode* #f)
+  (set! *active-turn-id* #f)
+  (set! *active-turn-input* "")
+  (set! *turn-partial* #f)
+  (set! *round-text* "")
+  (set! *active-tool-block-index* #f)
+  (set! *type-buffer* "")
+  (set! *session-id* #f)
+  (set! *queue-seq* 0)
+  (set! *turn-seq* 0)
+  (clear-turn-events!)
+  (clear-transcript!)
+  (prompt-clear!))
+
+(defun fake-result (messages input response)
+  {:response response
+   :messages (append messages
+               (list {:role "user" :content input}
+                     {:role "assistant" :content response}))})
+
+(defun position-of (items target)
+  (let loop ((rest items) (i 0))
+    (cond ((null? rest) #f)
+          ((= (car rest) target) i)
+          (else (loop (cdr rest) (+ i 1))))))
+
+(let ((event (normalize-turn-event
+               {:seq 8 :event "turn-interrupted" :mode "steer" :source "queue"})))
+  (check "restored event name is normalized" (:event event) :turn-interrupted)
+  (check "restored event mode is normalized" (:mode event) :steer)
+  (check "restored event source is normalized" (:source event) :queue))
+
+(clear-turn-events!)
+(for-each (lambda (i) (record-turn-event! :sample {:value i}))
+          (range 0 (+ EVENT-LOG-LIMIT 1)))
+(check-true "event log is bounded"
+  (< (length (turn-events)) EVENT-LOG-LIMIT))
+(check "event sequence stays monotonic after compaction"
+  (:seq (last-message (turn-events))) (+ EVENT-LOG-LIMIT 1))
+(new-session!)
+(check "fresh session clears prior event log" (turn-events) '())
+(set! *session-id* #f)
+
+;; Stable queue ids, FIFO follow-ups, steer priority, editing, and
+;; removal are all deterministic without an LLM.
+(reset-controller!)
+(let ((a (enqueue-input! "one" "follow-up"))
+      (b (enqueue-input! "two" "follow-up"))
+      (s (enqueue-input! "steer" "steer" "turn-x")))
+  (check "steer precedes follow-ups"
+    (map :text (queued-messages)) (list "steer" "one" "two"))
+  (check-true "stable queue id" (string/starts-with? (:id a) "queue-"))
+  (check-true "queued message can be edited" (update-queued-input! (:id b) "two edited"))
+  (check "edit keeps queue order"
+    (map :text (queued-messages)) (list "steer" "one" "two edited"))
+  (check-true "queued message can be removed" (remove-queued-input! (:id a)))
+  (check-false "removing missing id reports false" (remove-queued-input! "missing"))
+  (check "remove keeps remaining order"
+    (map :text (queued-messages)) (list "steer" "two edited"))
+  (check "steer records compare-and-cancel target" (:target-turn-id s) "turn-x")
+  (set! *tui-active* #t)
+  (parameterize ((current-emit (lambda (kind text) nil)))
+    (dispatch-command
+      (parse-command f"/queue edit ${(:id b)} edited through command")
+      (tui-state)))
+  (check "queue edit command updates by stable id"
+    (:text (nth (queued-messages) 1)) "edited through command")
+  (set! *tui-active* #f))
+
+(set! *queue-paused* #t)
+(clear-input-queue!)
+(check-false "clearing queue also clears paused state" *queue-paused*)
+
+;; Tool completion targets the block created by its start event, even when a
+;; warning or error block is appended while the tool runs.
+(reset-controller!)
+(parameterize ((current-turn-render (lambda () nil)))
+  (on-tool-cb {:event "start" :tool "bash" :args {:command "sleep 1"}})
+  (add-block! {:kind :error :text "unrelated queue warning"})
+  (check "active tool phase survives a later block"
+    (:phase (turn-controller-state)) :tool)
+  (on-tool-cb {:event "end" :tool "bash" :args {:command "sleep 1"}
+               :duration-ms 8 :result "done" :error #f}))
+(check "tool end settles its indexed block"
+  (:state (block-at 0)) :done)
+(check "tool end keeps its result on the indexed block"
+  (:result (block-at 0)) "done")
+(check "intervening error block is not overwritten"
+  (:text (block-at 1)) "unrelated queue warning")
+
+;; Cancellation is compare-and-set by turn id and idempotent for retries.
+(reset-controller!)
+(set! *busy* #t)
+(set! *active-turn-id* "turn-live")
+(set! *turn* (async (async/sleep 5000)))
+(check-false "cancel rejects stale turn id" (request-interrupt-for! "turn-old" :stop))
+(check-true "cancel accepts active turn id" (request-interrupt-for! "turn-live" :stop))
+(check-true "duplicate cancel is idempotently accepted" (request-interrupt-for! "turn-live" :stop))
+(check "duplicate cancel emits one request event"
+  (length (filter #(= (:event %) :cancel-requested) (turn-events))) 1)
+
+;; A normal completion automatically drains ordinary queued work exactly once.
+(reset-controller!)
+(define normal-calls '())
+(define late-text-callback #f)
+(define normal-runner
+  (lambda (agent input messages on-tool on-text on-partial effort)
+    (set! normal-calls (append normal-calls (list input)))
+    (set! late-text-callback on-text)
+    (when (= input "first") (enqueue-input! "second" "follow-up"))
+    (on-text f"reply ${input}")
+    (fake-result messages input f"reply ${input}")))
+
+(parameterize ((current-turn-runner normal-runner)
+               (current-turn-pump (lambda (turn) nil))
+               (current-turn-render (lambda () nil)))
+  (run-agent-turn! "first"))
+
+(check "normal turn drains FIFO queue" normal-calls (list "first" "second"))
+(check "queue is empty after drain" (queued-messages) '())
+(check "two turns persisted in model history" (length *messages*) 4)
+(check "two terminal completion events"
+  (length (filter #(= (:event %) :turn-completed) (turn-events))) 2)
+(let ((before *round-text*))
+  (late-text-callback "late delta")
+  (check "late delta cannot mutate terminal turn" *round-text* before))
+
+;; The terminal event must be part of the same durable write as the messages.
+(reset-controller!)
+(define event-tmp
+  (path/join (sys/temp-dir) (string/append "sema-coder-turn-events-" (number->string (sys/pid)))))
+(set! *session-id* "terminal-event")
+(set! *session-created* 1700000000)
+(parameterize ((config-dir-override event-tmp)
+               (current-turn-runner
+                 (lambda (agent input messages on-tool on-text on-partial effort)
+                   (fake-result messages input "done")))
+               (current-turn-pump (lambda (turn) nil))
+               (current-turn-render (lambda () nil)))
+  (run-agent-turn! "persist event")
+  (let* ((saved (load-session "terminal-event"))
+         (events (get (:meta saved) :events '())))
+    (check "terminal event is saved with completed messages"
+      (:event (nth events (- (length events) 1))) "turn-completed"))
+  (file/delete (session-path "terminal-event")))
+
+;; Ctrl-C interruption keeps the active input + streaming partial, pauses
+;; ordinary queued work, records a terminal marker, and ignores a stale id.
+(reset-controller!)
+(define stopped-calls '())
+(define stopped-runner
+  (lambda (agent input messages on-tool on-text on-partial effort)
+    (set! stopped-calls (append stopped-calls (list input)))
+    (enqueue-input! "later" "follow-up")
+    (on-text "partial")
+    (on-partial {:messages (append messages (list {:role "user" :content input}))})
+    (check-false "stale cancel cannot affect active turn"
+      (request-interrupt-for! "stale-turn" :stop))
+    (check-true "matching cancel accepted"
+      (request-interrupt-for! *active-turn-id* :stop))
+    (async/sleep 5000)))
+
+(parameterize ((current-turn-runner stopped-runner)
+               (current-turn-pump (lambda (turn) nil))
+               (current-turn-render (lambda () nil)))
+  (run-agent-turn! "stop me"))
+
+(check "ordinary queue does not run after interrupt" stopped-calls (list "stop me"))
+(check-true "interrupt pauses ordinary queue" *queue-paused*)
+(check "queued follow-up remains" (map :text (queued-messages)) (list "later"))
+(check "partial assistant retained" (:content (nth *messages* 1)) "partial")
+(check "durable control marker retained" (:event (last-message *messages*)) "turn-interrupted")
+(check "interrupted turn has one terminal event"
+  (length (filter #(= (:event %) :turn-interrupted) (turn-events))) 1)
+
+(define resumed-calls '())
+(define resumed-runner
+  (lambda (agent input messages on-tool on-text on-partial effort)
+    (set! resumed-calls (append resumed-calls (list input)))
+    (fake-result messages input "resumed answer")))
+(parameterize ((current-turn-runner resumed-runner)
+               (current-turn-pump (lambda (turn) nil))
+               (current-turn-render (lambda () nil)))
+  (resume-input-queue!))
+(check "explicit resume drains paused queue" resumed-calls (list "later"))
+(check-false "queue is unpaused after explicit resume" *queue-paused*)
+
+;; Interrupt-and-send persists the steer before cancellation, waits for the
+;; interrupted terminal state, then starts the replacement. Ordinary queued work
+;; remains paused after the replacement completes.
+(reset-controller!)
+(define steer-calls '())
+(define steer-runner
+  (lambda (agent input messages on-tool on-text on-partial effort)
+    (set! steer-calls (append steer-calls (list input)))
+    (if (= input "original")
+      (begin
+        (enqueue-input! "ordinary" "follow-up")
+        (on-text "old partial")
+        (on-partial {:messages (append messages (list {:role "user" :content input}))})
+        (prompt-set! "replacement")
+        (on-steer-enter)
+        (async/sleep 5000))
+      (fake-result messages input "new answer"))))
+
+(parameterize ((current-turn-runner steer-runner)
+               (current-turn-pump (lambda (turn) nil))
+               (current-turn-render (lambda () nil)))
+  (run-agent-turn! "original"))
+
+(check "steer starts only after cancelled turn" steer-calls (list "original" "replacement"))
+(check "steer leaves ordinary queue paused" (map :text (queued-messages)) (list "ordinary"))
+(check-true "queue stays paused after replacement" *queue-paused*)
+(let ((events (map :event (turn-events))))
+  (check-true "cancel request precedes interrupted terminal"
+    (< (or (position-of events :cancel-requested) 999)
+       (or (position-of events :turn-interrupted) -1)))
+  (check-true "interrupted terminal precedes replacement start"
+    (< (or (position-of events :turn-interrupted) 999)
+       ;; There are two starts; find the last by reversing.
+       (- (length events) 1 (or (position-of (reverse events) :turn-started) 999)))))
+
+(let ((snapshot (turn-controller-state)))
+  (check "inspectable controller is idle" (:status snapshot) :idle)
+  (check "inspectable controller reports idle phase" (:phase snapshot) :idle)
+  (check "inspectable controller exposes queue" (map :text (:queue snapshot)) (list "ordinary"))
+  (check-true "inspectable controller exposes event log" (> (length (:events snapshot)) 0)))
+
+(define debug-status-output "")
+(set! *tui-active* #t)
+(parameterize ((current-emit
+                 (lambda (kind text)
+                   (when (= kind :raw) (set! debug-status-output text)))))
+  (dispatch-command (parse-command "/debug status") (tui-state)))
+(set! *tui-active* #f)
+(check-contains "TUI debug status is multiline JSON" debug-status-output "\n  \"events\"")
+
+(add-block! {:kind :info :text "diagnostic transcript marker"})
+(define debug-transcript-output "")
+(set! *tui-active* #t)
+(parameterize ((current-emit
+                 (lambda (kind text)
+                   (when (= kind :raw) (set! debug-transcript-output text)))))
+  (dispatch-command (parse-command "/debug transcript") (tui-state)))
+(set! *tui-active* #f)
+(let ((snapshot (json/decode debug-transcript-output)))
+  (check-true "debug transcript includes blocks" (> (:block-count snapshot) 0))
+  (check "debug transcript exposes cache renders"
+    (get (:cache snapshot) :block-renders -1)
+    (transcript-render-count))
+  (check "debug transcript includes exact last block text"
+    (:text (last (:blocks snapshot)))
+    "diagnostic transcript marker"))
+
+(done)

@@ -10,12 +10,15 @@
 ;;   :pre-tool-call  {:tool :args}       — before each tool the agent calls
 ;;   :post-turn      {:input :result}    — after a turn completes
 ;;   :on-error       {:input :error}     — a turn threw (the error then re-raises)
+;;   :turn-queued    {:entry}            — a follow-up or steer entered the queue
+;;   :turn-interrupted {:input :messages :turn-id} — cancellation was persisted
 ;;
 ;; A throwing handler is caught and swallowed, so a bad hook can never break the
 ;; turn it observes nor corrupt the TUI by printing — log inside your handler.
 
 (define hook-events
-  (list :session-start :pre-turn :pre-tool-call :post-turn :on-error))
+  (list :session-start :pre-turn :pre-tool-call :post-turn :on-error
+        :turn-queued :turn-interrupted))
 
 (define *hooks* {})   ;; event(keyword) → (handler …), in registration order
 

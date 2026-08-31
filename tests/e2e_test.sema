@@ -1,0 +1,45 @@
+(load "harness.sema")
+
+(defun this-test-dir ()
+  (let loop ((args (sys/args)))
+    (cond ((null? args) "tests")
+          ((string/ends-with? (car args) "e2e_test.sema") (path/dir (car args)))
+          (else (loop (cdr args))))))
+
+(define res (shell "sema" (path/join (this-test-dir) "turn_e2e_driver.sema")))
+(check "driver exits cleanly" (:exit-code res) 0)
+(check "driver has no stderr" (string/trim (:stderr res)) "")
+
+(define out (json/decode (string/trim (:stdout res))))
+(check "cancel-and-send order crosses process boundary"
+  (:calls out) (list "inspect and stop" "inspect current state"))
+(check "process snapshot is idle" (:status (:state out)) "idle")
+(check-true "ordinary follow-up stays paused" (:queue-paused (:state out)))
+(check "ordinary follow-up remains durable"
+  (map :text (:queue (:state out))) (list "ordinary follow-up"))
+
+(define tool-results
+  (filter #(= (get % :role "") "tool") (:messages out)))
+(check "unfinished tool gets one correlated result" (length tool-results) 1)
+(check "correlated tool id survives" (:tool-call-id (car tool-results)) "tool-1")
+(check-contains "tool result warns about side effects"
+  (:content (car tool-results)) "partial side effects")
+
+(define controls
+  (filter #(= (get % :kind "") "agent-control") (:messages out)))
+(check "interruption writes one control item" (length controls) 1)
+(check "control item has interruption event" (:event (car controls)) "turn-interrupted")
+
+(define events (map :event (:events (:state out))))
+(check "exactly two turn starts"
+  (length (filter #(= % "turn-started") events)) 2)
+(check "exactly one interrupted terminal"
+  (length (filter #(= % "turn-interrupted") events)) 1)
+(check "replacement completes"
+  (length (filter #(= % "turn-completed") events)) 1)
+
+(define cancelled-blocks
+  (filter #(= (get % :state "") "cancelled") (:blocks out)))
+(check "running tool settles visibly as cancelled" (length cancelled-blocks) 1)
+
+(done)

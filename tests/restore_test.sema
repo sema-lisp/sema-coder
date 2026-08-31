@@ -31,4 +31,33 @@
 (check "text+calls order" (map #(get % :kind) both) (list :assistant :tool))
 (check "missing result defaults empty" (:result (nth both 1)) "")
 
+(let* ((cancelled
+         (messages->blocks
+           (list {:role "assistant" :content ""
+                  :tool-calls (list {:id "cancel-1" :name "bash"
+                                     :arguments {:command "sleep 20"}})}
+                 {:role "tool" :tool-call-id "cancel-1" :tool-name "bash"
+                  :status "interrupted" :content "interrupted by user"})))
+       (tool (car cancelled)))
+  (check "resumed interrupted tool keeps cancelled state" (:state tool) :cancelled)
+  (check-true "resumed interrupted tool keeps error styling" (:error tool))
+  (check "resumed interrupted tool keeps result" (:result tool) "interrupted by user"))
+
+(let* ((failed
+         (messages->blocks
+           (list {:role "assistant" :content ""
+                  :tool-calls (list {:id "failed-1" :name "bash" :arguments {}})}
+                 {:role "tool" :tool-call-id "failed-1" :tool-name "bash"
+                  :status "failed" :content "turn failed"})))
+       (tool (car failed)))
+  (check "resumed failed tool keeps failed state" (:state tool) :failed)
+  (check-true "resumed failed tool keeps error styling" (:error tool)))
+
+(let ((control (message->blocks
+                 {:role "user" :kind "agent-control" :event "turn-interrupted"
+                  :content "internal marker"}
+                 {})))
+  (check "control message renders as warning" (:kind (car control)) :warn)
+  (check-contains "control warning is readable" (:text (car control)) "interrupted"))
+
 (done)

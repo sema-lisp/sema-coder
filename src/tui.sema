@@ -26,6 +26,7 @@
 (load "text.sema")
 (load "keymap.sema")
 (load "transcript.sema")
+(load "turn.sema")
 (load "selection.sema")
 (load "terminal_input.sema")
 (load "overlay.sema")
@@ -56,6 +57,20 @@
 (define *busy* #f)          ;; an agent turn is in flight
 (define *turn* #f)          ;; promise for the in-flight turn (#f when idle)
 (define *interrupt* #f)     ;; the user asked to cancel the current turn
+(define *interrupt-mode* #f) ;; :stop or :steer; ordinary queue pauses on either
+(define *interrupt-turn-id* #f)
+(define *active-turn-id* #f)
+(define *active-turn-input* "")
+(define *turn-seq* 0)
+(define *turn-partial* #f)  ;; captured only by agent/run :on-partial
+(define *round-text* "")    ;; streamed text in the current provider round
+(define *active-tool-block-index* #f)
+(define *input-queue* '())  ;; durable future submissions, oldest first
+(define *queue-paused* #f)  ;; interruption requires explicit resume (except steer)
+(define *queue-seq* 0)
+(define *event-seq* 0)
+(define *turn-events* (mutable-array/new 64))
+(define *resume-queue-after-command* #f)
 (define *type-buffer* "")   ;; received-but-not-yet-revealed text (typewriter)
 (define *should-quit* #f)
 (define *last-frame* '())   ;; previous frame's rows, for diffing
@@ -78,8 +93,157 @@
 (define current-key-poll (make-parameter terminal-input-read-key-timeout))
 (define FRAME-INTERVAL-MS 16)
 (define current-ui-clock (make-parameter time-ms))
+(define current-turn-runner (make-parameter run-turn-streaming))
+(define current-turn-pump (make-parameter (lambda (turn) (pump-input! turn))))
+(define current-turn-render (make-parameter (lambda () (render!))))
 (define *last-render-at* 0)
 (define *frame-pending* #f)
+
+;; ── Turn controller state + inspection ──────────────────────────────────────
+
+(define QUEUE-LIMIT 100)
+(define EVENT-LOG-LIMIT 1024)
+(define EVENT-LOG-RETAIN 512)
+
+(defun next-turn-id! ()
+  (set! *turn-seq* (+ *turn-seq* 1))
+  f"turn-${(sys/pid)}-${((current-ui-clock))}-${*turn-seq*}")
+
+(defun next-queue-id! ()
+  (set! *queue-seq* (+ *queue-seq* 1))
+  f"queue-${(sys/pid)}-${((current-ui-clock))}-${*queue-seq*}")
+
+(defun record-turn-event! (event fields)
+  "Append one ordered controller event. Tests and plugins can inspect this log
+   without scraping terminal output."
+  (when (>= (mutable-array/length *turn-events*) EVENT-LOG-LIMIT)
+    (let ((recent (drop (- (mutable-array/length *turn-events*) EVENT-LOG-RETAIN)
+                        (turn-events))))
+      (set! *turn-events* (mutable-array/new EVENT-LOG-LIMIT))
+      (for-each #(mutable-array/push! *turn-events* %) recent)))
+  (set! *event-seq* (+ *event-seq* 1))
+  (mutable-array/push! *turn-events*
+    (merge {:seq *event-seq* :at ((current-ui-clock)) :event event} fields)))
+
+(defun normalize-turn-event (event)
+  "Restore keyword-valued controller fields after their JSON representation
+   has turned them into strings. Queue entry modes intentionally stay strings."
+  (let* ((name (get event :event #f))
+         (mode (get event :mode #f))
+         (source (get event :source #f))
+         (event (if (string? name) (assoc event :event (string->keyword name)) event))
+         (event (if (string? mode) (assoc event :mode (string->keyword mode)) event)))
+    (if (string? source) (assoc event :source (string->keyword source)) event)))
+
+(defun turn-events () (map (lambda (e) e) *turn-events*))
+
+(defun clear-turn-events! ()
+  (set! *turn-events* (mutable-array/new 64))
+  (set! *event-seq* 0))
+
+(defun queued-messages () *input-queue*)
+
+(defun turn-controller-state ()
+  "A stable snapshot for tests, overlays, and plugins."
+  (let* ((tool-block (block-at *active-tool-block-index*))
+         (active-tool (when (and tool-block (= (get tool-block :kind :none) :tool)
+                                       (= (get tool-block :state :none) :running))
+                        {:tool (get tool-block :tool "") :arg (get tool-block :arg "")})))
+    {:status (if *busy* :running :idle)
+     :phase (cond (active-tool :tool) (*busy* :model) (else :idle))
+     :active-turn-id *active-turn-id*
+     :active-input *active-turn-input*
+     :active-tool active-tool
+     :interrupt-mode *interrupt-mode*
+     :streamed-chars (string/length *round-text*)
+     :partial-message-count
+       (if (and (map? *turn-partial*) (get *turn-partial* :messages #f))
+         (length (:messages *turn-partial*)) 0)
+     :queue *input-queue*
+     :queue-paused *queue-paused*
+     :message-count (length *messages*)
+     :session-id *session-id*
+     :events (turn-events)}))
+
+(defun queue-insert (queue entry)
+  "Steers remain FIFO but are ordered before ordinary follow-ups."
+  (if (= (:mode entry) "follow-up")
+    (append queue (list entry))
+    (let ((steers (filter #(= (:mode %) "steer") queue))
+          (followups (filter #(= (:mode %) "follow-up") queue)))
+      (append steers (list entry) followups))))
+
+(defun enqueue-input! (text mode . rest)
+  "Queue TEXT as `follow-up` or `steer`. Returns the stable entry or #f when
+   the bounded queue is full. A steer records the active turn it targets."
+  (if (>= (length *input-queue*) QUEUE-LIMIT)
+    (begin
+      (add-block! {:kind :error :text f"input queue is full (${QUEUE-LIMIT})"})
+      #f)
+    (let* ((target (if (null? rest) *active-turn-id* (car rest)))
+           (entry {:id (next-queue-id!) :text text :mode mode
+                   :target-turn-id (if (= mode "steer") target #f)
+                   :queued-at ((current-ui-clock))}))
+      (set! *input-queue* (queue-insert *input-queue* entry))
+      (record-turn-event! :message-queued
+        {:queue-id (:id entry) :mode mode :target-turn-id (:target-turn-id entry)
+         :text-chars (string/length text)})
+      (run-hooks :turn-queued {:entry entry})
+      (persist-session!)
+      entry)))
+
+(defun remove-queued-input! (id)
+  "Remove ID, returning whether the queue changed."
+  (let ((before (length *input-queue*)))
+    (set! *input-queue* (filter #(not (= (:id %) id)) *input-queue*))
+    (let ((changed? (< (length *input-queue*) before)))
+      (when changed?
+        (record-turn-event! :message-removed {:queue-id id})
+        (persist-session!))
+      changed?)))
+
+(defun update-queued-input! (id text)
+  "Edit a queued message in place without changing its stable id or order."
+  (let ((found? #f))
+    (set! *input-queue*
+      (map (lambda (entry)
+             (if (= (:id entry) id)
+               (begin (set! found? #t) (assoc entry :text text))
+               entry))
+           *input-queue*))
+    (when found?
+      (record-turn-event! :message-updated
+        {:queue-id id :text-chars (string/length text)})
+      (persist-session!))
+    found?))
+
+(defun take-queued-input! (pred)
+  "Remove and return the first entry matching PRED."
+  (let loop ((head '()) (tail *input-queue*))
+    (cond
+      ((null? tail) #f)
+      ((pred (car tail))
+        (let ((entry (car tail)))
+          (set! *input-queue* (append (reverse head) (cdr tail)))
+          (record-turn-event! :message-dequeued
+            {:queue-id (:id entry) :mode (:mode entry)
+             :target-turn-id (get entry :target-turn-id #f)})
+          (persist-session!)
+          entry))
+      (else (loop (cons (car tail) head) (cdr tail))))))
+
+(defun dequeue-input! () (take-queued-input! (lambda (entry) #t)))
+
+(defun take-steer-for! (turn-id)
+  (take-queued-input!
+    #(and (= (:mode %) "steer") (= (get % :target-turn-id #f) turn-id))))
+
+(defun clear-input-queue! ()
+  (when (or (> (length *input-queue*) 0) *queue-paused*)
+    (set! *input-queue* '())
+    (set! *queue-paused* #f)
+    (record-turn-event! :queue-cleared {})
+    (persist-session!)))
 
 ;; ── Palette (slash popup: command names, then argument completions) ──────────
 ;; "/mod"        → command mode: fuzzy over registered command names.
@@ -192,9 +356,13 @@
   "One palette row as plain text; palette-box styles selection afterwards.
    An :active entry (the value currently in effect) is marked with ●."
   (if (equal? mode :args)
-    (string/append (string/pad-right (:label e) 30) " "
-                   (clip-width (:value e) (max 4 (- inner 35)))
-                   (if (get e :active #f) " ●" ""))
+    (let* ((mark (if (get e :active #f) " ●" ""))
+           (value-width (min 24 (max 10 (quotient inner 3))))
+           (label-width (max 4 (- inner value-width 1 (string/width mark)))))
+      (string/append
+        (string/pad-right (clip-width (:value e) value-width) value-width) " "
+        (clip-width (:label e) label-width)
+        mark))
     (string/append (string/pad-right (string/append "/" (:name e)) 12) " "
                    (clip-width (:desc e) (max 4 (- inner 15))))))
 
@@ -220,7 +388,24 @@
 
 ;; ── Frame assembly ───────────────────────────────────────────────────────────
 
-(defun transcript-height () (max 1 (- *rows* 3)))
+(define QUEUE-DISPLAY-LIMIT 3)
+
+(defun queue-height () (min QUEUE-DISPLAY-LIMIT (length *input-queue*)))
+
+(defun transcript-height () (max 1 (- *rows* 3 (queue-height))))
+
+(defun queue-frame-lines ()
+  "A fixed bottom region for future input. Queue contents remain separate from
+   the model transcript until an entry starts."
+  (map-indexed
+    (lambda (i entry)
+      (let* ((mode (if (= (:mode entry) "steer") "steer" "queued"))
+             (label (if (= mode "steer") (warn mode) (muted mode)))
+             (prefix f" ${(+ i 1)} ${label} ")
+             (text (clip-width (sanitize-terminal-text (:text entry))
+                               (max 4 (- *cols* (string/width prefix) 2)))))
+        (string/append prefix text)))
+    (take (queue-height) *input-queue*)))
 
 (defun max-scroll ()
   "How far up the transcript can scroll before the top line is on screen."
@@ -284,7 +469,10 @@
     (indent (cond
       (*config-error* (bad "⚠ config error — using last good (fix init.sema)"))
       (notice         ((if (:ok notice) ok warn) (:text notice)))
-      (*busy*         (faint (string/append (spinner-frame) " evaluating · ctrl-c interrupts")))
+      (*busy*         (faint (string/append (spinner-frame) " evaluating · enter queues · ctrl-enter interrupts and sends"
+                                           (if (> (length *input-queue*) 0)
+                                             f" · ${(length *input-queue*)} pending" ""))))
+      (*queue-paused* (warn f"queue paused · ${(length *input-queue*)} pending · /queue resume"))
       ((> *scroll* 0) (faint f"↕ scrolled +${*scroll*}"))
       (else           "")))))
 
@@ -386,7 +574,8 @@
          (body (if pv
                  (overlay-bottom tlines (palette-box pv *psel* (- *cols* 3)))
                  tlines))
-         (rows (append (list (header-line)) body (list (prompt-line)) (list (status-line))))
+         (rows (append (list (header-line)) body (queue-frame-lines)
+                       (list (prompt-line)) (list (status-line))))
          (rows (fit-rows rows *rows*))
          (rows (if (overlay-active?) (overlay-center rows (overlay-rows)) rows))
          ;; An overlay taller than the terminal yields more than *rows* rows;
@@ -477,7 +666,12 @@
 
 (defun on-text-cb (delta)
   (when (> (string/length delta) 0)
-    (set! *type-buffer* (string/append *type-buffer* delta))))
+    (set! *type-buffer* (string/append *type-buffer* delta))
+    (set! *round-text* (string/append *round-text* delta))))
+
+(defun on-partial-cb (partial)
+  ;; Called from cancellation teardown: capture only. No render, I/O, or await.
+  (set! *turn-partial* partial))
 
 (defun reveal-tick! ()
   "Move a chunk of *type-buffer* into the streaming block. #t if it revealed.
@@ -502,12 +696,21 @@
   (let (({:event evt :tool tool :args args} event))
     (cond
       ((= evt "start")
+        ;; The provider round which requested this tool is complete and therefore
+        ;; present in :on-partial. Text after the tool belongs to the next round.
+        (set! *round-text* "")
         (let ((arg (tool-arg tool (if (map? args) args {}))))
+          (set! *active-tool-block-index* (mutable-array/length (tblocks)))
           (add-block! {:kind :tool :tool tool :arg arg :state :running :ms 0})))
       ((= evt "end")
-        (set-last-tool-done! (get event :duration-ms 0) (get event :result "") (get event :error #f))
+        (if *active-tool-block-index*
+          (set-tool-done-at! *active-tool-block-index*
+            (get event :duration-ms 0) (get event :result "") (get event :error #f))
+          (set-last-tool-done!
+            (get event :duration-ms 0) (get event :result "") (get event :error #f)))
+        (set! *active-tool-block-index* #f)
         (add-block! {:kind :assistant :text ""}))))   ;; target for post-tool text
-  (render!))
+  ((current-turn-render)))
 
 ;; ── Running a turn ───────────────────────────────────────────────────────────
 ;; The turn is an async task; `pump-input!` is its sibling. The top-level
@@ -540,28 +743,125 @@
         (catch e nil))
       (loop))))
 
-(defun run-agent-turn! (text)
+(defun run-one-agent-turn! (text source)
+  "Run exactly one provider turn and return {:status :turn-id}. Queue draining
+   is owned by run-agent-turn!, which keeps interruption and auto-run policy in
+   one place."
+  (let ((turn-id (next-turn-id!))
+        (prior *messages*))
   (set! *interrupt* #f)
+  (set! *interrupt-mode* #f)
+  (set! *interrupt-turn-id* #f)
   (set! *busy* #t)
+  (set! *active-turn-id* turn-id)
+  (set! *active-turn-input* text)
+  (set! *turn-partial* #f)
+  (set! *round-text* "")
+  (set! *active-tool-block-index* #f)
   (set! *type-buffer* "")
+  (record-turn-event! :turn-started
+    {:turn-id turn-id :input-chars (string/length text) :source source})
   ;; The empty assistant block is the streaming target for :on-text.
   (add-block! {:kind :assistant :text ""})
-  (render!)
-  (let* ((turn (async (run-turn-streaming *agent* text *messages* on-tool-cb on-text-cb (effective-effort))))
-         (pump (async (pump-input! turn))))
+  ((current-turn-render))
+  (let* ((guarded-tool (lambda (event)
+                         (when (= *active-turn-id* turn-id) (on-tool-cb event))))
+         (guarded-text (lambda (delta)
+                         (when (= *active-turn-id* turn-id) (on-text-cb delta))))
+         (guarded-partial (lambda (partial)
+                            (when (= *active-turn-id* turn-id) (on-partial-cb partial))))
+         (turn (async ((current-turn-runner)
+                       *agent* text prior guarded-tool guarded-text guarded-partial
+                       (effective-effort))))
+         (pump (async ((current-turn-pump) turn))))
     (set! *turn* turn)
-    (let ((result (try (await turn)
-                    (catch e
-                      (if *interrupt*
-                        (begin (set! *type-buffer* "") (add-block! {:kind :info :text "interrupted"}))
-                        (begin (flush-type-buffer!)
-                               (add-block! {:kind :error :text (str (get e :message (str e)))})))
-                      #f))))
+    (let ((outcome (try {:result (await turn)} (catch e {:error e}))))
       (await pump)   ;; drain the remaining buffer at the typewriter pace
+      (flush-type-buffer!)
       (set! *turn* #f)
       (set! *busy* #f)
-      (when result (set! *messages* (:messages result)) (persist-session!))
-      (render!))))
+      (let ((terminal
+              (cond
+                ((get outcome :result #f)
+                  (let ((result (:result outcome)))
+                    (set! *messages* (continued-turn-messages prior (:messages result)))
+                    (record-turn-event! :turn-completed
+                      {:turn-id turn-id :message-count (length *messages*)})
+                    (persist-session!)
+                    {:status :completed :turn-id turn-id}))
+                (*interrupt*
+                  (if *active-tool-block-index*
+                    (cancel-running-tool-at! *active-tool-block-index*)
+                    (cancel-last-running-tool!))
+                  (set! *messages*
+                    (interrupted-turn-messages prior text *turn-partial* *round-text* turn-id))
+                  (set! *queue-paused* #t)
+                  (add-block! {:kind :warn :text "turn interrupted; queued follow-ups are paused"})
+                  (record-turn-event! :turn-interrupted
+                    {:turn-id turn-id :mode *interrupt-mode*
+                     :message-count (length *messages*)})
+                  (persist-session!)
+                  (run-hooks :turn-interrupted
+                    {:input text :messages *messages* :turn-id turn-id})
+                  {:status :interrupted :turn-id turn-id})
+                (else
+                  (let ((e (:error outcome)))
+                    (when *active-tool-block-index*
+                      (fail-running-tool-at! *active-tool-block-index*))
+                    (set! *messages*
+                      (failed-turn-messages prior text *turn-partial* *round-text* turn-id))
+                    (add-block! {:kind :error :text (str (get e :message (str e)))})
+                    (record-turn-event! :turn-failed
+                      {:turn-id turn-id :error (str (get e :message (str e)))})
+                    (persist-session!)
+                    {:status :failed :turn-id turn-id})))))
+        (set! *active-turn-id* #f)
+        (set! *active-turn-input* "")
+        (set! *interrupt* #f)
+        (set! *interrupt-mode* #f)
+        (set! *interrupt-turn-id* #f)
+        (set! *active-tool-block-index* #f)
+        ((current-turn-render))
+        terminal)))))
+
+(defun take-steers-for! (turn-id)
+  "Take every steer accepted for TURN-ID in FIFO order. Multiple steers sent
+   before cancellation acknowledgement become one replacement user turn."
+  (let loop ((out '()))
+    (let ((entry (take-steer-for! turn-id)))
+      (if entry (loop (append out (list entry))) out))))
+
+(defun run-agent-turn! (text . rest)
+  "Run TEXT, then drain future work according to terminal status. Completed and
+   failed turns auto-start the FIFO queue. Interrupted turns pause it; only the
+   accepted steer(s) targeting that exact turn start immediately."
+  (let loop ((input text) (source (if (null? rest) :direct (car rest))))
+    (let* ((terminal (run-one-agent-turn! input source))
+           (status (:status terminal))
+           (next
+             (if (= status :interrupted)
+               (let ((steers (take-steers-for! (:turn-id terminal))))
+                 (when (> (length steers) 0)
+                   {:text (string/join (map :text steers) "\n\n") :source :steer}))
+               (unless *queue-paused*
+                 (let ((entry (dequeue-input!)))
+                   (when entry
+                     {:text (:text entry)
+                      :source (if (= (:mode entry) "steer") :steer :queue)}))))))
+      (when next (loop (:text next) (:source next))))))
+
+(defun resume-input-queue! ()
+  "Resume a queue paused by interruption and start its oldest item when idle."
+  (set! *queue-paused* #f)
+  (record-turn-event! :queue-resumed {})
+  (persist-session!)
+  (when (not *busy*)
+    (let ((entry (dequeue-input!)))
+      (when entry (run-agent-turn! (:text entry) :queue)))))
+
+(defun request-queue-resume! ()
+  "Defer queue execution until run-command! has applied its state map."
+  (set! *resume-queue-after-command* #t))
 
 ;; ── Session persistence + restore ────────────────────────────────────────────
 ;; Every turn writes the whole conversation to <config>/sessions/<id>.jsonl (the
@@ -572,11 +872,18 @@
   ;; silently share (and clobber) one session file.
   (set! *session-id* f"${(time-ms)}-${(sys/pid)}")
   (set! *session-created* (time-ms))
+  (set! *input-queue* '())
+  (set! *queue-paused* #f)
+  (clear-turn-events!)
+  (set! *persist-warned* #f)
   (run-hooks :session-start {:cwd *cwd*}))
 
 (defun persist-session! ()
   (when *session-id*
-    (try (save-session! *session-id* *session-created* (effective-model) (effective-effort) *messages*)
+    (try (save-session! *session-id* *session-created*
+           (effective-model) (effective-effort) *messages*
+           {:queue *input-queue* :queue-paused *queue-paused*
+            :events (turn-events)})
       (catch e
         (unless *persist-warned*
           (set! *persist-warned* #t)
@@ -596,6 +903,18 @@
       (set! *session-id* id)
       (set! *session-created* (get (:meta f) :created (time-ms)))
       (set! *persist-warned* #f)
+      (set! *input-queue* (get (:meta f) :queue '()))
+      (set! *queue-paused* (get (:meta f) :queue-paused #f))
+      (clear-turn-events!)
+      (let* ((stored-events (get (:meta f) :events '()))
+             (recent-events
+               (drop (max 0 (- (length stored-events) EVENT-LOG-LIMIT)) stored-events)))
+        (for-each (lambda (event)
+                    (mutable-array/push! *turn-events* (normalize-turn-event event)))
+                  recent-events))
+      (let ((events (turn-events)))
+        (set! *event-seq*
+          (if (null? events) 0 (get (nth events (- (length events) 1)) :seq 0))))
       (clear-transcript!)
       (for-each add-block! (messages->blocks (:messages f)))
       (add-block! {:kind :info :text f"resumed “${(get (:meta f) :title id)}” · ${(length (:messages f))} messages · ${(let ((m (:model f))) (if (= m "") "auto" m))}"})
@@ -654,7 +973,11 @@
                   (tui-state)))))
     (if (equal? next 'quit)
       (set! *should-quit* #t)
-      (apply-tui-state! next))))
+      (begin
+        (apply-tui-state! next)
+        (when *resume-queue-after-command*
+          (set! *resume-queue-after-command* #f)
+          (resume-input-queue!))))))
 
 ;; ── Key handling ─────────────────────────────────────────────────────────────
 
@@ -709,22 +1032,42 @@
 (defun word-right! () (set! *cursor* (word-right-index *input* *cursor*)))
 
 (defun on-enter ()
-  ;; Ignored while a turn is in flight — typed text stays in the prompt as
-  ;; type-ahead for the next turn.
-  (unless *busy*
-    (let ((text (string/trim *input*)))
-      (cond
-        ((= text "") nil)
-        ((palette-open?)
+  (let ((text (string/trim *input*)))
+    (cond
+      ((= text "") nil)
+      (*busy*
+        ;; Slash commands mutate local state and cannot be replayed as model
+        ;; input. Keep them in the prompt until the turn becomes idle.
+        (unless (palette-open?)
+          (when (enqueue-input! text "follow-up")
+            (prompt-clear!)
+            (set! *scroll* 0))))
+      ((palette-open?)
           (let ((chosen (palette-choice (palette-view) *psel* *input*)))
             ;; A :keep-input command manages the prompt itself — don't wipe it.
             (unless (command-keeps-input? (:name (parse-command chosen))) (prompt-clear!))
             (run-command! chosen)))
-        (else
-          (add-block! {:kind :user :text text})
-          (prompt-clear!)
-          (set! *scroll* 0)          ;; sending always returns you to the tail
-          (run-agent-turn! text))))))
+      (else
+        (add-block! {:kind :user :text text})
+        (prompt-clear!)
+        (set! *scroll* 0)          ;; sending always returns you to the tail
+        (run-agent-turn! text)))))
+
+(defun on-steer-enter ()
+  "Ctrl-Enter is the explicit interrupt-and-send action. The message is first
+   stored as a steer targeted at the current turn, then that exact turn is
+   cancelled. It is started only after terminal cancellation acknowledgement."
+  (let ((text (string/trim *input*)))
+    (cond
+      ((= text "") nil)
+      ((not *busy*) (on-enter))
+      ((palette-open?) nil)
+      (else
+        (let ((target *active-turn-id*))
+          (when (enqueue-input! text "steer" target)
+            (prompt-clear!)
+            (set! *scroll* 0)
+            (request-interrupt-for! target :steer)))))))
 
 (defun run-key-command! (action)
   "A key bound to a non-built-in action fires the like-named custom command, so
@@ -734,11 +1077,26 @@
       (when (get *commands* name #f)
         (run-command! (string/append "/" name))))))
 
+(defun request-interrupt-for! (expected mode)
+  "Cancel the expected active turn. The id check prevents a late input event
+   from cancelling a newer turn after the previous one settled."
+  (cond
+    ((or (not *busy*) (not (= expected *active-turn-id*))) #f)
+    ((and *interrupt* (= *interrupt-turn-id* expected))
+      ;; A later interrupt-and-send may upgrade a plain stop while cancellation
+      ;; is settling. Do not emit or send the same cancel twice.
+      (when (= mode :steer) (set! *interrupt-mode* :steer))
+      #t)
+    (else
+      (set! *interrupt* #t)
+      (set! *interrupt-mode* mode)
+      (set! *interrupt-turn-id* expected)
+      (record-turn-event! :cancel-requested {:turn-id expected :mode mode})
+      (when *turn* (async/cancel *turn*))
+      #t)))
+
 (defun request-interrupt! ()
-  "Cancel the active turn and mark its cancellation as user-requested."
-  (when *busy*
-    (set! *interrupt* #t)
-    (when *turn* (async/cancel *turn*))))
+  (request-interrupt-for! *active-turn-id* :stop))
 
 (defun handle-ctrl (ch)
   (match (keymap-action (string/append "ctrl-" ch))
@@ -767,7 +1125,7 @@
 
 (defun handle-named (k)
   (match (:name k)
-    (:enter     (on-enter))
+    (:enter     (if (member :ctrl (get k :mods '())) (on-steer-enter) (on-enter)))
     (:backspace (backspace!))
     (:delete    (forward-delete!))
     (:left      (if (word-motion? k) (word-left!)  (set! *cursor* (max 0 (- *cursor* 1)))))

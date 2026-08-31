@@ -1,0 +1,107 @@
+;; turn.sema — pure helpers for interrupted agent turns.
+;;
+;; `agent/run :on-partial` returns every completed message when a cooperative
+;; run is cancelled. The currently streaming text arrives only through
+;; `:on-text`, and a tool cancelled while its handler runs can leave an
+;; assistant tool call without its required tool-result message. These helpers
+;; turn those pieces into valid history for the next provider request.
+
+(define TURN-INTERRUPTED-CONTEXT
+  "The user interrupted the previous turn. Running tools may have produced partial side effects. Check the current state before continuing.")
+
+(define TURN-FAILED-CONTEXT
+  "The previous turn failed before completion. Its assistant response and tool effects may be incomplete. Check the current state before continuing.")
+
+(define TOOL-INTERRUPTED-RESULT
+  "Error: tool execution was interrupted by the user; partial side effects are possible")
+
+(define TOOL-FAILED-RESULT
+  "Error: the turn failed before tool execution completed; partial side effects are possible")
+
+(defun message-role (m) (get m :role ""))
+
+(defun partial-messages-or (partial fallback)
+  "Use the runtime's correlated partial history when available."
+  (if (and (map? partial) (get partial :messages #f))
+    (:messages partial)
+    fallback))
+
+(defun tool-result-ids (messages)
+  (foldl
+    (lambda (ids m)
+      (if (= (message-role m) "tool")
+        (assoc ids (get m :tool-call-id "") #t)
+        ids))
+    {} messages))
+
+(defun missing-tool-results (messages . rest)
+  "Build correlated terminal results for tool calls which have no result.
+   Appending these at the end preserves the results already recorded in their
+   original order and keeps provider history structurally valid."
+  (let ((seen (tool-result-ids messages))
+        (content (if (null? rest) TOOL-INTERRUPTED-RESULT (car rest)))
+        (status (if (< (length rest) 2) "interrupted" (nth rest 1))))
+    (apply append
+      (map
+        (lambda (m)
+          (if (= (message-role m) "assistant")
+            (->> (get m :tool-calls '())
+                 (filter #(not (get seen (get % :id "") #f)))
+                 (map (lambda (tc)
+                        {:role "tool"
+                         :content content
+                         :tool-call-id (get tc :id "")
+                         :tool-name (get tc :name "")
+                         :status status})))
+            '()))
+        messages))))
+
+(defun last-message (messages)
+  (if (null? messages) #f (nth messages (- (length messages) 1))))
+
+(defun append-streamed-partial (messages text turn-id . rest)
+  "Append the in-flight assistant text unless `:on-partial` already contains it."
+  (let ((last (last-message messages))
+        (status (if (null? rest) "interrupted" (car rest))))
+    (if (or (= (string/trim text) "")
+            (and last
+                 (= (message-role last) "assistant")
+                 (= (get last :content "") text)))
+      messages
+      (append messages
+        (list {:role "assistant" :content text
+               :status status :turn-id turn-id})))))
+
+(defun control-message (event turn-id content)
+  "A model-visible, typed internal context item. Session rendering recognizes
+   `:kind`, while `agent/run` safely passes its role/content to providers."
+  {:role "user" :content content :kind "agent-control"
+   :event event :turn-id turn-id})
+
+(defun interrupted-turn-messages (prior input partial streamed turn-id)
+  "Recover a cancelled turn as valid provider history plus a durable marker."
+  (let* ((fallback (append prior (list {:role "user" :content input :turn-id turn-id})))
+         (base (partial-messages-or partial fallback))
+         (with-results (append base (missing-tool-results base)))
+         (with-text (append-streamed-partial with-results streamed turn-id)))
+    (append with-text
+      (list (control-message "turn-interrupted" turn-id TURN-INTERRUPTED-CONTEXT)))))
+
+(defun failed-turn-messages (prior input partial streamed turn-id)
+  "Keep useful partial history after a non-cancellation failure."
+  (let* ((fallback (append prior (list {:role "user" :content input :turn-id turn-id})))
+         (base (partial-messages-or partial fallback))
+         (with-results
+           (append base (missing-tool-results base TOOL-FAILED-RESULT "failed")))
+         (with-text (append-streamed-partial with-results streamed turn-id "failed")))
+    (append with-text
+      (list (control-message "turn-failed" turn-id TURN-FAILED-CONTEXT)))))
+
+(defun continued-turn-messages (prior returned)
+  "Keep the exact prior prefix, including app-owned metadata which agent/run
+   does not round-trip, and append only messages produced by the new run."
+  (if (< (length returned) (length prior))
+    ;; Defensive fallback for a malformed/custom runner result. Never truncate
+    ;; known history merely because the provider wrapper returned less.
+    prior
+    (append prior (drop (length prior) returned))))

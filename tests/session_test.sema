@@ -33,9 +33,20 @@
       (check "tool result content" (:content tm) "42")
       (check "tool-call-id linked" (:tool-call-id tm) "c1")))
 
+  ;; Queue metadata persists even without conversation messages, so a crash or
+  ;; resume cannot silently discard future work.
+  (define queued (list {:id "q-1" :text "next" :mode "follow-up"}))
+  (define events (list {:seq 1 :event "message-queued"}))
+  (save-session! "queued" 1700000002 "m" "" '()
+                 {:queue queued :queue-paused #t :events events})
+  (let ((loaded (load-session "queued")))
+    (check "queued input persists" (get (:meta loaded) :queue '()) queued)
+    (check-true "paused queue persists" (get (:meta loaded) :queue-paused #f))
+    (check "controller events persist" (get (:meta loaded) :events '()) events))
+
   ;; empty message list writes nothing
   (save-session! "empty" 1700000001 "m" "" '())
-  (check "empty not persisted" (length (list-sessions)) 1)
+  (check "empty not persisted" (length (list-sessions)) 2)
 
   ;; A typed /resume id cannot escape the sessions directory.
   (check-true "plain session id accepted" (valid-session-id? "1700-42_test.v1"))
@@ -44,6 +55,7 @@
   (check-true "session path traversal throws"
     (try (begin (session-path "../outside") #f) (catch e #t)))
 
-  (file/delete (session-path "sess1")))
+  (file/delete (session-path "sess1"))
+  (file/delete (session-path "queued")))
 
 (done)

@@ -13,39 +13,77 @@
 
 ;; ── Block storage + mutation ─────────────────────────────────────────────────
 ;; All transcript state lives in one container. Slots: 0 blocks (mutable-array,
-;; oldest → newest) · 1 cached rendered lines · 2 cache width · 3 cache dirty ·
-;; 4 revision (selection coordinates are valid only for one revision).
+;; oldest → newest) · 1 cached flattened lines · 2 cache width ·
+;; 3 first dirty block index (#f = clean) · 4 revision (selection coordinates
+;; are valid only for one revision) · 5 rendered lines per block ·
+;; 6 cached tool-preview-lines setting · 7 cumulative cache block renders.
 
-(define *tstate* (mutable-array/new 5 #f))
+(define *tstate* (mutable-array/new 8 #f))
 (mutable-array/set! *tstate* 0 (mutable-array/new 64))
 (mutable-array/set! *tstate* 1 '())
 (mutable-array/set! *tstate* 2 -1)
-(mutable-array/set! *tstate* 3 #t)
+(mutable-array/set! *tstate* 3 0)
 (mutable-array/set! *tstate* 4 0)
+(mutable-array/set! *tstate* 5 '())
+(mutable-array/set! *tstate* 6 -1)
+(mutable-array/set! *tstate* 7 0)
 
 (defun tblocks () (mutable-array/get *tstate* 0))
-(defun mark-tdirty! ()
-  (mutable-array/set! *tstate* 3 #t)
+(defun mark-tdirty-from! (index)
+  (let ((dirty (mutable-array/get *tstate* 3)))
+    (mutable-array/set! *tstate* 3
+      (if (number? dirty) (min dirty index) index)))
   (mutable-array/set! *tstate* 4 (+ 1 (mutable-array/get *tstate* 4))))
 (defun transcript-version () (mutable-array/get *tstate* 4))
+(defun transcript-render-count () (mutable-array/get *tstate* 7))
 
-(defun add-block! (b) (mutable-array/push! (tblocks) b) (mark-tdirty!))
+(defun transcript-debug-state ()
+  "A JSON-safe snapshot of transcript storage and render-cache state."
+  {:block-count (mutable-array/length (tblocks))
+   :version (transcript-version)
+   :cache
+     {:line-count (length (mutable-array/get *tstate* 1))
+      :width (mutable-array/get *tstate* 2)
+      :dirty-from (mutable-array/get *tstate* 3)
+      :block-count (length (mutable-array/get *tstate* 5))
+      :tool-preview-lines (mutable-array/get *tstate* 6)
+      :block-renders (transcript-render-count)}
+   :blocks (map (lambda (block) block) (tblocks))})
+
+(defun add-block! (b)
+  (let ((index (mutable-array/length (tblocks))))
+    (mutable-array/push! (tblocks) b)
+    (mark-tdirty-from! index)))
 
 (defun clear-transcript! ()
   (mutable-array/set! *tstate* 0 (mutable-array/new 64))
-  (mark-tdirty!))
+  (mutable-array/set! *tstate* 1 '())
+  (mutable-array/set! *tstate* 5 '())
+  (mark-tdirty-from! 0))
 
 (defun transcript-blocks () (tblocks))
 
 (defun kind? (b k) (equal? (get b :kind :none) k))
 
+(defun block-at (index)
+  (let ((blocks (tblocks)))
+    (when (and (number? index) (>= index 0)
+               (< index (mutable-array/length blocks)))
+      (mutable-array/get blocks index))))
+
+(defun update-block-at! (index f)
+  "Update one transcript block by stable array index."
+  (let ((blocks (tblocks)))
+    (when (and (number? index) (>= index 0)
+               (< index (mutable-array/length blocks)))
+      (mutable-array/set! blocks index (f (mutable-array/get blocks index)))
+      (mark-tdirty-from! index))))
+
 (defun update-last! (f)
   (let* ((blocks (tblocks))
          (n (mutable-array/length blocks)))
     (when (> n 0)
-      (mutable-array/set! blocks (- n 1)
-        (f (mutable-array/get blocks (- n 1))))
-      (mark-tdirty!))))
+      (update-block-at! (- n 1) f))))
 
 (defun last-block ()
   (let* ((blocks (tblocks))
@@ -59,7 +97,30 @@
       (add-block! {:kind :assistant :text delta}))))
 
 (defun set-last-tool-done! (ms result err)
-  (update-last! #(assoc % :state :done :ms ms :result result :error err)))
+  (update-last!
+    #(assoc % :state (if err :failed :done) :ms ms :result result :error err)))
+
+(defun set-tool-done-at! (index ms result err)
+  (update-block-at! index
+    #(assoc % :state (if err :failed :done) :ms ms :result result :error err)))
+
+(defun settle-running-tool-at! (index state result)
+  (let ((block (block-at index)))
+    (when (and block (kind? block :tool) (= (get block :state :done) :running))
+      (update-block-at! index
+        #(assoc % :state state :ms 0 :result result :error #t)))))
+
+(defun cancel-running-tool-at! (index)
+  (settle-running-tool-at! index :cancelled
+    "interrupted; partial side effects are possible"))
+
+(defun fail-running-tool-at! (index)
+  (settle-running-tool-at! index :failed
+    "turn failed; partial side effects are possible"))
+
+(defun cancel-last-running-tool! ()
+  "Settle the visible tool block if cancellation stopped it before an end event."
+  (cancel-running-tool-at! (- (mutable-array/length (tblocks)) 1)))
 
 ;; ── Block → styled lines ─────────────────────────────────────────────────────
 
@@ -122,7 +183,11 @@
       ;; Budget the row: glyphs/spaces and the duration are fixed, then the
       ;; name and arg split what's left — so a long MCP tool name can't push
       ;; the line past W and soft-wrap onto the row below.
-      (let* ((running? (equal? (get b :state :done) :running))
+      (let* ((state (get b :state :done))
+             (running? (equal? state :running))
+             (cancelled? (equal? state :cancelled))
+             (failed? (equal? state :failed))
+             (aborted? (or cancelled? failed?))
              (ms-txt   (if running? "" f"${(get b :ms 0)}ms"))
              (avail    (max 8 (- w 5 (string/width ms-txt))))
              (name     (clip-width (sanitize-terminal-text (:tool b)) (max 8 (- avail 12))))
@@ -131,7 +196,12 @@
         (if running?
           (list (indent (string/append (faint "·") " " styled)))
           (cons
-            (indent (string/append (ok "✔") " " styled " " (faint ms-txt)))
+            (indent (string/append ((if failed? bad (if cancelled? warn ok))
+                                     (if aborted? "×" "✔"))
+                                   " " styled " "
+                                   (cond (cancelled? (warn "interrupted"))
+                                         (failed? (bad "failed"))
+                                         (else (faint ms-txt)))))
             (tool-result-lines b w)))))
     (:info  (map #(indent (muted %)) (wrap-text (sanitize-terminal-text (:text b)) w)))
     (:ok    (map #(indent (ok %)) (wrap-text (sanitize-terminal-text (:text b)) w)))
@@ -144,10 +214,27 @@
     (_ '())))
 
 (defun transcript-lines (w)
-  (when (or (mutable-array/get *tstate* 3) (not (= w (mutable-array/get *tstate* 2))))
-    (mutable-array/set! *tstate* 1 (->> (transcript-blocks)
-                                        (map #(block-lines % w))
-                                        (apply append)))
+  (let* ((preview (get *config* :tool-preview-lines 5))
+         (full? (or (not (= w (mutable-array/get *tstate* 2)))
+                    (not (= preview (mutable-array/get *tstate* 6)))))
+         (dirty (if full? 0 (mutable-array/get *tstate* 3))))
+    (when (number? dirty)
+      (let* ((blocks (tblocks))
+             (count (mutable-array/length blocks))
+             (start (min dirty count))
+             (old-cache (mutable-array/get *tstate* 5))
+             (prefix (take (min start (length old-cache)) old-cache))
+             (suffix
+               (map (lambda (i)
+                      (mutable-array/set! *tstate* 7
+                        (+ 1 (mutable-array/get *tstate* 7)))
+                      (block-lines (mutable-array/get blocks i) w))
+                    (range start count)))
+             (per-block (append prefix suffix)))
+        (mutable-array/set! *tstate* 5 per-block)
+        (mutable-array/set! *tstate* 1
+          (if (null? per-block) '() (apply append per-block)))))
     (mutable-array/set! *tstate* 2 w)
-    (mutable-array/set! *tstate* 3 #f))
+    (mutable-array/set! *tstate* 3 #f)
+    (mutable-array/set! *tstate* 6 preview))
   (mutable-array/get *tstate* 1))

@@ -24,20 +24,27 @@
     (if (null? u) "(no messages)"
       (truncate-str (string/replace (string/trim (get (car u) :content "")) "\n" " ") 56))))
 
-(defun save-session! (id created model effort messages)
+(defun save-session! (id created model effort messages . rest)
   "Write the session as JSONL (meta line + one message per line). No-op if empty.
    MODEL and EFFORT are the session's effective values, so /resume restores them.
+   Optional metadata stores the durable input queue and whether an interruption
+   paused it; older session files remain valid because both fields default.
    Writes a temp file then renames over the target so a crash mid-write can't
    truncate the existing session — rename is atomic within a filesystem."
-  (when (> (length messages) 0)
+  (let* ((opts (if (null? rest) {} (car rest)))
+         (queue (get opts :queue '()))
+         (paused? (get opts :queue-paused #f))
+         (events (get opts :events '())))
+  (when (or (> (length messages) 0) (> (length queue) 0))
     (file/mkdir (sessions-dir))
     (let* ((meta {:kind "meta" :id id :created created :model model :effort effort
-                  :title (session-title messages)})
+                  :title (session-title messages) :queue queue
+                  :queue-paused paused? :events events})
            (dest (session-path id))
            (tmp  (string/append dest ".tmp")))
       (file/write tmp
         (string/join (cons (json/encode meta) (map json/encode messages)) "\n"))
-      (file/rename tmp dest))))
+      (file/rename tmp dest)))))
 
 (defun read-lines (path)
   (filter #(not (= (string/trim %) "")) (string/split (file/read path) "\n")))
@@ -75,9 +82,23 @@
              idx))
          {} messages))
 
+(defun tool-messages-index (messages)
+  "tool-call-id → complete tool message, including terminal status."
+  (foldl (lambda (idx m)
+           (if (= (get m :role "") "tool")
+             (assoc idx (get m :tool-call-id "") m)
+             idx))
+         {} messages))
+
 (defun message->blocks (m idx)
   "One stored message → transcript blocks. Tool-role messages are folded into
    the assistant tool-call blocks (via IDX), so they emit nothing themselves."
+  (if (= (get m :kind "") "agent-control")
+    (list {:kind :warn
+           :text (match (get m :event "")
+                   ("turn-interrupted" "turn interrupted by user; tool side effects may be partial")
+                   ("turn-failed" "turn failed before completion; tool side effects may be partial")
+                   (_ (get m :content "agent control event")))})
   (match (get m :role "")
     ("user" (list {:kind :user :text (get m :content "")}))
     ("assistant"
@@ -85,15 +106,23 @@
         (if (= (string/trim (get m :content "")) "") '()
           (list {:kind :assistant :text (get m :content "")}))
         (map (lambda (tc)
-               (let ((a (get tc :arguments {})))
+               (let* ((a (get tc :arguments {}))
+                      (result-message (get idx (get tc :id "") #f))
+                      (result (if (map? result-message)
+                                (get result-message :content "")
+                                (or result-message "")))
+                      (status (if (map? result-message)
+                                (get result-message :status "") ""))
+                      (interrupted? (= status "interrupted"))
+                      (failed? (= status "failed")))
                  {:kind :tool :tool (get tc :name "")
                   :arg (tool-arg (get tc :name "") (if (map? a) a {}))
-                  :state :done :ms 0
-                  :result (get idx (get tc :id "") "") :error #f}))
+                  :state (cond (interrupted? :cancelled) (failed? :failed) (else :done))
+                  :ms 0 :result result :error (or interrupted? failed?)}))
              (get m :tool-calls '()))))
-    (_ '())))
+    (_ '()))))
 
 (defun messages->blocks (messages)
   "Rebuild the transcript from stored MESSAGES for a resumed session."
-  (let ((idx (tool-results-index messages)))
+  (let ((idx (tool-messages-index messages)))
     (apply append (map #(message->blocks % idx) messages))))

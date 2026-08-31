@@ -27,6 +27,12 @@ task test filter="":
     sema test.sema -- {{filter}}
 
 @group coder
+@desc "Run process-level turn controller tests"
+task e2e:
+    @needs sema
+    sema test.sema -- e2e turn_control
+
+@group coder
 @desc "Show the coder command-line help"
 task help:
     @needs sema

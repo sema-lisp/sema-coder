@@ -1,0 +1,51 @@
+(load "harness.sema")
+(load "../src/commands.sema")
+
+(check-false "top-level status command is free"
+  (get *commands* "status" #f))
+(check-true "debug command is registered"
+  (get *commands* "debug" #f))
+(check "debug completions list all diagnostics"
+  (map :value (command-completions "debug" {:messages '()}))
+  (list "status" "session" "transcript"))
+
+(define emitted '())
+(parameterize ((current-emit
+                 (lambda (kind text)
+                   (set! emitted (append emitted (list {:kind kind :text text}))))))
+  (dispatch-command (parse-command "/debug status") {:messages (list {:role "user"})}))
+
+(check "debug status emits raw JSON" (:kind (car emitted)) :raw)
+(check-contains "debug status JSON is pretty printed"
+  (:text (car emitted)) "\n  \"message-count\"")
+(let ((status (json/decode (:text (car emitted)))))
+  (check "headless debug status is idle" (:status status) "idle")
+  (check "headless debug status counts messages" (:message-count status) 1))
+
+(set! emitted '())
+(define headless-state
+  {:messages (list {:role "user" :content "inspect this"})
+   :cwd "/tmp/workspace"
+   :model ""
+   :effort ""
+   :config {}})
+(parameterize ((current-emit
+                 (lambda (kind text)
+                   (set! emitted (append emitted (list {:kind kind :text text}))))))
+  (dispatch-command (parse-command "/debug session") headless-state))
+
+(let ((session (json/decode (:text (car emitted)))))
+  (check "debug session emits raw JSON" (:kind (car emitted)) :raw)
+  (check "debug session includes exact messages" (:messages session) (:messages headless-state))
+  (check "debug session includes cwd" (:cwd session) "/tmp/workspace")
+  (check "headless debug session has no queue" (:queue session) '()))
+
+(set! emitted '())
+(parameterize ((current-emit
+                 (lambda (kind text)
+                   (set! emitted (append emitted (list {:kind kind :text text}))))))
+  (dispatch-command (parse-command "/debug transcript") headless-state))
+(check "headless transcript diagnostic explains TUI requirement"
+  (:kind (car emitted)) :error)
+
+(done)

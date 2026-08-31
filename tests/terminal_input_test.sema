@@ -60,6 +60,10 @@
   (:event (parsed-event "\x1b;[99;5;99u" #f))
   {:kind :ctrl :char "c" :mods (list :ctrl)})
 
+(check "kitty ctrl-enter keeps named key plus modifier"
+  (:event (parsed-event "\x1b;[13;5u" #f))
+  {:kind :key :name :enter :mods (list :ctrl)})
+
 (check "kitty associated Unicode text"
   (:event (parsed-event "\x1b;[248;1;248u" #f))
   {:kind :char :char "ø"})

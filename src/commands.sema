@@ -57,8 +57,9 @@
 
 (defun command-completions (name state)
   "Completion entries for /NAME's argument — ({:value … :label …} …), or '().
-   :value is what gets inserted/run; :label is the human line shown; an entry
-   with :active #t marks the currently-in-effect value (rendered as ●)."
+   :value is what gets inserted/run and is the first palette column; :label is
+   its description; an entry with :active #t marks the currently-in-effect
+   value (rendered as ●)."
   ;; nil default (not #f): on current sema `if-let` treats #f as truthy and
   ;; would call (f state) on a missing entry.
   (if-let (f (get *command-completions* name nil))
@@ -340,13 +341,13 @@
            (cur (pick-effort (get state :effort "") (choose-model (get state :model "") cfg) cfg))
            (mark (if (= cur "") "default" cur)))
       (map (lambda (e) (assoc e :active (= (:value e) mark)))
-        (list {:value "none"    :label "none — thinking disabled"}
-              {:value "minimal" :label "minimal — barely deliberates"}
-              {:value "low"     :label "low — quick and cheap"}
-              {:value "medium"  :label "medium — balanced"}
-              {:value "high"    :label "high — thorough"}
-              {:value "xhigh"   :label "xhigh — maximum deliberation"}
-              {:value "default" :label "default — back to the provider default"})))))
+        (list {:value "none"    :label "thinking disabled"}
+              {:value "minimal" :label "barely deliberates"}
+              {:value "low"     :label "quick and cheap"}
+              {:value "medium"  :label "balanced"}
+              {:value "high"    :label "thorough"}
+              {:value "xhigh"   :label "maximum deliberation"}
+              {:value "default" :label "back to the provider default"})))))
 
 (register-command! "clear" "Clear the conversation history"
   (lambda (state args)
@@ -364,6 +365,98 @@
                                        (if srv (muted f"· mcp:${srv}") "")))))
         (agent-tools)))
     state))
+
+(register-command! "queue" "Inspect or manage follow-ups: /queue [resume|clear|drop ID|edit ID TEXT]"
+  (lambda (state args)
+    (if (not *tui-active*)
+      (emit :info "the input queue is available in the TUI")
+      (let* ((parts (filter #(not (= % "")) (string/split (string/trim args) " ")))
+             (action (if (null? parts) "" (car parts))))
+        (cond
+          ((= action "resume")
+            (request-queue-resume!)
+            (emit :ok "input queue resumed"))
+          ((= action "clear")
+            (clear-input-queue!)
+            (emit :ok "input queue cleared"))
+          ((= action "drop")
+            (if (< (length parts) 2)
+              (emit :error "usage: /queue drop ID")
+              (let ((id (nth parts 1)))
+                (if (remove-queued-input! id)
+                  (emit :ok f"removed ${id}")
+                  (emit :error f"no queued input ${id}")))))
+          ((= action "edit")
+            (if (< (length parts) 3)
+              (emit :error "usage: /queue edit ID TEXT")
+              (let ((id (nth parts 1))
+                    (text (string/join (drop 2 parts) " ")))
+                (if (update-queued-input! id text)
+                  (emit :ok f"updated ${id}")
+                  (emit :error f"no queued input ${id}")))))
+          (else
+            (let ((items (queued-messages)))
+              (if (null? items)
+                (emit :info "input queue is empty")
+                (begin
+                  (when *queue-paused* (emit :info "input queue is paused"))
+                  (for-each
+                    (lambda (entry)
+                      (emit :line
+                        (format "    ~a  ~a  ~a"
+                          (string/pad-right (:id entry) 18)
+                          (string/pad-right (:mode entry) 9)
+                          (:text entry))))
+                    items))))))))
+    state))
+
+(register-completions! "queue"
+  (lambda (state)
+    (list {:value "resume" :label "resume paused queued work"}
+          {:value "clear" :label "remove every queued message"}
+          {:value "drop" :label "remove one queue id"}
+          {:value "edit" :label "edit one queued message"})))
+
+(defun debug-session-state (state)
+  "A JSON-safe snapshot of the exact conversational state used by the next turn."
+  (let* ((cfg (get state :config {}))
+         (model (choose-model (get state :model "") cfg))
+         (effort (pick-effort (get state :effort "") model cfg))
+         (messages (get state :messages '())))
+    {:session-id (if *tui-active* *session-id* #f)
+     :session-created (if *tui-active* *session-created* #f)
+     :cwd (get state :cwd "")
+     :model model
+     :effort effort
+     :message-count (length messages)
+     :messages messages
+     :queue (if *tui-active* (queued-messages) '())
+     :queue-paused (if *tui-active* *queue-paused* #f)}))
+
+(register-command! "debug" "Developer diagnostics: /debug [status|session|transcript]"
+  (lambda (state args)
+    (match (string/trim args)
+      ("status"
+        (if *tui-active*
+          (emit :raw (json/encode-pretty (turn-controller-state)))
+          (emit :raw (json/encode-pretty
+                       {:status :idle
+                        :message-count (length (get state :messages '()))}))))
+      ("session"
+        (emit :raw (json/encode-pretty (debug-session-state state))))
+      ("transcript"
+        (if *tui-active*
+          (emit :raw (json/encode-pretty (transcript-debug-state)))
+          (emit :error "/debug transcript is available in the TUI")))
+      ("" (emit :info "available diagnostics: /debug status, /debug session, /debug transcript"))
+      (_ (emit :error f"unknown diagnostic: ${args} (try /debug)")))
+    state))
+
+(register-completions! "debug"
+  (lambda (state)
+    (list {:value "status" :label "show turn-controller state and events"}
+          {:value "session" :label "show exact messages and queued input"}
+          {:value "transcript" :label "show TUI blocks and render-cache state"})))
 
 (register-command! "mcp" "Manage MCP servers (opens the modal; ⌃O in the TUI)"
   (lambda (state args)

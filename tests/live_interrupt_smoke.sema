@@ -1,0 +1,81 @@
+#!/usr/bin/env sema
+;; Opt-in live-provider smoke test. This is intentionally not an *_test.sema
+;; file: CI and the default suite never spend API quota.
+;;
+;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- text
+;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- tool
+;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- steer
+
+(load "../src/tui.sema")
+
+(unless (= (env "SEMA_CODER_LIVE") "1")
+  (io/println-error "set SEMA_CODER_LIVE=1 to allow live model calls")
+  (exit 2))
+
+(define scenario
+  (let ((args (sys/args)))
+    (cond ((member "tool" args) "tool")
+          ((member "steer" args) "steer")
+          (else "text"))))
+
+(unless (llm/auto-configure)
+  (io/println-error "no configured LLM provider")
+  (exit 2))
+
+(set! *cwd* (sys/cwd))
+(set! *config* default-config)
+(set! *model* "claude-haiku-4-5-20251001")
+(set! *agent* (create-agent *cwd* *model* *config*))
+(set! *messages* '())
+(set! *input-queue* '())
+(set! *queue-paused* #f)
+(set! *session-id* #f)
+(clear-turn-events!)
+(clear-transcript!)
+
+(define prompt
+  (if (= scenario "tool")
+    "For a cancellation smoke test, call the bash tool exactly once with the command `sleep 5; echo live-smoke`. Do not use another tool. Then report the output."
+    "Write a detailed 1500-word technical explanation of cooperative task cancellation. Start the explanation immediately and do not use tools."))
+
+(define replacement "Reply only with the word recovered.")
+
+(defun live-cancel-pump (turn)
+  (let loop ((ticks 0))
+    (when (async/pending? turn)
+      (let ((tool-running?
+              (let ((b (last-block)))
+                (and b (= (get b :kind :none) :tool)
+                     (= (get b :state :none) :running)))))
+        (cond
+          ((and (= scenario "tool") tool-running?) (request-interrupt!))
+          ((and (= scenario "text") (>= ticks 50)) (request-interrupt!))
+          ((and (= scenario "steer") (= *active-turn-input* prompt) (>= ticks 50))
+            (prompt-set! replacement)
+            (on-steer-enter))
+          ((>= ticks 250) (request-interrupt!))
+          (else (async/sleep 20) (loop (+ ticks 1))))))))
+
+(parameterize ((current-turn-pump live-cancel-pump)
+               (current-turn-render (lambda () nil)))
+  (run-agent-turn! prompt))
+
+(define control-count
+  (length (filter #(= (get % :kind "") "agent-control") *messages*)))
+(define cancelled-tool-count
+  (length (filter #(and (= (get % :kind :none) :tool)
+                        (= (get % :state :none) :cancelled))
+                  (transcript-blocks))))
+
+(println
+  (json/encode
+    {:scenario scenario
+     :state (turn-controller-state)
+     :roles (map #(get % :role "") *messages*)
+     :control-count control-count
+     :cancelled-tool-count cancelled-tool-count
+     :partial-assistant-chars
+       (foldl (lambda (n m)
+                (if (= (get m :role "") "assistant")
+                  (+ n (string/length (get m :content ""))) n))
+              0 *messages*)}))
