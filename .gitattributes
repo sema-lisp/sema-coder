@@ -1,1 +1,1 @@
-*.sema text eol=lf
+*.sema text eol=lf linguist-language=Scheme

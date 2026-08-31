@@ -223,7 +223,7 @@
 
 (define default-init-source
   (string/append
-";; init.sema — Sema Coder config (Lisp data, hot-reloaded on save).
+";; init.sema — Sema Coder config (Lisp data; the TUI hot-reloads it on save).
 ;; Edit in any editor; declarations are values the app reconciles to.
 
 (configure!
@@ -253,8 +253,8 @@
        ;; (mcp-server \"asana\" {:url \"https://mcp.asana.com/mcp\"})   ; OAuth when you connect
        )   ; only add servers you trust — they run real commands / reach real services
 
-     ;; ── Slash commands — argv (no shell), or a Lisp handler. ──
-     ;; :key gives a command a keyboard shortcut, e.g. ctrl-t → /test.
+     ;; ── Slash commands — argv, shell template, or a Lisp handler. ──
+     ;; :key adds a shortcut; :keep-input #t preserves the TUI prompt.
      :commands
      (list
        (command \"test\" {:desc \"run tests\" :run [\"make\" \"test\"] :key \"ctrl-t\"})
@@ -270,6 +270,8 @@
      ;;   :session-start {:cwd}          :pre-turn {:input :messages}
      ;;   :pre-tool-call {:tool :args}   :post-turn {:input :result}
      ;;   :on-error {:input :error}
+     ;;   :turn-queued {:entry}
+     ;;   :turn-interrupted {:input :messages :turn-id}
      ;; :hooks (list (hook :pre-tool-call (lambda (ctx) ...)))
      }))
 "))

@@ -10,11 +10,10 @@
 ;;   <config-dir>/plugins/*.sema        — global, every project
 ;;   <cwd>/.sema-coder/plugins/*.sema    — project-local
 ;;
-;; Loaded ONCE at boot, after the config is applied (coder.sema). Unlike
-;; init.sema and the tools/ dir (which hot-reload), plugin changes need a
-;; restart: a plugin may add-hook! (which appends), so re-loading would
+;; Loaded ONCE at boot, after the config is applied (coder.sema). Plugin changes
+;; need a restart: a plugin may add-hook! (which appends), so re-loading would
 ;; duplicate. Register commands/overlays/hooks/keys here; put persistent TOOLS
-;; in the tools/ dir (they hot-reload and survive config reloads).
+;; in the tools/ dir, which is reconciled at boot and on each config apply.
 
 (load "config.sema")   ;; config-dir
 

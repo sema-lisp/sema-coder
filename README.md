@@ -28,7 +28,8 @@ safety) is Rust. It depends on nothing but the `sema` binary.
   see the [sema README](https://github.com/sema-lisp/sema#installation)).
 - **An API key** — `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in the environment.
 - Optional: **`rg`** (ripgrep) — the grep tool prefers it, falling back to `grep`.
-- Optional: **`jake`** — enables the `jake coder.run`, `jake coder.ask`, `jake coder.test`, and `jake coder.help` shortcuts.
+- Optional: **`jake`** — enables the `coder.run`, `coder.ask`, `coder.test`,
+  `coder.e2e`, and `coder.help` recipes from the workspace root.
 
 ## Run
 
@@ -40,15 +41,26 @@ safety) is Rust. It depends on nothing but the `sema` binary.
 ./coder.sema -- -p "explain this codebase"
 
 # Override the model
-./coder.sema -- -m claude-haiku-4-5-20251001
+./coder.sema -- -m claude-haiku-4-5
 ```
 
 `./coder.sema` works because the file is `chmod +x` with a `#!/usr/bin/env sema`
-shebang.
+shebang. If stdin is not a TTY and `--print` is absent, Sema Coder runs a plain
+line-based REPL instead of the full-screen interface.
+
+| Option | Meaning |
+| --- | --- |
+| `-m, --model ID` | Override `:model` for this process |
+| `-p, --print PROMPT` | Run one turn, print only the response to stdout, and exit |
+| `-V, --version` | Print the Sema Coder version |
+| `-h, --help` | Print CLI help |
+
+The `--` before these options separates Sema interpreter arguments from Sema
+Coder arguments.
 
 ## Architecture
 
-```
+```text
 sema-coder/
 ├── coder.sema          Entry point — CLI parsing, boot, REPL/TUI dispatch
 ├── src/
@@ -77,20 +89,22 @@ sema-coder/
 └── docs/               Design notes; dated plans live in docs/plans/
 ```
 
-It is built on Sema's own primitives: `defagent` / `deftool` / `agent/run` (the
-LLM agent loop), `async` / `async/cancel` (concurrent turns), `make-parameter` /
-`parameterize` (the command registry), `mutable-array/*` (the streaming
-transcript), `file/*` and `shell` (tools), `json/*` (config), `term/*` (theming +
-screen control), `path/within?` (workspace path resolution), `llm/session-usage`
-(token/cost HUD).
+It is built on Sema's own primitives: `agent` / `deftool` / `agent/run` (the LLM
+agent loop), `async` / `async/cancel` (concurrent turns), `make-parameter` /
+`parameterize` (output and test seams), `mutable-array/*` (streaming state),
+`file/*` and `shell` (tools), `json/*` (sessions and diagnostics), `term/*`
+(theming and screen control), `path/within?` (workspace path resolution), and
+`llm/session-usage` (the token/cost HUD).
 
 In the TUI, an agent turn runs as an async task while a sibling task keeps pumping
 input, so scrolling, resize, and type-ahead all work while tokens stream in, and
 **Ctrl-C interrupts the turn** without killing the app. While a turn runs,
-**Enter queues** a FIFO follow-up and **Ctrl-Enter interrupts and sends** the
-typed message after cancellation is acknowledged. The queue has stable ids,
-is visible above the prompt, and is saved with the session. An interruption
-pauses ordinary queued work; `/queue resume` continues it.
+**Tab queues** a FIFO follow-up and **Enter interrupts and sends** the typed
+message after cancellation is acknowledged. The queue has stable ids, is
+visible above the prompt, and is saved with the session. An interruption pauses
+ordinary queued work when any exists; `/queue resume` continues it. While the
+slash-command palette is open, `Tab` completes the selected entry instead of
+queueing the prompt.
 
 Drag across transcript text to select and copy it automatically. Double-click
 selects a word or punctuation run; triple-click selects a rendered line.
@@ -100,45 +114,78 @@ and OSC52 under SSH/tmux or as a fallback.
 
 ## Slash commands
 
-Built-ins: `/help`, `/model [name]`, `/effort [level]`, `/clear`, `/tools`,
-`/queue`, `/debug`, `/mcp`, `/resume`, `/cwd`, `/config`, `/reload`, `/quit`,
-`/exit`. `/queue` lists stable queue ids and supports `resume`, `clear`,
-`drop ID`, and `edit ID TEXT`. Developer diagnostics live under `/debug`;
-`/debug status` prints the turn controller's current snapshot and ordered event
-log as indented JSON. `/debug session` prints the exact in-memory messages and
-queued input used by the next turn. `/debug transcript` prints the TUI's blocks
-and render-cache state. In the TUI,
-type `/` to open a fuzzy command palette; once you type `/model ` the same
-palette fuzzy-completes the **model argument** from the config's `:models`
-list, shown as `Anthropic: Claude Opus 5` (Tab inserts the selection, Enter
-runs it — any model id typed by hand still works). The active model is marked
-`●` and providers whose API key isn't set are annotated `· no key`. `/effort`
-sets Sema's portable reasoning-effort level the same way (`none` / `minimal` /
-`low` / `medium` / `high` / `xhigh`; `default` resets) — models without
-reasoning support simply ignore it, and a `(model … {:effort "high"})` record
-sets a per-model default. `/resume <id>` restores a saved session directly
-(completing from your session list) and brings back the model and effort it
-ran with. Add your own commands in config (see below).
+Type `/` in the TUI to open the fuzzy command palette. Argument completions show
+the value that will be inserted first, followed by its description. `Tab`
+inserts the selected completion; `Enter` runs it.
+
+| Command | Scope | Description |
+| --- | --- | --- |
+| `/help` | All interactive modes | List built-in, configured, and plugin commands |
+| `/model [ID]` | TUI / REPL | Show the current model and catalog, or switch models; manually typed IDs are accepted |
+| `/effort [LEVEL\|default]` | TUI / REPL | Show or set reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`; `default` removes the session override |
+| `/clear` | TUI / REPL | Clear conversation history; the TUI also clears the transcript and starts a new session |
+| `/tools` | TUI / REPL | List built-in, autoloaded, and connected MCP tools; MCP tools include their server name |
+| `/queue` | TUI | List queued follow-ups and their stable IDs |
+| `/queue resume` | TUI | Resume queued work after an interruption |
+| `/queue clear` | TUI | Remove all queued messages and clear the paused state |
+| `/queue drop ID` | TUI | Remove one queued message |
+| `/queue edit ID TEXT` | TUI | Replace the text of one queued message without changing its ID or order |
+| `/mcp` | TUI / REPL | Open the MCP manager in the TUI; print server status in the plain REPL |
+| `/resume [ID]` | TUI / REPL | Open or print the session list, or restore a session directly by ID |
+| `/cwd` | TUI / REPL | Print the workspace directory |
+| `/config` | TUI / REPL | Print the active `init.sema` path |
+| `/config edit` | TUI / REPL | Open `init.sema` with `$VISUAL`, `$EDITOR`, or the platform text-file opener |
+| `/reload` | TUI / REPL | Reload and validate config, then reconcile commands, hooks, MCP servers, tools, and the agent |
+| `/quit`, `/exit` | All interactive modes | Exit Sema Coder |
+
+`/model` completes from the config's `:models` list. The active model is marked
+`●`; a known provider without its API key is marked `· no key`. Model selection
+also changes the active provider when the model belongs to a configured
+provider group. Any model ID typed by hand remains valid.
+
+### Diagnostics
+
+Developer-only inspection is namespaced under `/debug` so diagnostic names do
+not occupy top-level command names. JSON output is indented and spans multiple
+lines.
+
+| Command | Scope | Output |
+| --- | --- | --- |
+| `/debug` | TUI / REPL | List available diagnostics |
+| `/debug status` | TUI / REPL | Turn status, active phase/tool, queue, session ID, and ordered controller events; the REPL reports its idle status and message count |
+| `/debug session` | TUI / REPL | Effective model and effort, exact in-memory messages, session metadata, queued input, and paused state |
+| `/debug transcript` | TUI | Transcript blocks plus render-cache state and counters |
+| `/debug tasks` | TUI / REPL | Background task state plus retained stdout, stderr, exit codes, timing, and truncation flags |
+
+`/debug session`, `/debug transcript`, and `/debug tasks` can include full
+prompts, commands, tool arguments, tool results, and process output. Review
+their output before sharing it.
 
 ## Configuration
 
 Config is **Sema data, not JSON** — an `init.sema` file that calls
 `(configure! (coder-config {…}))`. It is created (annotated) on first run,
-**hot-reloads on save** (edit it in any pane; a banner shows and the last-good
-config keeps running if a save doesn't parse), and lives at:
+and lives at:
 
-```
-<config-dir>/sema/sema-coder/init.sema
+```text
+<app-config-dir>/init.sema
 ```
 
-`<config-dir>` is the OS default (`~/Library/Application Support` on macOS,
-`$XDG_CONFIG_HOME` or `~/.config` on Linux). Overrides, in order: the
-`SEMA_CODER_CONFIG_DIR` environment variable, then the OS default. Run `/config`
-to print the exact path, or `/config edit` (or `e` in the `⌃O` modal) to open it.
+`<app-config-dir>` is `$SEMA_CODER_CONFIG_DIR` when set. Otherwise it is
+`<OS-config-dir>/sema/sema-coder` (`~/Library/Application Support/sema/sema-coder`
+on macOS; below `$XDG_CONFIG_HOME` or `~/.config` on Linux). Run `/config` to
+print the exact path, or `/config edit` (or `e` in the `⌃O` modal) to open it.
+
+The TUI watches `init.sema` and applies a valid save after a short debounce.
+Malformed or invalid config leaves the complete last-good runtime active and
+shows a persistent error banner. The plain REPL does not watch the file; use
+`/reload` there. A successful apply replaces config-owned commands, hooks, and
+MCP declarations, reloads the tool directory, applies key changes, and rebuilds
+the agent. Unknown top-level keys produce warnings instead of failing the load.
 
 A complete `init.sema`:
 
-```sema
+```scheme
 (configure!
   (coder-config
     {:model      "claude-opus-5" ; default model; "" = auto-detect from API keys
@@ -180,22 +227,39 @@ A complete `init.sema`:
        (command "test" {:desc "run tests"    :run ["make" "test"]})
        (command "log"  {:desc "git log"      :run ["git" "log" "--oneline" "-n" :args]})
        (command "diff" {:desc "wc diff"      :shell "git diff $ARGS"})
-       (command "hi"   {:desc "greet"        :do (lambda (state args) (emit :info "hi!") state)}))
+       (command "hi"   {:desc "greet" :keep-input #t
+                         :do (lambda (state args) (emit :info "hi!") state)}))
+
+     ;; Lifecycle observers. A handler receives one context map; its return
+     ;; value is ignored, and an exception does not stop the agent.
+     :hooks
+     (list
+       (hook :turn-interrupted
+         (lambda (ctx)
+           (file/write "last-interrupted-turn.txt" (:turn-id ctx)))))
 
      ;; Rebind any keyboard action (defaults shown in the table below).
      :keys {}}))               ; e.g. {:mcp "ctrl-p" :resume "ctrl-y"}
 ```
 
-| Key | Default | Meaning |
+All recognized top-level keys are listed below. List fields also accept vectors.
+
+| Key | Generated first-run value | Meaning |
 | --- | --- | --- |
 | `:model` | `"claude-opus-5"` | LLM model; `""` auto-detects from `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` |
 | `:effort` | `""` | Reasoning effort (`none`/`minimal`/`low`/`medium`/`high`/`xhigh`); `""` = provider default |
-| `:max-turns` | `50` | Max agent tool-use rounds per user turn |
-| `:tool-preview-lines` | `5` | Result lines shown under each tool call in the TUI |
-| `:models` | Anthropic + OpenAI flagships | `(provider …)` groups of `(model …)` records driving the `/model` autocomplete |
-| `:mcp-servers` | `'()` | List of `(mcp-server …)` records |
-| `:commands` | `'()` | List of `(command …)` records |
+| `:max-turns` | `50` | Positive integer limiting agent tool-use rounds per user turn |
+| `:tool-preview-lines` | `5` | Positive integer limiting result lines shown under each settled tool call in the TUI |
+| `:models` | Anthropic and OpenAI catalog | `(provider …)` groups of `(model …)` records used by completion, API-key hints, and provider routing |
+| `:mcp-servers` | Autostarted local Sema MCP server | List of `(mcp-server …)` records; `coder-config` itself falls back to an empty list when no generated file is used |
+| `:commands` | Example `/test` command | List of `(command …)` records; `coder-config` itself falls back to an empty list |
+| `:hooks` | `'()` | List of `(hook EVENT HANDLER)` lifecycle observers |
 | `:keys` | `{}` | Action → key overrides |
+
+Model precedence is: the process `--model` or current `/model` override, then
+`:model`, then provider auto-detection when the value is empty. Effort
+precedence is: current `/effort` override, the selected model record's optional
+`:effort`, then top-level `:effort`, then the provider default.
 
 ### MCP servers
 
@@ -203,7 +267,7 @@ Each server is a `(mcp-server "name" opts)` value. `opts` is either a **stdio**
 launcher (`:command` + `:args`) or an **http** endpoint (`:url`), plus the
 optional app key `:autostart`:
 
-```sema
+```scheme
 (mcp-server "fs" {:command "npx" :args ["-y" "@modelcontextprotocol/server-filesystem" "."]})
 (mcp-server "asana" {:url "https://mcp.asana.com/mcp"})   ; OAuth on connect
 ```
@@ -219,7 +283,7 @@ real commands and reach real services).
 
 A `(command "name" spec)` becomes `/name`. The `spec` carries `:desc`, an
 optional `:key` (a keyboard shortcut that fires the command, e.g.
-`:key "ctrl-t"`), plus **exactly one** handler:
+`:key "ctrl-t"`), optional `:keep-input #t`, plus **exactly one** handler:
 
 - `:run` — an **argv list** run in the workspace, never shell-interpreted (the
   safe default). The keyword `:args` marks where the text you type after the
@@ -229,10 +293,13 @@ optional `:key` (a keyboard shortcut that fires the command, e.g.
 - `:do` — a **Sema handler** `(lambda (state args) … )` returning the next state
   (or the symbol `quit`); write output with `(emit :info "…")`.
 
+`:keep-input #t` prevents the TUI palette from clearing the prompt before the
+handler runs. It is intended for commands that read or rewrite the live prompt.
+
 Config commands hot-reload — removing one from `init.sema` unregisters it. You
 can also register commands at runtime from Sema, after loading `src/commands.sema`:
 
-```sema
+```scheme
 (register-command! "hello" "Say hi"
   (lambda (state args) (emit :info "hi!") state))
 ```
@@ -243,12 +310,32 @@ them once you type `/name ` (this is how `/model`, `/effort`, `/resume`, and
 `:model`, `:effort`, …). The palette shows `:value` first and `:label` as its
 description; an entry with `:active #t` is marked `●`:
 
-```sema
+```scheme
 (register-completions! "hello"
   (lambda (state)
     (list {:value "world" :label "the whole world" :active #t}
           {:value "mom"   :label "hi mom"})))
 ```
+
+### Hooks
+
+Declare lifecycle hooks in `:hooks` with `(hook EVENT HANDLER)`. Handlers run in
+declaration order, receive one context map, and have their return value ignored.
+An exception is caught so one hook cannot stop the turn or later hooks.
+
+| Event | Context | When it runs |
+| --- | --- | --- |
+| `:session-start` | `{:cwd}` | The process starts a TUI, plain REPL, or one-shot session |
+| `:pre-turn` | `{:input :messages}` | Immediately before `agent/run` |
+| `:pre-tool-call` | `{:tool :args}` | When a tool-call start event arrives |
+| `:post-turn` | `{:input :result}` | After a turn completes successfully |
+| `:on-error` | `{:input :error}` | Before a turn error or cancellation is re-raised |
+| `:turn-queued` | `{:entry}` | A TUI follow-up or interrupt-and-send message enters the queue |
+| `:turn-interrupted` | `{:input :messages :turn-id}` | The TUI has recovered and persisted an interrupted turn |
+
+Config-owned hooks are replaced on every successful config apply. Plugins can
+also call `add-hook!` directly, but a later config reload replaces the hook
+registry; use `:hooks` for observers that must survive reloads.
 
 ### Keybindings
 
@@ -257,7 +344,7 @@ defaults below → `:key` on command records → the config `:keys` map → runt
 `bind-key!` calls. A key bound to an action that isn't a built-in fires the
 like-named slash command, so all of these bind `⌃T` to `/test`:
 
-```sema
+```scheme
 (command "test" {:desc "run tests" :run ["make" "test"] :key "ctrl-t"})  ; on the command
 :keys {:test "ctrl-t"}                                                   ; in the :keys map
 (bind-key! "ctrl-t" "test")                                              ; from Sema code
@@ -278,28 +365,90 @@ logs a warning at boot/reload (first match wins).
 | `:line-start` / `:line-end` | `⌃A` / `⌃E` | Move the caret |
 | `:repaint` | `⌃L` | Force a full repaint |
 
-`Enter` queues a message while a turn is active. `Ctrl-Enter` is a fixed
-interrupt-and-send gesture: it targets the current turn id, saves the pending
+`Tab` queues a message while a turn is active. `Enter` is a fixed
+interrupt-and-send action: it targets the current turn id, saves the pending
 message, requests cancellation once, waits for the interrupted terminal event,
-then starts the replacement turn. It is separate from the configurable global
-keymap because it is a modified form of the prompt's submit action.
+then starts the replacement turn. `Ctrl-Enter` remains an alias when the
+terminal reports that modified key. These prompt actions are separate from the
+configurable global keymap. When the slash-command palette is open, completion
+takes priority over queueing on `Tab`.
+
+### Autoloaded tools
+
+Persistent custom tools live in `<app-config-dir>/tools/*.sema`. Files are
+loaded in name order at boot and on every successful config apply. A tool-file
+edit alone does not trigger the watcher; run `/reload` or save `init.sema` after
+editing it. Removed files and replaced registrations take effect at the next
+apply.
+
+```scheme
+;; <app-config-dir>/tools/echo.sema
+(deftool echo
+  "Return text unchanged"
+  {:text {:type :string :description "Text to return"}}
+  (lambda (text) text))
+
+(register-tool! echo)
+```
+
+The agent is rebuilt after config apply, so registered tools are available on
+the next turn. A bad tool file produces a config warning and does not prevent
+other tool files from loading.
+
+### Plugins
+
+Plugins are general Sema extension files loaded once at boot, after
+`init.sema`, from these directories in this order:
+
+```text
+<app-config-dir>/plugins/*.sema
+<cwd>/.sema-coder/plugins/*.sema
+```
+
+Files are sorted within each directory; project files load after global files.
+Plugins perform registration directly with APIs such as `register-command!`,
+`register-completions!`, `register-overlay!`, `add-hook!`, and `bind-key!`.
+Restart Sema Coder after editing a plugin. See
+[`docs/extension-api.md`](docs/extension-api.md) for the supported API.
+
+### Environment variables
+
+| Variable | Purpose |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Configure the Anthropic provider |
+| `OPENAI_API_KEY` | Configure the OpenAI provider |
+| `SEMA_CODER_CONFIG_DIR` | Override the Sema Coder directory containing `init.sema`, `sessions/`, `tools/`, and global `plugins/` |
+| `VISUAL`, then `EDITOR` | Preferred command used by `/config edit` |
 
 ## Sessions
 
-Every turn is written to `<config-dir>/sema/sema-coder/sessions/<id>.jsonl` — a
-meta line (including queued input) plus one message per line, in the exact
-`agent/run` shape (tool calls and results included), so a conversation resumes
-verbatim. Interrupted turns retain completed tool rounds, currently streamed
-assistant text, correlated cancellation results for unfinished tool calls, and
-a typed model-visible control item which warns that side effects can be partial.
-`/resume` (or `⌃R`)
-opens a picker of past sessions, newest first: `↑↓` to move, `Enter` to preview a
-session's messages, `r` to restore the conversation into the current session and
-keep going.
+The TUI writes every turn to `<app-config-dir>/sessions/<id>.jsonl`. The plain
+REPL and one-shot mode do not persist sessions. Each file has a metadata line
+followed by one message per line in the exact `agent/run` shape, including tool
+calls and tool results. Metadata includes the model, effort, queued input,
+paused state, and bounded controller event log.
+
+Interrupted turns retain completed tool rounds, currently streamed assistant
+text, correlated cancellation results for unfinished tool calls, and a typed
+model-visible control item warning that side effects can be partial. `/resume`
+or `⌃R` opens a newest-first picker: `↑`/`↓` selects, `Enter` previews, and `r`
+restores the selected session. `/resume ID` restores directly and brings back
+its model, effort, queue, paused state, events, and exact message history.
 
 ## Tools
 
-`read-file`, `write-file`, `edit-file`, `bash`, `grep`, `find-files`, `list-dir`.
+| Tool | Purpose and limits |
+| --- | --- |
+| `read-file` | Read a numbered line window; defaults to 2,000 lines and caps returned text at 100,000 characters |
+| `write-file` | Create or overwrite a file, creating parent directories |
+| `edit-file` | Replace one exact string; requires a unique match unless `replace_all` is true |
+| `bash` | Run a foreground shell command in the workspace with a default 120-second timeout, or set `background=true` to return an application-owned task ID immediately |
+| `task-output` | Read a background task's retained stdout/stderr and status; optionally wait up to a caller-set deadline |
+| `task-list` | List background task IDs, commands, state, timing, exit codes, output sizes, and truncation flags |
+| `task-stop` | Terminate one background task; on Unix, this also terminates descendant processes |
+| `grep` | Search contents with ripgrep or grep; supports case-insensitive and glob filters and returns at most 100 lines |
+| `find-files` | Find names by glob while skipping `.git`, `node_modules`, and `target`; returns at most 200 lines |
+| `list-dir` | List one directory with types and sizes |
 
 Every **path** — including the search tools' — resolves through `path/within?`,
 which keeps reads, writes, and searches inside the workspace root (catching both
@@ -311,13 +460,25 @@ commands with your privileges, unrestricted — the path check above applies onl
 to the file/search tools. Treat a session like you'd treat any coding agent:
 run it in a workspace you're prepared to let it modify.
 
+Background commands are non-interactive: Sema Coder closes their stdin at
+launch. They continue across normal turns and agent-turn interruption, but they
+are not persisted across app restart and are stopped when Sema Coder exits.
+Each stdout and stderr stream retains a bounded 25,000-character head and
+25,000-character tail; `task-output` and `/debug tasks` report omitted content.
+Use background mode for servers, file watchers, or independent long-running
+commands. Do not append `&` or enable the command's own daemon mode;
+`background=true` already owns the process tree. Keep a command in the
+foreground when its result is required before the next agent step.
+
 ## Development
 
 ```bash
-./test.sema                # run the test suite (or: jake coder.test)
-./test.sema -- markdown    # only files whose name contains a term
-jake coder.e2e             # controller unit tests + process-level driver
-jake coder.help            # show CLI help through Jake
+./test.sema                       # full suite (or: jake coder.test)
+./test.sema -- markdown keymap     # test files matching either term
+jake coder.run                     # interactive app
+jake coder.ask q='explain this'    # one-shot prompt
+jake coder.e2e                     # controller + process-level tests
+jake coder.help                    # CLI help
 ```
 
 The runner is itself Sema — it runs each `tests/*_test.sema` in a child
@@ -333,6 +494,19 @@ partial-history, and event-order races need no network or terminal. Design
 notes are in `docs/` (dated planning documents are archived under `docs/plans/`;
 `docs/language-friction.md` tracks upstream sema issues this app found, with
 their fix status).
+
+Live provider interruption checks are opt-in and are not discovered by the
+default runner:
+
+```bash
+SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- text
+SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- tool
+SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- steer
+SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- background
+```
+
+Set `SEMA_CODER_TEST_TIMEOUT_MS` to a positive millisecond value to override the
+test runner's 30-second per-file timeout.
 
 ## License
 

@@ -1,0 +1,62 @@
+(load "harness.sema")
+(load "../src/commands.sema")
+
+(defun this-test-dir ()
+  (let loop ((args (sys/args)))
+    (cond
+      ((null? args) "tests")
+      ((string/ends-with? (car args) "docs_test.sema") (path/dir (car args)))
+      (else (loop (cdr args))))))
+
+(define repo-root (path/dir (this-test-dir)))
+(define readme (file/read (path/join repo-root "README.md")))
+(define extension-doc
+  (file/read (path/join repo-root "docs" "extension-api.md")))
+(define attributes (file/read (path/join repo-root ".gitattributes")))
+
+;; Every built-in command must be discoverable without reading source.
+(for-each
+  (lambda (name)
+    (check-contains f"README documents /${name}" readme f"`/${name}"))
+  *command-order*)
+
+;; Config and hook registries are the implementation sources of truth.
+(for-each
+  (lambda (key)
+    (check-contains f"README documents config ${key}" readme f"`${key}`"))
+  (known-config-keys))
+(for-each
+  (lambda (event)
+    (check-contains f"README documents hook ${event}" readme f"`${event}`"))
+  hook-events)
+(for-each
+  (lambda (action)
+    (check-contains f"README documents key action ${action}"
+      readme
+      f"`${action}`"))
+  (keys default-keymap))
+(for-each
+  (lambda (name)
+    (check-contains f"README documents tool ${name}" readme f"`${name}`"))
+  (tool-names))
+(for-each
+  (lambda (flag)
+    (check-contains f"README documents CLI flag ${flag}" readme flag))
+  (list "--model" "--print" "--version" "--help"))
+
+(for-each
+  (lambda (name)
+    (check-contains f"README documents /debug ${name}"
+      readme
+      f"`/debug ${name}`"))
+  (list "status" "session" "transcript" "tasks"))
+
+(check-contains "GitHub classifies .sema files as Scheme"
+  attributes
+  "*.sema text eol=lf linguist-language=Scheme")
+(check-not-contains "README has no unsupported sema fences" readme "```sema")
+(check-not-contains "extension docs have no unsupported sema fences"
+  extension-doc
+  "```sema")
+
+(done)

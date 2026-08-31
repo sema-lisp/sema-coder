@@ -14,21 +14,22 @@ TUI (there is no prompt/overlay in the piped REPL or one-shot `-p`).
 
 ## Where a plugin lives
 
-A plugin is a `*.sema` file in either dir (global loads first, project shadows):
+A plugin is a `*.sema` file in either directory. Global plugins load first;
+project plugins load after them:
 
-```
+```text
 <config-dir>/plugins/*.sema        # global — every project
 <cwd>/.sema-coder/plugins/*.sema    # project-local
 ```
 
 It's `load`ed **once at boot**, after your `init.sema` config is applied. Unlike
-`init.sema` and `tools/` (which hot-reload), plugin edits need a restart — a
-plugin may `add-hook!` (which appends), so re-loading would duplicate. A plugin
-runs registration side-effects directly; it does **not** call `configure!`.
+the TUI's watched `init.sema`, plugin edits need a restart — a plugin may
+`add-hook!` (which appends), so re-loading would duplicate. A plugin runs
+registration side-effects directly; it does **not** call `configure!`.
 
 Minimal plugin:
 
-```sema
+```scheme
 ;; <config-dir>/plugins/hello.sema
 (register-command! "hello" "say hello"
   (lambda (state args) (emit :info "hi from a plugin") state))
@@ -39,7 +40,7 @@ Minimal plugin:
 
 ## Commands
 
-```sema
+```scheme
 (register-command! name desc handler [opts])   ; name/desc strings; opts a flag map
 ;   handler : (state args) → next-state | 'quit     args = text after the command
 ;   opts    : {:keep-input #t}  — don't auto-clear the prompt on palette run [TUI]
@@ -58,7 +59,7 @@ Minimal plugin:
 
 ## Keybindings
 
-```sema
+```scheme
 (bind-key! key action)     ; key "ctrl-t"; action = a built-in keyword OR a command name
 (unbind-key! action)       ; drop a runtime bind
 ```
@@ -68,22 +69,23 @@ to a command name just runs that `/command`.
 
 ## Tools (agent-callable)
 
-```sema
+```scheme
 (deftool name "description" {:param {:type :string :description "…"}} (lambda (param) …))
 (register-tool! name)      ; register the deftool'd value into the agent's tool set
 ```
 
-For **persistent** tools prefer a file in the `tools/` dir (it hot-reloads and
-survives config reloads); a plugin's `register-tool!` lives in the resettable
-layer and is dropped on the next config reload. The handler returns the string
-the agent sees. Paths should go through `resolve-path` / `run-in-workspace`.
+For **persistent** tools prefer a file in the `tools/` dir. It is reconciled at
+boot and on each config apply; run `/reload` after editing a tool file. A
+plugin's `register-tool!` lives in the resettable layer and is dropped on the
+next config reload. The handler returns the string the agent sees. Paths should
+go through `resolve-path` / `run-in-workspace`.
 
 ## Overlays (modals) `[TUI]`
 
 Register a modal as a descriptor, then open it by kind. See the overlay design
 doc for the full model; the everyday surface:
 
-```sema
+```scheme
 (register-overlay! (overlay-spec {:kind :render :open :on-key}))
 ;   :open   (fn args → state-map)          initial state; must include :kind
 ;   :render (fn state layout → rows)        list of styled rows (use list-modal)
@@ -100,7 +102,7 @@ doc for the full model; the everyday surface:
 
 The reusable list widget (Style B: rounded box + `▌` gutter):
 
-```sema
+```scheme
 (list-modal {:title s :items (…) :sel n :layout m :render-item fn :actions (…)})
 ;   :render-item (fn item selected? inner-width → row-string)   ; per-row content
 ;   :actions     (list {:key "c" :label "connect"} …)           ; footer hints
@@ -109,7 +111,7 @@ The reusable list widget (Style B: rounded box + `▌` gutter):
 
 Key predicates for `:on-key` (a key event is `{:kind :key|:char|:ctrl …}`):
 
-```sema
+```scheme
 (key-name= k :enter)   (key-char= k "c")   (key-ctrl= k "o")
 ```
 
@@ -119,7 +121,7 @@ A throwing `:open` becomes an error block, not a crash. To edit the prompt from
 
 ## Hooks (turn lifecycle)
 
-```sema
+```scheme
 (add-hook! event handler)     ; handler (ctx) → ignored; a throw is caught + swallowed
 ```
 
@@ -130,14 +132,17 @@ A throwing `:open` becomes an error block, not a crash. To edit the prompt from
 | `:pre-tool-call` | `{:tool :args}` |
 | `:post-turn` | `{:input :result}` |
 | `:on-error` | `{:input :error}` (the error then re-raises) |
+| `:turn-queued` | `{:entry}` |
+| `:turn-interrupted` | `{:input :messages :turn-id}` |
 
 `init.sema` can also declare hooks as data: `:hooks (list (hook :pre-turn fn))`.
+Config apply replaces the hook registry, including hooks added by plugins.
 
 ## Prompt input `[TUI]`
 
 The composing prompt and caret, read + edited only through these:
 
-```sema
+```scheme
 (prompt-text)      → the current prompt string
 (prompt-cursor)    → caret index (codepoints)
 (prompt-insert! s)   ; splice s at the caret, advance past it
@@ -147,7 +152,7 @@ The composing prompt and caret, read + edited only through these:
 
 ## Output
 
-```sema
+```scheme
 (emit kind text)     ; :info | :ok | :error | :line (pre-styled) | :raw (stdout)
 ```
 
@@ -155,13 +160,13 @@ The composing prompt and caret, read + edited only through these:
 handlers**. It is only rerouted to the TUI *during command dispatch*; from an
 overlay `:on-key` or a hook (which run off-dispatch) use:
 
-```sema
+```scheme
 (add-block! {:kind :info :text "…"})   ; [TUI] a transcript block (:info/:ok/:error/:warn/…)
 ```
 
 ## Workspace + config helpers
 
-```sema
+```scheme
 workspace-root                 ; var: the workspace root path (set per session)
 (run-in-workspace cmd)         ; run a shell string with cwd pinned → {:stdout :stderr :exit-code}
 (resolve-path workspace-root p) ; a workspace-confined absolute path (for tools)
