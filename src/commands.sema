@@ -433,14 +433,16 @@
      :queue (if *tui-active* (queued-messages) '())
      :queue-paused (if *tui-active* *queue-paused* #f)}))
 
-(register-command! "debug" "Developer diagnostics: /debug [status|session|transcript]"
+(register-command! "debug" "Developer diagnostics: /debug [status|session|transcript|tasks]"
   (lambda (state args)
     (match (string/trim args)
       ("status"
+        (poll-background-tasks!)
         (if *tui-active*
           (emit :raw (json/encode-pretty (turn-controller-state)))
           (emit :raw (json/encode-pretty
                        {:status :idle
+                        :background-tasks (background-task-summaries)
                         :message-count (length (get state :messages '()))}))))
       ("session"
         (emit :raw (json/encode-pretty (debug-session-state state))))
@@ -448,7 +450,9 @@
         (if *tui-active*
           (emit :raw (json/encode-pretty (transcript-debug-state)))
           (emit :error "/debug transcript is available in the TUI")))
-      ("" (emit :info "available diagnostics: /debug status, /debug session, /debug transcript"))
+      ("tasks"
+        (emit :raw (json/encode-pretty (background-task-debug-state))))
+      ("" (emit :info "available diagnostics: /debug status, /debug session, /debug transcript, /debug tasks"))
       (_ (emit :error f"unknown diagnostic: ${args} (try /debug)")))
     state))
 
@@ -456,7 +460,8 @@
   (lambda (state)
     (list {:value "status" :label "show turn-controller state and events"}
           {:value "session" :label "show exact messages and queued input"}
-          {:value "transcript" :label "show TUI blocks and render-cache state"})))
+          {:value "transcript" :label "show TUI blocks and render-cache state"}
+          {:value "tasks" :label "show background tasks and retained output"})))
 
 (register-command! "mcp" "Manage MCP servers (opens the modal; ⌃O in the TUI)"
   (lambda (state args)

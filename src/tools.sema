@@ -1,10 +1,11 @@
 ;; tools.sema — LLM-callable tools for the Sema Coder agent
 ;;
-;; Seven tools: read-file, write-file, edit-file, bash, grep, find-files,
-;; list-dir. Every path funnels through resolve-path / resolve-dir, which keep
-;; reads, writes, and searches inside the workspace root (see util.sema). The
-;; search tools invoke their programs argv-style — no `sh -c` — so a pattern
-;; or path can't smuggle shell syntax into the command line.
+;; Ten tools: read-file, write-file, edit-file, bash, task-output, task-list,
+;; task-stop, grep, find-files, and list-dir. Every path funnels through
+;; resolve-path / resolve-dir, which keep reads, writes, and searches inside the
+;; workspace root (see util.sema). The search tools invoke their programs
+;; argv-style — no `sh -c` — so a pattern or path can't smuggle shell syntax
+;; into the command line.
 
 (load "util.sema")
 (load "text.sema")
@@ -17,6 +18,26 @@
 (define MAX-FIND-LINES   200)    ;; find-files result cap
 (define DEFAULT-BASH-TIMEOUT-MS 120000) ;; bash default kill-after (2 min) so a hung command can't wedge the turn
 (define MAX-CAPTURE-CHARS (+ MAX-OUTPUT-CHARS 1)) ;; retain one extra char so truncate-chars can report the cut
+(define BACKGROUND-TASK-LIMIT 32)
+(define BACKGROUND-POLL-MS 25)
+(define BACKGROUND-FINALIZE-MS 250)
+(define BACKGROUND-STREAM-CHARS (quotient MAX-OUTPUT-CHARS 2))
+(define BACKGROUND-STREAM-HEAD (quotient BACKGROUND-STREAM-CHARS 2))
+(define BACKGROUND-STREAM-TAIL (- BACKGROUND-STREAM-CHARS BACKGROUND-STREAM-HEAD))
+
+;; Background processes belong to the Sema Coder process, not to the agent turn
+;; which launched them. The native proc registry owns the OS handles; this list
+;; owns user-facing metadata and bounded output. The TUI starts the monitor as a
+;; sibling of all turns so cancelling one turn cannot cancel process monitoring.
+(define *background-tasks* '())
+(define *background-task-seq* 0)
+(define *background-monitor* #f)
+(define current-background-task-change (make-parameter (lambda () nil)))
+
+(defun notify-background-task-change! ()
+  "Notify the frontend without allowing a redraw failure to change process
+   lifecycle results or stop the background monitor."
+  (try ((current-background-task-change)) (catch e nil)))
 
 (deftool read-file
   "Read a file and return its contents with line numbers. Always read a file before editing it. Reads up to 2000 lines from the top by default; pass offset/limit to page through a larger file."
@@ -121,7 +142,8 @@
   (if (= (sys/platform) "windows")
     (begin
       (proc/kill handle)
-      (try (async (proc/wait handle)) (catch wait-error nil)))
+      (let ((waiter (async (proc/wait handle))))
+        (try (await waiter) (catch wait-error nil))))
     (let ((waiter (async (proc/wait handle))))
       ;; A zero-duration timeout still drives ready work before it fires. This
       ;; lets proc/wait install its process-group cancellation hook.
@@ -130,6 +152,326 @@
         (catch timeout-error
           (async/cancel waiter)
           (try (await waiter) (catch cancelled nil)))))))
+
+;; ── Background process registry ─────────────────────────────────────────────
+
+(defun empty-background-capture () {:head "" :tail "" :chars 0})
+
+(defun append-background-capture (capture chunk)
+  "Append CHUNK to a bounded head/tail capture while counting all characters."
+  (if (= chunk "")
+    capture
+    (let* ((head (get capture :head ""))
+           (tail (get capture :tail ""))
+           (head-room (max 0 (- BACKGROUND-STREAM-HEAD (string/length head))))
+           (head-n (min head-room (string/length chunk)))
+           (next-head
+             (string/append head (string/slice chunk 0 head-n)))
+           (rest (string/slice chunk head-n (string/length chunk)))
+           (next-tail-full (string/append tail rest))
+           (next-tail
+             (if (> (string/length next-tail-full) BACKGROUND-STREAM-TAIL)
+               (string/slice next-tail-full
+                 (- (string/length next-tail-full) BACKGROUND-STREAM-TAIL)
+                 (string/length next-tail-full))
+               next-tail-full)))
+      {:head next-head
+       :tail next-tail
+       :chars (+ (get capture :chars 0) (string/length chunk))})))
+
+(defun background-capture-omitted (capture)
+  (max 0
+    (- (get capture :chars 0)
+       (string/length (get capture :head ""))
+       (string/length (get capture :tail "")))))
+
+(defun background-capture-text (capture)
+  (let ((omitted (background-capture-omitted capture)))
+    (if (= omitted 0)
+      (string/append (get capture :head "") (get capture :tail ""))
+      (string/append
+        (get capture :head "")
+        f"\n... ${omitted} characters omitted ...\n"
+        (get capture :tail "")))))
+
+(defun background-task-active? (task)
+  (member (get task :status :unknown) (list :running :settling :stopping)))
+
+(defun background-task-by-id (id)
+  (let loop ((tasks *background-tasks*))
+    (cond
+      ((null? tasks) #f)
+      ((= (get (car tasks) :id "") id) (car tasks))
+      (else (loop (cdr tasks))))))
+
+(defun update-background-task! (task)
+  (set! *background-tasks*
+    (map #(if (= (get % :id "") (:id task)) task %) *background-tasks*))
+  task)
+
+(defun next-background-task-id! ()
+  (set! *background-task-seq* (+ *background-task-seq* 1))
+  f"task-${(sys/pid)}-${(time-ms)}-${*background-task-seq*}")
+
+(defun drain-background-task (task)
+  "Drain currently buffered output from TASK's process handle."
+  (let* ((handle (:handle task))
+         (out (proc/read-stdout handle))
+         (err (proc/read-stderr handle)))
+    (assoc task
+      :stdout-capture
+        (append-background-capture (:stdout-capture task) out)
+      :stderr-capture
+        (append-background-capture (:stderr-capture task) err)
+      :updated-at (time-ms))))
+
+(defun cancelled-condition? (e)
+  (= (get e :type :unknown) :cancelled))
+
+(defun wait-background-handle (handle fallback-code)
+  "Wait for output-reader EOF after the shell leader exits. A command which
+   starts a child with `&` can leave the pipes open after that leader exits; the
+   bounded wait then cancels proc/wait, which terminates the process group."
+  (let ((waiter (async (proc/wait handle))))
+    (try
+      {:code (async/timeout BACKGROUND-FINALIZE-MS waiter) :forced #f}
+      (catch e
+        (cond
+          ((cancelled-condition? e) (throw e))
+          ((= (get e :type :unknown) :timeout)
+            (async/cancel waiter)
+            (try (await waiter) (catch cancelled nil))
+            {:code fallback-code :forced #t})
+          (else (throw e)))))))
+
+(defun finalize-background-task! (id)
+  "Reap a process already observed as exited, flush its reader threads, and
+   close the native handle. A concurrent finalizer sees the temporary busy
+   handle and leaves the :settling task for the owner to finish."
+  (when-let (task (background-task-by-id id))
+    (when (= (:status task) :settling)
+      (try
+        (let* ((handle (:handle task))
+               (waited (wait-background-handle handle (get task :exit-code -1)))
+               (code (:code waited))
+               (latest (or (background-task-by-id id) task))
+               (drained
+                 (if (:forced waited)
+                   latest
+                   (drain-background-task latest)))
+               (finished (assoc drained
+                           :status (if (= code 0) :completed :failed)
+                           :exit-code code
+                           :finished-at (time-ms)))
+               (finished
+                 (if (:forced waited)
+                   (assoc finished :cleanup-warning
+                     (if (= (sys/platform) "windows")
+                       "process leader exited but output stayed open; finalization timed out"
+                       "process leader exited but descendants kept output open; remaining process group stopped"))
+                   finished)))
+          (proc/close handle)
+          (update-background-task! finished)
+          (notify-background-task-change!))
+        (catch e
+          (if (cancelled-condition? e)
+            (throw e)
+            ;; Another task may own proc/wait for this handle. Leave it in
+            ;; :settling so a later poll can finish or recover it.
+            (unless (string/contains? (get e :message (str e)) "busy")
+              (let* ((latest (or (background-task-by-id id) task))
+                     (code (get latest :exit-code -1)))
+                (try (proc/close (:handle latest)) (catch close-error nil))
+                (update-background-task!
+                  (assoc latest
+                    :status (if (= code 0) :completed :failed)
+                    :finished-at (time-ms)
+                    :finalize-error (get e :message (str e))))
+                (notify-background-task-change!)))))))))
+
+(defun poll-background-task! (id)
+  "Drain and advance one task without blocking while its process is running."
+  (when-let (task (background-task-by-id id))
+    (cond
+      ((= (:status task) :running)
+        (try
+          (let* ((drained (drain-background-task task))
+                 (code (proc/exit-code (:handle drained))))
+            (if (number? code)
+              (begin
+                (update-background-task!
+                  (assoc drained :status :settling :exit-code code))
+                (finalize-background-task! id))
+              (update-background-task! drained)))
+          (catch e
+            (if (cancelled-condition? e)
+              (throw e)
+              (begin
+                (try (proc/close (:handle task)) (catch close-error nil))
+                (update-background-task!
+                  (assoc task :status :failed :exit-code -1
+                    :finished-at (time-ms)
+                    :error (get e :message (str e))))
+                (notify-background-task-change!))))))
+      ((= (:status task) :settling) (finalize-background-task! id))
+      (else task))))
+
+(defun poll-background-tasks! ()
+  "Poll a stable id snapshot. Tasks launched during the pass remain registered
+   and are picked up by the next pass."
+  (for-each poll-background-task! (map :id *background-tasks*))
+  *background-tasks*)
+
+(defun background-monitor-loop ()
+  (let loop ()
+    (poll-background-tasks!)
+    (async/sleep BACKGROUND-POLL-MS)
+    (loop)))
+
+(defun start-background-monitor! ()
+  (unless (and *background-monitor* (async/pending? *background-monitor*))
+    (set! *background-monitor*
+      (async/spawn (lambda () (background-monitor-loop)))))
+  *background-monitor*)
+
+(defun stop-background-monitor! ()
+  (when *background-monitor*
+    (let ((monitor *background-monitor*))
+      (async/cancel monitor)
+      (try (await monitor) (catch stopped nil))))
+  (set! *background-monitor* #f))
+
+(defun drop-oldest-settled-background-task (tasks)
+  (let loop ((head '()) (tail tasks))
+    (cond
+      ((null? tail) tasks)
+      ((not (background-task-active? (car tail)))
+        (append (reverse head) (cdr tail)))
+      (else (loop (cons (car tail) head) (cdr tail))))))
+
+(defun make-background-task-room! ()
+  "Keep at most BACKGROUND-TASK-LIMIT records. Settled records are evicted in
+   oldest-first order; live processes are never evicted."
+  (poll-background-tasks!)
+  (let loop ()
+    (when (>= (length *background-tasks*) BACKGROUND-TASK-LIMIT)
+      (let ((next (drop-oldest-settled-background-task *background-tasks*)))
+        (if (= (length next) (length *background-tasks*))
+          (error f"background task limit reached (${BACKGROUND-TASK-LIMIT} running)")
+          (begin (set! *background-tasks* next) (loop)))))))
+
+(defun start-background-task! (command)
+  "Spawn COMMAND, close its stdin, and register it before returning."
+  (make-background-task-room!)
+  (let* ((handle (proc/spawn (system-shell-argv command) {:cwd workspace-root}))
+         (id (next-background-task-id!))
+         (now (time-ms))
+         (task {:id id :handle handle :command command
+                :status :running :started-at now :updated-at now
+                :exit-code nil
+                :stdout-capture (empty-background-capture)
+                :stderr-capture (empty-background-capture)}))
+    ;; Background commands are non-interactive. EOF prevents a hidden read or
+    ;; confirmation prompt from holding the task open indefinitely.
+    (proc/close-stdin handle)
+    (set! *background-tasks* (append *background-tasks* (list task)))
+    (notify-background-task-change!)
+    task))
+
+(defun background-task-summary (task)
+  (let* ((out (:stdout-capture task))
+         (err (:stderr-capture task))
+         (end (get task :finished-at (time-ms))))
+    {:task-id (:id task)
+     :status (keyword->string (:status task))
+     :command (:command task)
+     :started-at (:started-at task)
+     :updated-at (get task :updated-at (:started-at task))
+     :finished-at (get task :finished-at nil)
+     :elapsed-ms (max 0 (- end (:started-at task)))
+     :exit-code (get task :exit-code nil)
+     :stdout-chars (get out :chars 0)
+     :stderr-chars (get err :chars 0)
+     :stdout-truncated (> (background-capture-omitted out) 0)
+     :stderr-truncated (> (background-capture-omitted err) 0)
+     :error (get task :error (get task :finalize-error ""))
+     :cleanup-warning (get task :cleanup-warning "")}))
+
+(defun background-task-output-state (task)
+  (merge (background-task-summary task)
+    {:stdout (background-capture-text (:stdout-capture task))
+     :stderr (background-capture-text (:stderr-capture task))}))
+
+(defun background-task-summaries ()
+  (map background-task-summary *background-tasks*))
+
+(defun background-task-debug-state ()
+  (poll-background-tasks!)
+  {:count (length *background-tasks*)
+   :limit BACKGROUND-TASK-LIMIT
+   :poll-ms BACKGROUND-POLL-MS
+   :finalize-ms BACKGROUND-FINALIZE-MS
+   :monitor-running
+     (if (and *background-monitor* (async/pending? *background-monitor*)) #t #f)
+   :tasks (map background-task-output-state *background-tasks*)})
+
+(defun active-background-task-count ()
+  (length (filter background-task-active? *background-tasks*)))
+
+(defun wait-for-background-task! (id timeout-ms)
+  (let ((deadline (+ (time-ms) timeout-ms)))
+    (let loop ()
+      (poll-background-task! id)
+      (let ((task (background-task-by-id id)))
+        (cond
+          ((not task) #f)
+          ((not (background-task-active? task)) task)
+          ((>= (time-ms) deadline) task)
+          (else
+            (async/sleep (min BACKGROUND-POLL-MS
+                           (max 0 (- deadline (time-ms)))))
+            (loop)))))))
+
+(defun stop-background-task! (id)
+  (poll-background-task! id)
+  (when-let (task (background-task-by-id id))
+    (cond
+      ((or (= (:status task) :running) (= (:status task) :stopping))
+        (let ((stopping
+                (if (= (:status task) :running)
+                  (assoc task :status :stopping)
+                  task)))
+          (update-background-task! stopping)
+          ;; Drain first because group termination tombstones the native handle.
+          (let ((drained
+                  (try (drain-background-task stopping)
+                    (catch e stopping))))
+            (terminate-proc! (:handle task))
+            (try (proc/close (:handle task)) (catch close-error nil))
+            (let ((stopped (assoc drained :status :stopped :exit-code -1
+                             :finished-at (time-ms))))
+              (update-background-task! stopped)
+              (notify-background-task-change!)
+              stopped))))
+      ((= (:status task) :settling)
+        (wait-for-background-task! id 1000))
+      (else task))))
+
+(defun stop-all-background-tasks! ()
+  "Stop the monitor, terminate every live process, and keep final records for
+   callers that inspect shutdown state."
+  (stop-background-monitor!)
+  (for-each
+    (lambda (id)
+      (try (stop-background-task! id) (catch e nil)))
+    (map :id (filter background-task-active? *background-tasks*)))
+  *background-tasks*)
+
+(defun reset-background-tasks! ()
+  "Test/support reset which also prevents live child-process leaks."
+  (stop-all-background-tasks!)
+  (set! *background-tasks* '())
+  (set! *background-task-seq* 0))
 
 (defun run-in-workspace-timed (command timeout-ms)
   "Like run-in-workspace but kills COMMAND after TIMEOUT-MS. Spawned via proc/*
@@ -158,28 +500,62 @@
             (loop out2 err2)))))))
 
 (deftool bash
-  "Run a shell command in the workspace. Returns stdout, stderr, and exit code. Killed after 120s (or the given timeout) so a hung command can't stall the session. Use for tests, builds, git — not for reading/searching files (use read-file/grep)."
+  "Run a shell command in the workspace. Foreground commands return stdout, stderr, and exit code and are killed after 120s by default. Set background=true for servers, watchers, or independent long-running commands; this returns a task id immediately. Use task-output to inspect it and task-stop to end it. Background stdin is closed. Do not background a command whose result is required before the next step."
   {:command {:type :string  :description "The shell command to run"}
-   :timeout {:type :integer :description "Seconds before the command is killed (optional; default 120)"}}
-  (lambda (command timeout)
+   :timeout {:type :integer :description "Seconds before a foreground command is killed (optional; default 120)" :optional #t}
+   :background {:type :boolean :description "Run as an application-owned background task and return its task id immediately (optional; default false)" :default #f}}
+  (lambda (command timeout background)
     (try
-      (let* ((tmo    (if (and (number? timeout) (> timeout 0)) (* timeout 1000) DEFAULT-BASH-TIMEOUT-MS))
-             (result (run-in-workspace-timed command tmo))
-             (out    (:stdout result))
-             (err    (:stderr result))
-             (code   (:exit-code result))
-             (parts  (append
-                       (if (= (string/trim out) "") '() (list out))
-                       (if (= (string/trim err) "") '() (list f"stderr:\n${err}"))
-                       (if (:timed-out result)
-                         (list f"[timed out after ${(quotient tmo 1000)}s — process killed]")
-                         (if (= code 0) '() (list f"Exit code: ${code}"))))))
-        (if (null? parts)
-          "Command completed successfully (no output)."
-          (-> (string/join parts "\n")
-              (truncate-chars MAX-OUTPUT-CHARS)
-              (truncate-lines MAX-OUTPUT-LINES))))
+      (if background
+        (json/encode-pretty
+          (background-task-summary (start-background-task! command)))
+        (let* ((tmo    (if (and (number? timeout) (> timeout 0)) (* timeout 1000) DEFAULT-BASH-TIMEOUT-MS))
+               (result (run-in-workspace-timed command tmo))
+               (out    (:stdout result))
+               (err    (:stderr result))
+               (code   (:exit-code result))
+               (parts  (append
+                         (if (= (string/trim out) "") '() (list out))
+                         (if (= (string/trim err) "") '() (list f"stderr:\n${err}"))
+                         (if (:timed-out result)
+                           (list f"[timed out after ${(quotient tmo 1000)}s — process killed]")
+                           (if (= code 0) '() (list f"Exit code: ${code}"))))))
+          (if (null? parts)
+            "Command completed successfully (no output)."
+            (-> (string/join parts "\n")
+                (truncate-chars MAX-OUTPUT-CHARS)
+                (truncate-lines MAX-OUTPUT-LINES)))))
       (catch e f"Error running command: ${e}"))))
+
+(deftool task-output
+  "Read retained stdout, stderr, and status for a background bash task. Set wait=true to wait up to timeout seconds for a terminal state. A running status after the deadline is not success; poll again. Output retains a bounded head and tail and reports truncation."
+  {:task_id {:type :string :description "Task id returned by bash with background=true"}
+   :wait {:type :boolean :description "Wait for completion before returning (optional; default false)" :default #f}
+   :timeout {:type :integer :description "Maximum seconds to wait when wait=true (optional; default 30)" :default 30}}
+  (lambda (task_id wait timeout)
+    (let* ((seconds (if (and (number? timeout) (> timeout 0)) timeout 30))
+           (task (if wait
+                   (wait-for-background-task! task_id (* seconds 1000))
+                   (begin (poll-background-task! task_id)
+                          (background-task-by-id task_id)))))
+      (if task
+        (json/encode-pretty (background-task-output-state task))
+        f"Error: No background task ${task_id}"))))
+
+(deftool task-list
+  "List background bash tasks in this Sema Coder process. Use task-output for retained output and task-stop to terminate one."
+  {}
+  (lambda ()
+    (poll-background-tasks!)
+    (json/encode-pretty (background-task-summaries))))
+
+(deftool task-stop
+  "Terminate a background bash task and return its final retained output and status. On Unix, termination includes descendant processes."
+  {:task_id {:type :string :description "Task id returned by bash with background=true"}}
+  (lambda (task_id)
+    (if-let (task (stop-background-task! task_id))
+      (json/encode-pretty (background-task-output-state task))
+      f"Error: No background task ${task_id}")))
 
 (defun blankish? (s) (or (not s) (= s "")))   ;; nil, #f, or ""
 
@@ -308,4 +684,5 @@
 
 ;; Register the built-in tools into the registry (once, at load).
 (for-each register-builtin-tool!
-  (list read-file write-file edit-file bash grep find-files list-dir))
+  (list read-file write-file edit-file bash task-output task-list task-stop
+        grep find-files list-dir))

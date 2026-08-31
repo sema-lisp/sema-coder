@@ -7,7 +7,7 @@
   (get *commands* "debug" #f))
 (check "debug completions list all diagnostics"
   (map :value (command-completions "debug" {:messages '()}))
-  (list "status" "session" "transcript"))
+  (list "status" "session" "transcript" "tasks"))
 
 (define emitted '())
 (parameterize ((current-emit
@@ -47,5 +47,14 @@
   (dispatch-command (parse-command "/debug transcript") headless-state))
 (check "headless transcript diagnostic explains TUI requirement"
   (:kind (car emitted)) :error)
+
+(set! emitted '())
+(parameterize ((current-emit
+                 (lambda (kind text)
+                   (set! emitted (append emitted (list {:kind kind :text text}))))))
+  (dispatch-command (parse-command "/debug tasks") headless-state))
+(let ((tasks (json/decode (:text (car emitted)))))
+  (check "headless debug tasks emits raw JSON" (:kind (car emitted)) :raw)
+  (check "headless debug tasks starts empty" (:tasks tasks) '()))
 
 (done)

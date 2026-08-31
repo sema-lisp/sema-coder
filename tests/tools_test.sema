@@ -61,5 +61,162 @@
   (check-true "stdout capture is bounded"
     (<= (string/length (:stdout r)) MAX-CAPTURE-CHARS)))
 
+;; ── Background bash tasks: lifecycle, output, cancellation independence ──
+(reset-background-tasks!)
+
+(defun invoke-json (tool-def args)
+  (json/decode (tool/invoke tool-def args)))
+
+(define launched
+  (invoke-json bash
+    {:command "printf start; sleep 0.08; printf done" :background #t}))
+(define launched-id (:task-id launched))
+(check-true "background bash returns a stable task id"
+  (string/starts-with? launched-id "task-"))
+(check "new background task starts running" (:status launched) "running")
+
+(define completed
+  (invoke-json task-output {:task_id launched-id :wait #t :timeout 2}))
+(check "task-output waits for completion" (:status completed) "completed")
+(check "completed task exposes exit code" (:exit-code completed) 0)
+(check-contains "task-output retains stdout head" (:stdout completed) "start")
+(check-contains "task-output retains stdout tail" (:stdout completed) "done")
+(check-true "completed task exposes its finish time"
+  (number? (:finished-at completed)))
+(check-true "completed task exposes its last update time"
+  (number? (:updated-at completed)))
+(check "task-list includes the completed task"
+  (:task-id (car (invoke-json task-list {}))) launched-id)
+
+;; Frontend redraw failures are not part of process ownership. A notification
+;; callback may fail without turning a successful launch into a tool error.
+(define notify-launch
+  (parameterize ((current-background-task-change
+                   (lambda () (error "redraw failed"))))
+    (invoke-json bash {:command "echo callback-safe" :background #t})))
+(define notify-result
+  (invoke-json task-output
+    {:task_id (:task-id notify-launch) :wait #t :timeout 2}))
+(check "redraw callback failure does not break background launch"
+  (:status notify-result) "completed")
+(check-contains "redraw callback failure preserves process output"
+  (:stdout notify-result) "callback-safe")
+
+(define failed-launch
+  (invoke-json bash {:command "echo bad >&2; exit 3" :background #t}))
+(define failed
+  (invoke-json task-output
+    {:task_id (:task-id failed-launch) :wait #t :timeout 2}))
+(check "nonzero background exit is failed" (:status failed) "failed")
+(check "failed background task keeps exit code" (:exit-code failed) 3)
+(check-contains "failed background task retains stderr" (:stderr failed) "bad")
+
+;; stdin is closed at spawn, so an accidental prompt cannot hang invisibly.
+(define eof-launch
+  (invoke-json bash
+    {:command "if read answer; then echo unexpected; else echo eof; fi"
+     :background #t}))
+(define eof-result
+  (invoke-json task-output
+    {:task_id (:task-id eof-launch) :wait #t :timeout 2}))
+(check "background stdin is closed" (:status eof-result) "completed")
+(check-contains "closed stdin reaches EOF branch" (:stdout eof-result) "eof")
+
+;; Cancelling the task which launched bash does not own or cancel the process.
+(start-background-monitor!)
+(define survivor-id #f)
+(define launching-parent
+  (async
+    (set! survivor-id
+      (:task-id
+        (invoke-json bash
+          {:command "sleep 0.08; echo survived" :background #t})))
+    (async/sleep 5000)))
+(let loop ()
+  (unless survivor-id (async/sleep 1) (loop)))
+(async/cancel launching-parent)
+(try (await launching-parent) (catch cancelled nil))
+(let loop ((ticks 0))
+  (when (and (< ticks 200)
+             (background-task-active? (background-task-by-id survivor-id)))
+    (async/sleep 10)
+    (loop (+ ticks 1))))
+(define monitor-survivor (background-task-by-id survivor-id))
+(check "TUI-owned monitor survives launching-turn cancellation"
+  (:status monitor-survivor) :completed)
+(define survived
+  (invoke-json task-output {:task_id survivor-id :wait #t :timeout 2}))
+(check "background process survives launching-turn cancellation"
+  (:status survived) "completed")
+(check-contains "surviving process output remains inspectable"
+  (:stdout survived) "survived")
+(stop-background-monitor!)
+
+;; Retention is bounded but keeps both ends for useful startup and failure logs.
+(define noisy-launch
+  (invoke-json bash
+    {:command "printf HEAD; yes x | head -c 70000; printf TAIL"
+     :background #t}))
+(define noisy
+  (invoke-json task-output
+    {:task_id (:task-id noisy-launch) :wait #t :timeout 2}))
+(check-true "background stdout reports truncation" (:stdout-truncated noisy))
+(check-true "background retained stdout is bounded"
+  (<= (string/length (:stdout noisy)) (+ BACKGROUND-STREAM-CHARS 100)))
+(check-contains "bounded background output keeps its head" (:stdout noisy) "HEAD")
+(check-contains "bounded background output keeps its tail" (:stdout noisy) "TAIL")
+
+;; A self-backgrounding shell leader must not leave a descendant holding the
+;; output pipes and the task in :settling forever.
+(define daemon-leak-marker (path/join tools-test-root "daemon-descendant-leaked"))
+(when (file/exists? daemon-leak-marker) (file/delete daemon-leak-marker))
+(define daemon-inner
+  (string-append "sleep 0.5; echo leaked > " (shell/quote daemon-leak-marker)))
+(define daemonized
+  (invoke-json bash
+    {:command (string-append "sh -c " (shell/quote daemon-inner) " &")
+     :background #t}))
+(define daemonized-result
+  (invoke-json task-output
+    {:task_id (:task-id daemonized) :wait #t :timeout 2}))
+(check "self-backgrounding command reaches a terminal state"
+  (:status daemonized-result) "completed")
+(check-contains "self-backgrounding cleanup is reported"
+  (:cleanup-warning daemonized-result) "remaining process group stopped")
+(async/sleep 600)
+(check "self-backgrounding descendant is terminated"
+  (file/exists? daemon-leak-marker) #f)
+
+;; Explicit stop uses the same process-group termination path as foreground
+;; timeout, so a child shell cannot outlive its registered task.
+(define background-leak-marker (path/join tools-test-root "background-descendant-leaked"))
+(when (file/exists? background-leak-marker) (file/delete background-leak-marker))
+(define background-inner
+  (string-append "sleep 0.4; echo leaked > " (shell/quote background-leak-marker)))
+(define stoppable
+  (invoke-json bash
+    {:command (string-append "sh -c " (shell/quote background-inner) " & wait")
+     :background #t}))
+(async/sleep 30)
+(define stopped (invoke-json task-stop {:task_id (:task-id stoppable)}))
+(check "task-stop records a terminal stopped state" (:status stopped) "stopped")
+(async/sleep 600)
+(check "stopped background descendants cannot keep running"
+  (file/exists? background-leak-marker) #f)
+
+;; If cancellation interrupts task-stop after it records :stopping, a retry
+;; must still terminate and settle the process.
+(define retry-stop-launch
+  (invoke-json bash {:command "sleep 5" :background #t}))
+(define retry-stop-id (:task-id retry-stop-launch))
+(update-background-task!
+  (assoc (background-task-by-id retry-stop-id) :status :stopping))
+(define retry-stopped (invoke-json task-stop {:task_id retry-stop-id}))
+(check "task-stop retries a process left in stopping state"
+  (:status retry-stopped) "stopped")
+
+(reset-background-tasks!)
+(check "background reset clears task records" (background-task-summaries) '())
+
 (shell "rm" "-rf" tools-test-root)
 (done)

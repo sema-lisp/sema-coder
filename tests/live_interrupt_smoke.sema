@@ -5,6 +5,7 @@
 ;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- text
 ;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- tool
 ;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- steer
+;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- background
 
 (load "../src/tui.sema")
 
@@ -14,7 +15,8 @@
 
 (define scenario
   (let ((args (sys/args)))
-    (cond ((member "tool" args) "tool")
+    (cond ((member "background" args) "background")
+          ((member "tool" args) "tool")
           ((member "steer" args) "steer")
           (else "text"))))
 
@@ -34,9 +36,13 @@
 (clear-transcript!)
 
 (define prompt
-  (if (= scenario "tool")
-    "For a cancellation smoke test, call the bash tool exactly once with the command `sleep 5; echo live-smoke`. Do not use another tool. Then report the output."
-    "Write a detailed 1500-word technical explanation of cooperative task cancellation. Start the explanation immediately and do not use tools."))
+  (cond
+    ((= scenario "tool")
+      "For a cancellation smoke test, call the bash tool exactly once with the command `sleep 5; echo live-smoke`. Do not use another tool. Then report the output.")
+    ((= scenario "background")
+      "Start `sleep 0.2; echo background-live-smoke` with bash in background mode. Then use task-output with wait enabled, inspect its terminal status and output, and report both. Do not run the command in the foreground.")
+    (else
+      "Write a detailed 1500-word technical explanation of cooperative task cancellation. Start the explanation immediately and do not use tools.")))
 
 (define replacement "Reply only with the word recovered.")
 
@@ -53,7 +59,9 @@
           ((and (= scenario "steer") (= *active-turn-input* prompt) (>= ticks 50))
             (prompt-set! replacement)
             (on-steer-enter))
-          ((>= ticks 250) (request-interrupt!))
+          ((and (not (= scenario "background")) (>= ticks 250))
+            (request-interrupt!))
+          ((>= ticks 750) (request-interrupt!))
           (else (async/sleep 20) (loop (+ ticks 1))))))))
 
 (parameterize ((current-turn-pump live-cancel-pump)
@@ -67,15 +75,18 @@
                         (= (get % :state :none) :cancelled))
                   (transcript-blocks))))
 
-(println
-  (json/encode
-    {:scenario scenario
-     :state (turn-controller-state)
-     :roles (map #(get % :role "") *messages*)
-     :control-count control-count
-     :cancelled-tool-count cancelled-tool-count
-     :partial-assistant-chars
-       (foldl (lambda (n m)
-                (if (= (get m :role "") "assistant")
-                  (+ n (string/length (get m :content ""))) n))
-              0 *messages*)}))
+(define smoke-result
+  {:scenario scenario
+   :state (turn-controller-state)
+   :roles (map #(get % :role "") *messages*)
+   :control-count control-count
+   :cancelled-tool-count cancelled-tool-count
+   :background-tasks (map background-task-output-state *background-tasks*)
+   :partial-assistant-chars
+     (foldl (lambda (n m)
+              (if (= (get m :role "") "assistant")
+                (+ n (string/length (get m :content ""))) n))
+            0 *messages*)})
+
+(stop-all-background-tasks!)
+(println (json/encode smoke-result))

@@ -3,7 +3,11 @@
 
 ;; create-agent builds a real agent value (no network), with the base tools
 (let ((a (create-agent "/tmp" "" {})))
-  (check "agent has 7 tools" (length (agent/tools a)) 7))
+  (check "agent has 10 tools" (length (agent/tools a)) 10)
+  (check-contains "system prompt explains background bash"
+    (agent/system a) "background=true")
+  (check-contains "system prompt requires terminal task inspection"
+    (agent/system a) "terminal status"))
 
 ;; model precedence (explicit arg) + max-turns from config; rebuilding is fine
 (let ((b (create-agent "/tmp" "claude-haiku-4-5-20251001" {:max-turns 5})))
@@ -29,7 +33,8 @@
 
 ;; tool names are derived from the tools themselves, not a hand-synced list
 (check "tool-names derived" (tool-names) (map tool/name (all-tools)))
-(check "seven tool names"   (length (tool-names)) 7)
+(check "ten tool names"     (length (tool-names)) 10)
 (check-true "read-file present" (member "read-file" (tool-names)))
+(check-true "task-output present" (member "task-output" (tool-names)))
 
 (done)

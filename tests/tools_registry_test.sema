@@ -2,23 +2,23 @@
 (load "../src/tools.sema")
 
 ;; ── built-ins register into the registry at load ──
-(check "seven built-ins" (length (all-tools)) 7)
+(check "ten built-ins" (length (all-tools)) 10)
 (check-true "read-file registered" (member "read-file" (tool-names)))
 
 ;; ── register-tool! adds to the autoloaded layer ──
 (deftool t-alpha "alpha" {:x {:type :string :description "d"}} (lambda (x) x))
 (register-tool! t-alpha)
-(check "one autoloaded added"   (length (all-tools)) 8)
+(check "one autoloaded added"   (length (all-tools)) 11)
 (check-true "alpha in names"    (member "t-alpha" (tool-names)))
 
 ;; ── upsert: re-registering the same name replaces, never duplicates ──
 (deftool t-alpha "alpha v2" {} (lambda () "v2"))   ;; same tool/name "t-alpha"
 (register-tool! t-alpha)
-(check "upsert replaces, no dup" (length (all-tools)) 8)
+(check "upsert replaces, no dup" (length (all-tools)) 11)
 
 ;; ── reset clears the autoloaded layer but keeps built-ins ──
 (reset-autoloaded-tools!)
-(check "reset → back to built-ins" (length (all-tools)) 7)
+(check "reset → back to built-ins" (length (all-tools)) 10)
 (check-true "built-ins survive reset" (member "read-file" (tool-names)))
 
 ;; ── autoload-tools!: load a dir of tool files, reconcile on re-run ──
@@ -29,12 +29,12 @@
 (let ((errs (autoload-tools! td)))
   (check "autoload: no errors" errs '())
   (check-true "autoload: echo-tool present" (member "echo-tool" (tool-names)))
-  (check "autoload: built-ins + 1" (length (all-tools)) 8))
+  (check "autoload: built-ins + 1" (length (all-tools)) 11))
 
 ;; removing a file + re-autoloading drops its tool (reconcile semantics)
 (shell "rm" "-f" (path/join td "echo-tool.sema"))
 (autoload-tools! td)
-(check "removed file drops its tool" (length (all-tools)) 7)
+(check "removed file drops its tool" (length (all-tools)) 10)
 (check-true "echo-tool gone" (not (member "echo-tool" (tool-names))))
 
 ;; a broken tool file is reported (returned), not thrown
