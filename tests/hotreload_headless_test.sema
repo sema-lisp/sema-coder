@@ -2,7 +2,7 @@
 (load "../src/tui.sema")
 
 (set! *rows* 24) (set! *cols* 80) (set! *cwd* "/tmp") (set! *model* "")
-(define d "/tmp/sc-hot-headless") (shell "rm" "-rf" d) (file/mkdir d)
+(define d (test-temp-path "hot-headless")) (shell "rm" "-rf" d) (file/mkdir d)
 
 (parameterize ((config-dir-override d))
   (file/write (config-path) "(configure! (coder-config {:model \"m1\"}))")
@@ -13,5 +13,7 @@
   (reload-config!)
   (check-true "error set"    *config-error*)
   (check "last-good kept"    (:model *config*) "m1"))
+
+(shell "rm" "-rf" d)
 
 (done)

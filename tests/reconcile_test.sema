@@ -30,32 +30,37 @@
 
 ;; ── apply-config! is the one load+reconcile path (boot / /reload / TUI) ──
 ;; Pin config-dir to an empty temp so the tools/ autoload is deterministic.
-(define apply-dir "/tmp/sc-apply-cfgdir")
+(define apply-dir (test-temp-path "apply-config"))
 (shell "rm" "-rf" apply-dir) (file/mkdir apply-dir)
+(define apply-ok (path/join apply-dir "ok.sema"))
+(define apply-warn (path/join apply-dir "warn.sema"))
+(define apply-bad (path/join apply-dir "bad.sema"))
+(define apply-wrong-shape (path/join apply-dir "wrong-shape.sema"))
+(define apply-hooks (path/join apply-dir "hooks.sema"))
 (parameterize ((config-dir-override apply-dir))
-  (file/write "/tmp/sc-apply-ok.sema"
+  (file/write apply-ok
     "(configure! (coder-config {:model \"z\" :commands (list (command \"solo\" {:run [\"true\"]}))}))")
-  (let ((r (apply-config! "/tmp/sc-apply-ok.sema" default-config)))
+  (let ((r (apply-config! apply-ok default-config)))
     (check-true "apply ok"              (:ok r))
     (check "apply reconciles commands"  (config-command-names) (list "solo"))
     (check "clean config → no warnings" (:warnings r) '()))
 
-  (file/write "/tmp/sc-apply-warn.sema"
+  (file/write apply-warn
     "(configure! (coder-config {:model \"z\" :max-turn 9}))")
   (check "apply flags one typo'd key"
-         (length (:warnings (apply-config! "/tmp/sc-apply-warn.sema" default-config))) 1)
+         (length (:warnings (apply-config! apply-warn default-config))) 1)
 
   ;; Restore a known live command set before exercising last-good fallback.
-  (apply-config! "/tmp/sc-apply-ok.sema" default-config)
-  (file/write "/tmp/sc-apply-bad.sema" "(broken")
-  (let ((r (apply-config! "/tmp/sc-apply-bad.sema" default-config)))
+  (apply-config! apply-ok default-config)
+  (file/write apply-bad "(broken")
+  (let ((r (apply-config! apply-bad default-config)))
     (check-true "apply error"           (:error r))
     (check "broken file keeps fallback" (:cfg r) default-config)
     (check "broken file keeps runtime commands" (config-command-names) (list "solo")))
 
-  (file/write "/tmp/sc-apply-wrong-shape.sema"
+  (file/write apply-wrong-shape
     "(configure! (coder-config {:commands 42}))")
-  (let ((r (apply-config! "/tmp/sc-apply-wrong-shape.sema" default-config)))
+  (let ((r (apply-config! apply-wrong-shape default-config)))
     (check-true "wrong shape is rejected" (:error r))
     (check "wrong shape keeps runtime commands" (config-command-names) (list "solo")))
 
@@ -63,13 +68,13 @@
   (file/mkdir (tools-dir))
   (file/write (path/join (tools-dir) "extra.sema")
     "(deftool extra \"x\" {:a {:type :string :description \"d\"}} (lambda (a) a))\n(register-tool! extra)")
-  (apply-config! "/tmp/sc-apply-ok.sema" default-config)
+  (apply-config! apply-ok default-config)
   (check-true "apply autoloads tools/ dir" (member "extra" (tool-names)))
 
   ;; apply-config! reconciles config-declared hooks
-  (file/write "/tmp/sc-apply-hooks.sema"
+  (file/write apply-hooks
     "(configure! (coder-config {:hooks (list (hook :pre-turn (lambda (ctx) #t)))}))")
-  (apply-config! "/tmp/sc-apply-hooks.sema" default-config)
+  (apply-config! apply-hooks default-config)
   (check "apply reconciles declared hooks" (length (get *hooks* :pre-turn '())) 1)
 
   ;; ── unified restore: session-restore-fields is the one builder both /resume
@@ -89,5 +94,7 @@
     (check "repl /resume messages match" (:messages next) rmsgs)
     (check "repl /resume model matches"  (:model next) "claude-sonnet-5")
     (check "repl /resume effort matches" (:effort next) "high")))
+
+(shell "rm" "-rf" apply-dir)
 
 (done)

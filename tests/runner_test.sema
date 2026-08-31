@@ -1,0 +1,34 @@
+(load "harness.sema")
+(load "runner_helpers.sema")
+
+(let ((s (parse-summary "noise\nSEMA_TEST_SUMMARY 12 checks, 0 failed\n")))
+  (check "summary check count" (:checks s) 12)
+  (check "summary failure count" (:fails s) 0)
+  (check-true "clean result passes" (test-result-ok? 0 s)))
+
+(check-false "unmarked count cannot fake completion"
+  (parse-summary "12 checks, 0 failed"))
+(check-false "missing done never passes" (test-result-ok? 0 #f))
+(check-false "non-zero exit never passes"
+  (test-result-ok? 1 {:checks 3 :fails 0}))
+(check-false "reported failure never passes"
+  (test-result-ok? 0 {:checks 3 :fails 1}))
+(check "missing summary diagnostic"
+  (test-result-detail 0 #f #f) "missing summary")
+(check "timeout diagnostic"
+  (test-result-detail 124 #f #t) "timed out")
+(check-contains "child diagnostics include stderr"
+  (child-output {:stderr "err" :stdout "out"}) "err")
+(check-contains "child diagnostics include stdout"
+  (child-output {:stderr "err" :stdout "out"}) "out")
+(check "positive timeout parsed" (positive-number-or "250" 30) 250)
+(check "invalid timeout uses fallback" (positive-number-or "nope" 30) 30)
+(check "non-positive timeout uses fallback" (positive-number-or "0" 30) 30)
+
+;; Exercise the extra assertions too: failures here prove they increment and
+;; report through the same harness counters as `check`.
+(check-false "check-false helper" #f)
+(check-not-contains "check-not-contains helper" "abc" "z")
+(check-throws "check-throws helper" (fn () (error "boom")))
+
+(done)

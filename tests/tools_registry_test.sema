@@ -22,7 +22,7 @@
 (check-true "built-ins survive reset" (member "read-file" (tool-names)))
 
 ;; ── autoload-tools!: load a dir of tool files, reconcile on re-run ──
-(define td "/tmp/sc-tools-autoload")
+(define td (test-temp-path "tools-autoload"))
 (shell "rm" "-rf" td) (file/mkdir td)
 (file/write (path/join td "echo-tool.sema")
   "(deftool echo-tool \"echo\" {:x {:type :string :description \"d\"}} (lambda (x) x))\n(register-tool! echo-tool)")
@@ -42,6 +42,8 @@
 (check "broken tool file reported" (length (autoload-tools! td)) 1)
 
 ;; a missing dir is a quiet no-op
-(check "missing dir → no errors" (autoload-tools! "/tmp/sc-tools-nope") '())
+(check "missing dir → no errors" (autoload-tools! (path/join td "missing")) '())
+
+(shell "rm" "-rf" td)
 
 (done)

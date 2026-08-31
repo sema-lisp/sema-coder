@@ -3,7 +3,7 @@
 
 ;; ── resolve-path: the file-tool workspace boundary ──
 
-(define root "/tmp/sc-util-test")
+(define root (test-temp-path "util"))
 (shell "rm" "-rf" root)
 (file/mkdir root)
 

@@ -3,7 +3,7 @@
 
 ;; Point the config dir at a temp location, generate the default, and confirm
 ;; it round-trips through the pure loader with the sema autostart server present.
-(define d "/tmp/sc-cfg-default-test")
+(define d (test-temp-path "cfg-default"))
 (shell "rm" "-rf" d)
 
 (parameterize ((config-dir-override d))
@@ -37,5 +37,7 @@
         (check-contains f"template has ${(:id m)}"
           default-init-source f"(model \"${(:id m)}\""))
       (model-entries default-config))))
+
+(shell "rm" "-rf" d)
 
 (done)

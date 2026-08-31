@@ -1,0 +1,36 @@
+;; Pure helpers shared by test.sema and runner_test.sema.
+
+(defun parse-summary (output)
+  "The harness's closing line -> {:checks N :fails M}, or #f when absent."
+  (if-let (m (regex/match #"SEMA_TEST_SUMMARY (\d+) checks, (\d+) failed" output))
+    {:checks (string->number (nth (:groups m) 0))
+     :fails  (string->number (nth (:groups m) 1))}
+    #f))
+
+(defun child-output (result)
+  "Keep both streams for diagnostics. Most harness output is on stderr, but a
+   crash or accidental print can use stdout."
+  (string/join
+    (filter #(not (= % ""))
+      (list (get result :stderr "") (get result :stdout "")))
+    "\n"))
+
+(defun test-result-ok? (exit-code summary)
+  "A clean exit without the harness summary is not a passing test: it usually
+   means the file forgot `(done)` or returned before its assertions finished."
+  (and (= exit-code 0)
+       summary
+       (= (get summary :fails 1) 0)))
+
+(defun test-result-detail (exit-code summary timed-out?)
+  (cond
+    (timed-out? "timed out")
+    ((not (= exit-code 0)) f"exit ${exit-code}")
+    ((not summary) "missing summary")
+    ((> (:fails summary) 0) f"${(:fails summary)} failed")
+    (else f"${(:checks summary)} checks")))
+
+(defun positive-number-or (text fallback)
+  "Parse a positive numeric environment value without making a typo fatal."
+  (let ((n (try (if text (string->number text) #f) (catch e #f))))
+    (if (and (number? n) (> n 0)) n fallback)))

@@ -8,11 +8,19 @@
 ;;
 ;;   (check "label" actual expected)     equality (equal?)
 ;;   (check-true "label" value)          truthiness
+;;   (check-false "label" value)         falsiness
 ;;   (check-contains "label" hay needle) substring (both printed on failure)
+;;   (check-not-contains "label" hay n)  substring absence
+;;   (check-throws "label" thunk)        callable raises
 ;;   (done)                              summary + exit
 
 (define *checks* 0)
 (define *fails* 0)
+
+(defun test-temp-path (name)
+  "A process-scoped fixture path so concurrent test runs cannot share state."
+  (path/join (sys/temp-dir)
+    f"sema-coder-${name}-${(sys/pid)}"))
 
 (defun fail! (label detail)
   (set! *fails* (+ *fails* 1))
@@ -27,12 +35,26 @@
 (defun check-true (label v)
   (check label (if v #t #f) #t))
 
+(defun check-false (label v)
+  (check label (if v #t #f) #f))
+
 (defun check-contains (label haystack needle)
   (set! *checks* (+ *checks* 1))
   (if (string/contains? haystack needle)
     (io/println-error (str "  ok   " label))
     (fail! label f"“${needle}” not found in “${haystack}”")))
 
+(defun check-not-contains (label haystack needle)
+  (set! *checks* (+ *checks* 1))
+  (if (not (string/contains? haystack needle))
+    (io/println-error (str "  ok   " label))
+    (fail! label f"“${needle}” unexpectedly found in “${haystack}”")))
+
+(defun check-throws (label thunk)
+  (check-true label (try (begin (thunk) #f) (catch e #t))))
+
 (defun done ()
-  (io/println-error f"${*checks*} checks, ${*fails*} failed")
+  ;; The marker prevents an unrelated diagnostic that happens to mention check
+  ;; counts from making a file without `(done)` look successful to test.sema.
+  (io/println-error f"SEMA_TEST_SUMMARY ${*checks*} checks, ${*fails*} failed")
   (exit (if (> *fails* 0) 1 0)))

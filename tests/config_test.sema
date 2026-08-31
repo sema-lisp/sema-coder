@@ -60,30 +60,41 @@
 (check "typo'd key flagged"    (unknown-config-keys (coder-config {:max-turn 9})) (list :max-turn))
 
 ;; ── load-config on a good file → {:ok cfg} ──
-(file/write "/tmp/sc-init-ok.sema"
+(define config-fixture-dir (test-temp-path "config"))
+(shell "rm" "-rf" config-fixture-dir)
+(file/mkdir config-fixture-dir)
+(define init-ok (path/join config-fixture-dir "init-ok.sema"))
+(define init-bad (path/join config-fixture-dir "init-bad.sema"))
+(define init-not-map (path/join config-fixture-dir "init-not-map.sema"))
+(define init-bad-turns (path/join config-fixture-dir "init-bad-turns.sema"))
+(define init-bad-commands (path/join config-fixture-dir "init-bad-commands.sema"))
+
+(file/write init-ok
   "(configure! (coder-config {:model \"m\" :max-turns 9 :commands (list (command \"t\" {:run [\"echo\"]}))}))")
-(let ((r (load-config "/tmp/sc-init-ok.sema")))
+(let ((r (load-config init-ok)))
   (check-true "ok result" (:ok r))
   (check "model applied" (:model (:ok r)) "m")
   (check "max-turns applied" (:max-turns (:ok r)) 9)
   (check "one command" (length (:commands (:ok r))) 1))
 
 ;; ── load-config on a broken file → {:error e}, no throw ──
-(file/write "/tmp/sc-init-bad.sema" "(this is (not balanced")
-(check-true "error result" (:error (load-config "/tmp/sc-init-bad.sema")))
+(file/write init-bad "(this is (not balanced")
+(check-true "error result" (:error (load-config init-bad)))
 
 ;; Invalid values are rejected before apply-config! can partially reconcile
 ;; commands, hooks, tools, or MCP state.
-(file/write "/tmp/sc-init-not-map.sema" "(configure! 42)")
+(file/write init-not-map "(configure! 42)")
 (check-contains "config must be a map"
-                (:error (load-config "/tmp/sc-init-not-map.sema")) "config map")
-(file/write "/tmp/sc-init-bad-turns.sema"
+                (:error (load-config init-not-map)) "config map")
+(file/write init-bad-turns
   "(configure! (coder-config {:max-turns 0}))")
 (check-contains "max-turns must be positive"
-                (:error (load-config "/tmp/sc-init-bad-turns.sema")) "positive integer")
-(file/write "/tmp/sc-init-bad-commands.sema"
+                (:error (load-config init-bad-turns)) "positive integer")
+(file/write init-bad-commands
   "(configure! (coder-config {:commands {}}))")
 (check-contains "commands must be a sequence"
-                (:error (load-config "/tmp/sc-init-bad-commands.sema")) ":commands")
+                (:error (load-config init-bad-commands)) ":commands")
+
+(shell "rm" "-rf" config-fixture-dir)
 
 (done)

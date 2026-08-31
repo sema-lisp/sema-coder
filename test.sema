@@ -12,12 +12,13 @@
 ;;     `check` calls, and ends with (done) — exiting non-zero on any failure.
 ;;   - Every file runs in a CHILD interpreter: a crash (or the harness's own
 ;;     exit) can't take the runner down, and no state leaks between files.
-;;   - The child's exit code is the pass/fail truth; its "N checks, M failed"
-;;     line is parsed for the per-file report. Full child output is shown
+;;   - A passing file needs exit code 0 and the harness's marked summary line.
+;;     The summary provides the per-file report. Full child output is shown
 ;;     only for failing files, so a green run stays quiet.
 ;;   - Exits 0 iff every selected file passed (CI gates on this).
 
 (load "src/theme.sema")
+(load "tests/runner_helpers.sema")
 
 ;; ── Discovery ────────────────────────────────────────────────────
 ;; Paths resolve relative to this script (found via argv), not the cwd, so
@@ -57,32 +58,38 @@
 
 ;; ── Running one file ─────────────────────────────────────────────
 
-(defun parse-summary (err)
-  "The harness's closing line → {:checks N :fails M}, or #f on a crash."
-  (if-let (m (regex/match #"(\d+) checks, (\d+) failed" err))
-    {:checks (string->number (nth (:groups m) 0))
-     :fails  (string->number (nth (:groups m) 1))}
-    #f))
+(define TEST-TIMEOUT-MS
+  (positive-number-or (env "SEMA_CODER_TEST_TIMEOUT_MS") 30000))
 
 (defun run-one (path)
   (let* ((t0  (time-ms))
-         (res (shell "sema" path))
+         (attempt
+           (try {:result (async/with-timeout TEST-TIMEOUT-MS
+                           (fn () (shell "sema" path)))}
+             (catch e {:error e})))
          (ms  (- (time-ms) t0))
-         (err (get res :stderr "")))
+         (run-error (get attempt :error #f))
+         (timed-out? (and run-error (= (get run-error :type #f) :timeout)))
+         (res (get attempt :result
+                    {:exit-code (if timed-out? 124 1) :stderr "" :stdout ""}))
+         (output (if run-error
+                   (str (get run-error :message (str run-error)))
+                   (child-output res)))
+         (summary (parse-summary output))
+         (exit-code (get res :exit-code 1)))
     {:name    (test-name path)
      :ms      ms
-     :ok      (= (get res :exit-code 1) 0)
-     :summary (parse-summary err)
-     :output  err}))
+     :ok      (test-result-ok? exit-code summary)
+     :summary summary
+     :detail  (test-result-detail exit-code summary timed-out?)
+     :output  (if timed-out? f"test exceeded ${TEST-TIMEOUT-MS}ms" output)}))
 
 ;; ── Report ───────────────────────────────────────────────────────
 
 (defun report-row (r)
   (let* ((glyph  (if (:ok r) (ok "✔") (bad "✖")))
          (name   (string/pad-right (:name r) 19))
-         (detail (if-let (s (:summary r))
-                   (muted f"${(:checks s)} checks")
-                   (bad "crashed")))                 ;; no summary line at all
+         (detail ((if (:ok r) muted bad) (:detail r)))
          (time   (faint f"${(:ms r)}ms")))
     (io/println-error f"   ${glyph} ${(if (:ok r) (bright name) (bad name))} ${detail}  ${time}")))
 
@@ -116,7 +123,11 @@
 (for-each report-row results)
 
 (define failed  (filter #(not (:ok %)) results))
-(define checks  (foldl (lambda (n r) (+ n (get (get r :summary {}) :checks 0))) 0 results))
+(define checks
+  (foldl (lambda (n r)
+           (let ((s (get r :summary #f)))
+             (+ n (if (map? s) (get s :checks 0) 0))))
+         0 results))
 
 (for-each report-failure failed)
 

@@ -2,7 +2,7 @@
 (load "../src/commands.sema")   ;; brings in plugins + the registries a plugin extends
 
 ;; ── load-plugins-from!: run a dir of plugin files, report errors, don't throw ──
-(define pd "/tmp/sc-plugins-test")
+(define pd (test-temp-path "plugins"))
 (shell "rm" "-rf" pd) (file/mkdir pd)
 (file/write (path/join pd "hello.sema")
   "(register-command! \"hello-plugin\" \"say hi\" (lambda (s a) s))\n(bind-key! \"ctrl-y\" \"hello-plugin\")")
@@ -16,10 +16,10 @@
 (check "broken plugin reported" (length (load-plugins-from! pd)) 1)
 
 ;; a missing dir is a quiet no-op
-(check "missing dir → no errors" (load-plugins-from! "/tmp/sc-plugins-none") '())
+(check "missing dir → no errors" (load-plugins-from! (path/join pd "missing")) '())
 
 ;; ── load-plugins!: scans (config-dir)/plugins (global) then project-local ──
-(define gd "/tmp/sc-plugins-global")
+(define gd (test-temp-path "plugins-global"))
 (shell "rm" "-rf" gd) (file/mkdir gd)
 (parameterize ((config-dir-override gd))
   (check "global plugin dir is under the config dir"
@@ -28,7 +28,10 @@
   (file/write (path/join (config-dir) "plugins" "g.sema")
     "(register-command! \"global-plug\" \"g\" (lambda (s a) s))")
   ;; project dir for this cwd doesn't exist → only the global plugin loads
-  (check "load-plugins! clean" (load-plugins! "/tmp/sc-no-project") '())
+  (check "load-plugins! clean" (load-plugins! (path/join gd "no-project")) '())
   (check-true "global plugin loaded" (get *commands* "global-plug" #f)))
+
+(shell "rm" "-rf" pd)
+(shell "rm" "-rf" gd)
 
 (done)
