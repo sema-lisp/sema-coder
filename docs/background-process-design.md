@@ -70,10 +70,11 @@ stdout/stderr readers to flush before it closes the handle. `stopping` prevents
 the monitor and an explicit stop operation from acting on the same live process
 at once.
 
-The task registry is updated before `bash` returns. It stores the opaque task
-ID, native process handle, command, timestamps, state, exit code, and two
-bounded output captures. It does not enter the conversation history and is not
-saved in session JSONL files.
+The task registry is updated before `bash` returns. It issues a short monotonic
+process-local ID (`task-1`, `task-2`, and so on) and stores the native process
+handle, command, timestamps, state, exit code, and two bounded output captures.
+The registry does not enter the conversation history and is not saved in
+session JSONL files.
 
 The TUI starts one monitor task outside every agent turn. This ownership is
 important because Sema task cancellation propagates to spawned descendants. A

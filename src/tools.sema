@@ -211,7 +211,7 @@
 
 (defun next-background-task-id! ()
   (set! *background-task-seq* (+ *background-task-seq* 1))
-  f"task-${(sys/pid)}-${(time-ms)}-${*background-task-seq*}")
+  f"task-${*background-task-seq*}")
 
 (defun drain-background-task (task)
   "Drain currently buffered output from TASK's process handle."

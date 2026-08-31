@@ -71,8 +71,8 @@
   (invoke-json bash
     {:command "printf start; sleep 0.08; printf done" :background #t}))
 (define launched-id (:task-id launched))
-(check-true "background bash returns a stable task id"
-  (string/starts-with? launched-id "task-"))
+(check "background bash returns a short process-local task id"
+  launched-id "task-1")
 (check "new background task starts running" (:status launched) "running")
 
 (define completed
