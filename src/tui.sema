@@ -143,6 +143,12 @@
 
 (defun queued-messages () *input-queue*)
 
+(defun queued-follow-ups? ()
+  "Whether ordinary queued work is waiting. Steers target an interrupted turn
+   and run immediately after its cancellation acknowledgement, so they do not
+   make the ordinary queue paused."
+  (any #(= (:mode %) "follow-up") *input-queue*))
+
 (defun turn-controller-state ()
   "A stable snapshot for tests, overlays, and plugins."
   (let* ((tool-block (block-at *active-tool-block-index*))
@@ -161,6 +167,7 @@
          (length (:messages *turn-partial*)) 0)
      :queue *input-queue*
      :queue-paused *queue-paused*
+     :background-tasks (background-task-summaries)
      :message-count (length *messages*)
      :session-id *session-id*
      :events (turn-events)}))
@@ -198,6 +205,8 @@
     (set! *input-queue* (filter #(not (= (:id %) id)) *input-queue*))
     (let ((changed? (< (length *input-queue*) before)))
       (when changed?
+        (when (and *queue-paused* (not (queued-follow-ups?)))
+          (set! *queue-paused* #f))
         (record-turn-event! :message-removed {:queue-id id})
         (persist-session!))
       changed?)))
@@ -465,14 +474,20 @@
 (defun status-line ()
   ;; A persistent config-error banner (until the next clean reload), else a
   ;; copy result, spinner while a turn runs, scroll indicator, or nothing.
-  (let ((notice (active-copy-notice)))
+  (let ((notice (active-copy-notice))
+        (background-count (active-background-task-count)))
     (indent (cond
       (*config-error* (bad "⚠ config error — using last good (fix init.sema)"))
       (notice         ((if (:ok notice) ok warn) (:text notice)))
-      (*busy*         (faint (string/append (spinner-frame) " evaluating · enter queues · ctrl-enter interrupts and sends"
+      (*busy*         (faint (string/append (spinner-frame) " evaluating · tab queues · enter interrupts and sends"
                                            (if (> (length *input-queue*) 0)
-                                             f" · ${(length *input-queue*)} pending" ""))))
-      (*queue-paused* (warn f"queue paused · ${(length *input-queue*)} pending · /queue resume"))
+                                             f" · ${(length *input-queue*)} pending" "")
+                                           (if (> background-count 0)
+                                             f" · ${background-count} background" ""))))
+      ((and *queue-paused* (queued-follow-ups?))
+                       (warn f"queue paused · ${(length *input-queue*)} pending · /queue resume"))
+      ((> background-count 0)
+                       (faint f"${background-count} background task${(if (= background-count 1) "" "s")} · /debug tasks"))
       ((> *scroll* 0) (faint f"↕ scrolled +${*scroll*}"))
       (else           "")))))
 
@@ -795,8 +810,12 @@
                     (cancel-last-running-tool!))
                   (set! *messages*
                     (interrupted-turn-messages prior text *turn-partial* *round-text* turn-id))
-                  (set! *queue-paused* #t)
-                  (add-block! {:kind :warn :text "turn interrupted; queued follow-ups are paused"})
+                  (set! *queue-paused* (queued-follow-ups?))
+                  (add-block!
+                    {:kind :warn
+                     :text (if *queue-paused*
+                             "turn interrupted; queued follow-ups are paused"
+                             "turn interrupted")})
                   (record-turn-event! :turn-interrupted
                     {:turn-id turn-id :mode *interrupt-mode*
                      :message-count (length *messages*)})
@@ -904,7 +923,8 @@
       (set! *session-created* (get (:meta f) :created (time-ms)))
       (set! *persist-warned* #f)
       (set! *input-queue* (get (:meta f) :queue '()))
-      (set! *queue-paused* (get (:meta f) :queue-paused #f))
+      (set! *queue-paused*
+        (and (get (:meta f) :queue-paused #f) (queued-follow-ups?)))
       (clear-turn-events!)
       (let* ((stored-events (get (:meta f) :events '()))
              (recent-events
@@ -1032,16 +1052,19 @@
 (defun word-right! () (set! *cursor* (word-right-index *input* *cursor*)))
 
 (defun on-enter ()
+  "Submit normally while idle. While a turn runs, save the prompt as a steer
+   for that turn and request cancellation. Slash commands stay in the prompt
+   until the turn becomes idle."
   (let ((text (string/trim *input*)))
     (cond
       ((= text "") nil)
       (*busy*
-        ;; Slash commands mutate local state and cannot be replayed as model
-        ;; input. Keep them in the prompt until the turn becomes idle.
         (unless (palette-open?)
-          (when (enqueue-input! text "follow-up")
-            (prompt-clear!)
-            (set! *scroll* 0))))
+          (let ((target *active-turn-id*))
+            (when (enqueue-input! text "steer" target)
+              (prompt-clear!)
+              (set! *scroll* 0)
+              (request-interrupt-for! target :steer)))))
       ((palette-open?)
           (let ((chosen (palette-choice (palette-view) *psel* *input*)))
             ;; A :keep-input command manages the prompt itself — don't wipe it.
@@ -1054,20 +1077,22 @@
         (run-agent-turn! text)))))
 
 (defun on-steer-enter ()
-  "Ctrl-Enter is the explicit interrupt-and-send action. The message is first
-   stored as a steer targeted at the current turn, then that exact turn is
-   cancelled. It is started only after terminal cancellation acknowledgement."
+  "Compatibility entry point for scripted drivers and Ctrl-Enter terminals."
+  (on-enter))
+
+(defun on-tab ()
+  "Complete an open slash palette. Otherwise, queue the current prompt as an
+   ordinary follow-up while a turn runs."
   (let ((text (string/trim *input*)))
-    (cond
-      ((= text "") nil)
-      ((not *busy*) (on-enter))
-      ((palette-open?) nil)
-      (else
-        (let ((target *active-turn-id*))
-          (when (enqueue-input! text "steer" target)
-            (prompt-clear!)
-            (set! *scroll* 0)
-            (request-interrupt-for! target :steer)))))))
+    (if (palette-open?)
+      (when-let (s (palette-completion (palette-view) *psel*))
+        (set! *input* s)
+        (set! *cursor* (string/length *input*))
+        (set! *psel* 0))
+      (when (and *busy* (not (= text "")))
+        (when (enqueue-input! text "follow-up")
+          (prompt-clear!)
+          (set! *scroll* 0))))))
 
 (defun run-key-command! (action)
   "A key bound to a non-built-in action fires the like-named custom command, so
@@ -1125,19 +1150,14 @@
 
 (defun handle-named (k)
   (match (:name k)
-    (:enter     (if (member :ctrl (get k :mods '())) (on-steer-enter) (on-enter)))
+    (:enter     (on-enter))
     (:backspace (backspace!))
     (:delete    (forward-delete!))
     (:left      (if (word-motion? k) (word-left!)  (set! *cursor* (max 0 (- *cursor* 1)))))
     (:right     (if (word-motion? k) (word-right!) (set! *cursor* (min (string/length *input*) (+ *cursor* 1)))))
     (:home      (set! *cursor* 0))
     (:end       (set! *cursor* (string/length *input*)))
-    (:tab
-      (when (palette-open?)
-        (when-let (s (palette-completion (palette-view) *psel*))
-          (set! *input* s)
-          (set! *cursor* (string/length *input*))
-          (set! *psel* 0))))
+    (:tab       (on-tab))
     (:up
       (if (palette-open?) (set! *psel* (max 0 (- *psel* 1)))
         (scroll-by! 1)))
@@ -1367,6 +1387,8 @@
 (defun tui-run (cwd model cfg agent)
   (set! *cwd* cwd) (set! *model* model) (set! *config* cfg) (set! *agent* agent)
   (set! *tui-active* #t)
+  (current-background-task-change (lambda () (request-frame!)))
+  (start-background-monitor!)
   (new-session!)
   (recompute-size!)
   (sys/on-signal :winch (lambda () (set! *resize-pending* #t)))
@@ -1408,6 +1430,8 @@
               (stop-terminal-input!)
               (throw e)))
           (stop-terminal-input!)))))
+  (stop-all-background-tasks!)
+  (current-background-task-change (lambda () nil))
   ;; Back on the main screen — a quiet sign-off in the scrollback.
   (io/println-error (faint f"   ; ${goodbye-line}"))
   (display RESET-CURSOR)

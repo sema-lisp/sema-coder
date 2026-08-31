@@ -81,6 +81,47 @@
 (clear-input-queue!)
 (check-false "clearing queue also clears paused state" *queue-paused*)
 
+(let ((entry (enqueue-input! "remove me" "follow-up")))
+  (set! *queue-paused* #t)
+  (remove-queued-input! (:id entry))
+  (check-false "removing the last follow-up clears paused state" *queue-paused*))
+
+;; Prompt keys use the active-turn controls without taking Tab away from slash
+;; completion. Enter remains a normal submit key while idle.
+(reset-controller!)
+(set! *busy* #t)
+(set! *active-turn-id* "turn-keys")
+(prompt-set! "run after this")
+(handle-named {:kind :key :name :tab})
+(check "Tab queues an ordinary follow-up while busy"
+  (map (lambda (entry) (list (:text entry) (:mode entry))) (queued-messages))
+  (list (list "run after this" "follow-up")))
+(check "Tab clears a queued prompt" (prompt-text) "")
+(check-false "Tab does not request interruption" *interrupt*)
+
+(reset-controller!)
+(set! *busy* #t)
+(set! *active-turn-id* "turn-keys")
+(prompt-set! "change direction")
+(handle-named {:kind :key :name :enter})
+(check "Enter queues a targeted steer while busy"
+  (map (lambda (entry)
+         (list (:text entry) (:mode entry) (:target-turn-id entry)))
+       (queued-messages))
+  (list (list "change direction" "steer" "turn-keys")))
+(check "Enter clears a steering prompt" (prompt-text) "")
+(check-true "Enter requests interruption" *interrupt*)
+(check "Enter records steer interruption mode" *interrupt-mode* :steer)
+
+(reset-controller!)
+(set! *busy* #t)
+(set! *active-turn-id* "turn-palette")
+(prompt-set! "/mod")
+(handle-named {:kind :key :name :tab})
+(check "palette completion keeps priority over busy Tab" (prompt-text) "/model ")
+(check "palette completion does not queue model input" (queued-messages) '())
+(check-false "palette completion does not request interruption" *interrupt*)
+
 ;; Tool completion targets the block created by its start event, even when a
 ;; warning or error block is appended while the tool runs.
 (reset-controller!)
@@ -195,6 +236,25 @@
 (check "explicit resume drains paused queue" resumed-calls (list "later"))
 (check-false "queue is unpaused after explicit resume" *queue-paused*)
 
+;; An interruption with no ordinary follow-up reports the interruption but does
+;; not create a paused queue state or claim that queued work was paused.
+(reset-controller!)
+(define empty-stop-runner
+  (lambda (agent input messages on-tool on-text on-partial effort)
+    (request-interrupt-for! *active-turn-id* :stop)
+    (async/sleep 5000)))
+(parameterize ((current-turn-runner empty-stop-runner)
+               (current-turn-pump (lambda (turn) nil))
+               (current-turn-render (lambda () nil)))
+  (run-agent-turn! "stop without queue"))
+(check-false "empty interruption does not pause the queue" *queue-paused*)
+(check "empty interruption leaves no queued input" (queued-messages) '())
+(let ((blocks (:blocks (transcript-debug-state))))
+  (check "empty interruption still reports its terminal state"
+    (:text (last blocks)) "turn interrupted")
+  (check-false "empty interruption does not show a queue-paused warning"
+    (any #(string/contains? (get % :text "") "queued follow-ups are paused") blocks)))
+
 ;; Interrupt-and-send persists the steer before cancellation, waits for the
 ;; interrupted terminal state, then starts the replacement. Ordinary queued work
 ;; remains paused after the replacement completes.
@@ -244,6 +304,15 @@
   (dispatch-command (parse-command "/debug status") (tui-state)))
 (set! *tui-active* #f)
 (check-contains "TUI debug status is multiline JSON" debug-status-output "\n  \"events\"")
+
+(define debug-tasks-output "")
+(parameterize ((current-emit
+                 (lambda (kind text)
+                   (when (= kind :raw) (set! debug-tasks-output text)))))
+  (dispatch-command (parse-command "/debug tasks") (tui-state)))
+(let ((snapshot (json/decode debug-tasks-output)))
+  (check "debug tasks is valid indented JSON" (:count snapshot) 0)
+  (check-contains "debug tasks JSON spans lines" debug-tasks-output "\n  \"limit\""))
 
 (add-block! {:kind :info :text "diagnostic transcript marker"})
 (define debug-transcript-output "")

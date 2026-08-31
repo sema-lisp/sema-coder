@@ -55,7 +55,8 @@ Primary sources:
 
 ### Queue
 
-- Enter while a turn runs creates a `follow-up` queue entry.
+- Tab while a turn runs creates a `follow-up` queue entry. An open slash-command
+  palette takes priority and completes the selected entry instead.
 - Entries have stable `queue-PID-CLOCK-N` IDs and FIFO order.
 - Steers remain FIFO but are ordered before ordinary follow-ups.
 - The queue is bounded at 100 entries.
@@ -64,11 +65,13 @@ Primary sources:
 - `/queue` lists entries. `/queue edit ID TEXT`, `/queue drop ID`, `/queue
   clear`, and `/queue resume` manage them.
 - Completed and failed turns start the next item automatically.
-- Interrupted turns pause ordinary queued work until explicit resume.
+- Interrupted turns pause ordinary queued work until explicit resume. With no
+  ordinary follow-up waiting, the controller stays unpaused.
 
 ### Interrupt and send
 
-Ctrl-Enter is an explicit cancel-and-send operation:
+Enter is an explicit cancel-and-send operation. Ctrl-Enter remains an alias
+when the terminal reports that modified key:
 
 1. Save the replacement as a steer with the current turn ID.
 2. Request cancellation with that expected turn ID.
@@ -122,6 +125,7 @@ the provider, so the next model sees the interruption fact.
  :partial-message-count
  :queue
  :queue-paused
+ :background-tasks
  :message-count
  :session-id
  :events}
@@ -130,7 +134,8 @@ the provider, so the next model sees the interruption fact.
 `/debug status` prints this snapshot as indented JSON. `/debug session` prints
 the exact message history and queued input that the next turn will use.
 `/debug transcript` prints the TUI blocks and render-cache state so a test can
-distinguish conversation-state defects from rendering defects. The ordered
+distinguish conversation-state defects from rendering defects. `/debug tasks`
+prints background task state and retained output. The ordered
 in-memory event log has a monotonic `:seq`, retains the newest 1,024 entries,
 stores lengths rather than duplicating full prompt text, and records:
 
