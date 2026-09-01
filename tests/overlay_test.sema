@@ -18,6 +18,25 @@
   (check-contains "rounded top"             txt "╭")
   (check-contains "rounded bottom"          txt "╰"))
 
+;; ── sizing follows the terminal: narrow columns and short rows never clip ──
+(set! *cols* 24) (set! *rows* 12)
+(let ((rows (list-modal {:title "Narrow"
+                         :items (list {:name "alpha" :meta "one"})
+                         :sel 0 :layout (overlay-layout)
+                         :render-item (lambda (it s? inner) (modal-cell (:name it) (:meta it) inner))
+                         :actions (list {:key "esc" :label "close"})})))
+  (check "narrow modal fits the terminal width"
+    (length (filter #(> (string/width %) 24) rows)) 0)
+  (check-contains "narrow modal keeps its right border" (term/strip (car rows)) "╮"))
+(push-overlay! {:kind :resume :view :detail :sel 0 :sessions '()})
+(let* ((msgs (map (lambda (i) {:role "user" :content (number->string i)}) (range 0 30)))
+       (rows (resume-detail-view {:detail msgs :dscroll 0} (overlay-layout))))
+  (close-all-overlays!)
+  (check-true "short detail view fits the terminal height" (<= (length rows) 12))
+  (check "short detail view fits the terminal width"
+    (length (filter #(> (string/width %) 24) rows)) 0))
+(set! *cols* 70) (set! *rows* 30)
+
 (check-contains "empty list shows an empty marker"
   (string/join (map term/strip
     (list-modal {:title "Empty" :items '() :sel 0 :layout (overlay-layout)

@@ -117,7 +117,9 @@
 ;; Passed to each overlay's :render so a render never reaches for TUI globals
 ;; directly (which also makes it headless-testable).
 (defun overlay-layout ()
-  {:cols *cols* :rows *rows* :max-width (min (max 40 (- *cols* 6)) 72)})
+  ;; Never wider than the terminal: a floor above *cols* clipped the right
+  ;; border and status text in narrow splits (*cols* can be 20).
+  {:cols *cols* :rows *rows* :max-width (max 20 (min (- *cols* 4) 72))})
 
 ;; ── Reusable list modal (Style B: rounded box + ▌ gutter) ─────────
 ;; One scrollable, selectable list every modal can reuse. A feature supplies
@@ -325,7 +327,9 @@
          (avail (max 4 (- inner (string/width (term/strip label)) 1))))
     (string/append label " " (muted (clip-width (msg-preview-text m) avail)))))
 
-(define RESUME-DETAIL-ROWS 14)   ;; visible message-preview lines in the detail view
+(defun resume-detail-rows (layout)
+  "Visible message-preview lines in the detail view; same budget as list-modal."
+  (max 3 (- (get layout :rows 24) 8)))
 
 (defun resume-filter-sessions (sessions query)
   "Filter SESSIONS by title, id, or model while preserving newest-first order."
@@ -379,8 +383,9 @@
          (inner (- bw 4))
          (msgs  (:detail state))
          (lines (map #(msg-preview-row % inner) msgs))
-         (start (max 0 (min (:dscroll state) (max 0 (- (length lines) RESUME-DETAIL-ROWS)))))
-         (win   (take (min RESUME-DETAIL-ROWS (max 0 (- (length lines) start))) (drop start lines)))
+         (cap   (resume-detail-rows layout))
+         (start (max 0 (min (:dscroll state) (max 0 (- (length lines) cap)))))
+         (win   (take (min cap (max 0 (- (length lines) start))) (drop start lines)))
          (sel   (resume-sel-session)))
     (map #(center-h % bw)
       (append
@@ -490,7 +495,7 @@
       (else nil))))
 
 (defun resume-detail-key (k)
-  (let ((maxd (max 0 (- (length (:detail (overlay))) RESUME-DETAIL-ROWS))))
+  (let ((maxd (max 0 (- (length (:detail (overlay))) (resume-detail-rows (overlay-layout))))))
     (cond
       ((key-name= k :esc)  (overlay-merge! {:view :list}))
       ((key-name= k :up)   (overlay-merge! {:dscroll (max 0 (- (:dscroll (overlay)) 1))}))
