@@ -37,9 +37,15 @@
 
 ;; ── run-in-workspace-timed: bash timeout (spawns a real child) ──
 (defun proc-handle-closed? (handle)
+  "A handle is closed when the registry no longer serves it. Sema 1.35 keeps a
+   handle whose proc/wait was cancelled in flight (the only process-group kill)
+   and refuses every later op on it; that terminal state counts as closed too."
   (try
     (begin (proc/running? handle) #f)
-    (catch e (string/contains? (get e :message (str e)) "no such handle"))))
+    (catch e
+      (let ((msg (get e :message (str e))))
+        (or (string/contains? msg "no such handle")
+            (string/contains? msg "no longer usable"))))))
 
 (define handle-sentinel (proc/spawn ["sh" "-c" "true"]))
 (proc/wait handle-sentinel)

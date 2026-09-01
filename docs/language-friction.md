@@ -56,6 +56,14 @@ Still open upstream, re-verified on 1.35.0:
   completed messages on cancellation, combines them with the current streamed
   text, completes any unfinished tool-call/result pair, and persists the turn.
 - **#93** `markdown/to-ansi` remains unbound, so `src/markdown.sema` stays.
+- **Cancelled `proc/wait` poisons the handle.** Cancelling an in-flight
+  `proc/wait` is the only way to kill a child's process group (descendants
+  included), but afterwards every `proc/*` op on that handle, including
+  `proc/close`, fails with "no longer usable … the resource cannot be
+  reclaimed". There is no `proc/pid` to kill the group by hand instead. Every
+  timed-out or stopped command therefore leaks one registry slot; the test
+  suite treats that state as closed. Needs an upstream fix (a `proc/kill-group`
+  or a reclaimable handle after cancellation).
 
 ## Blocker (filed separately)
 
