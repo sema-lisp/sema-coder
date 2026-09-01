@@ -33,6 +33,15 @@
       (check "tool result content" (:content tm) "42")
       (check "tool-call-id linked" (:tool-call-id tm) "c1")))
 
+  (let ((renamed (rename-session! "sess1" "  Custom\nname  ")))
+    (check "rename returns normalized title" (:title renamed) "Custom name")
+    (check "rename records an explicit title"
+      (:custom-title (:meta (load-session "sess1"))) "Custom name"))
+  (save-session! "sess1" 1700000000 "claude-opus-4-8" "high" msgs
+    {:custom-title "Custom name"})
+  (check "later saves preserve a custom title"
+    (:title (:meta (load-session "sess1"))) "Custom name")
+
   ;; Queue metadata persists even without conversation messages, so a crash or
   ;; resume cannot silently discard future work.
   (define queued (list {:id "q-1" :text "next" :mode "follow-up"}))
@@ -48,12 +57,27 @@
   (save-session! "empty" 1700000001 "m" "" '())
   (check "empty not persisted" (length (list-sessions)) 2)
 
+  ;; The filename is authoritative. A hand-edited metadata id cannot redirect
+  ;; restore/rename/delete actions to another session.
+  (let* ((dest (session-path "filename-id"))
+         (forged (assoc (:meta (load-session "sess1")) :id "sess1")))
+    (write-session! "filename-id" forged msgs)
+    (check "session listing derives id from the filename"
+      (:id (session-meta-of dest)) "filename-id")
+    (file/delete dest))
+
   ;; A typed /resume id cannot escape the sessions directory.
   (check-true "plain session id accepted" (valid-session-id? "1700-42_test.v1"))
   (check "slash in session id rejected" (valid-session-id? "../outside") #f)
   (check "backslash in session id rejected" (valid-session-id? "..\\outside") #f)
   (check-true "session path traversal throws"
     (try (begin (session-path "../outside") #f) (catch e #t)))
+
+  (save-session! "delete-me" 1700000003 "m" "" msgs)
+  (check-true "delete removes an existing session" (delete-session! "delete-me"))
+  (check-false "delete reports a missing session" (delete-session! "delete-me"))
+  (check-throws "rename rejects an empty title"
+    (lambda () (rename-session! "sess1" "  ")))
 
   (file/delete (session-path "sess1"))
   (file/delete (session-path "queued")))

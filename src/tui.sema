@@ -61,6 +61,7 @@
 (define *interrupt-turn-id* #f)
 (define *active-turn-id* #f)
 (define *active-turn-input* "")
+(define *turn-started-at* #f)
 (define *turn-seq* 0)
 (define *turn-partial* #f)  ;; captured only by agent/run :on-partial
 (define *round-text* "")    ;; materialized text in the current provider round
@@ -82,11 +83,13 @@
 (define *reload-at* 0)        ;; debounce: reload once the change settles (0 = idle)
 (define *session-id* #f)      ;; current session's file id (persisted after each turn)
 (define *session-created* 0)  ;; its creation timestamp (ms)
+(define *session-custom-title* "") ;; durable user override, empty = first prompt
 (define *persist-warned* #f)  ;; emitted at most one persist-failure warning per session
 (define *selection* #f)       ;; ordered rendered-line range, only while dragging
 (define *selection-drag* #f)  ;; mouse-down origin while button 0 is held
 (define *click-chain* #f)     ;; same-cell click count for double/triple click
 (define *copy-notice* #f)     ;; {:text :ok :until}, rendered in the status row
+(define *background-task-notices* '()) ;; terminal task ids already announced
 
 ;; The buffered reader makes raw events cheap to frame. Drain a generously
 ;; bounded batch and collapse adjacent mouse moves to the newest coordinate;
@@ -331,6 +334,9 @@
 (defun palette-entries ()
   (if-let (pv (palette-view)) (:entries pv) '()))
 
+(defun safe-palette-field (value)
+  (flatten-terminal-row (sanitize-terminal-text value)))
+
 (defun palette-choice (pv sel input)
   "The command string Enter should run for palette PV, selection SEL, and the
    raw INPUT. Pure — on-enter dispatches the result. In argument mode an
@@ -342,14 +348,16 @@
            (exact?  (any #(= (:value %) typed) entries)))
       (if (or exact? (null? entries))
         input
-        f"/${(:cmd (:ctx pv))} ${(:value (nth entries (min sel (- (length entries) 1))))}"))
+        f"/${(:cmd (:ctx pv))} ${(safe-palette-field
+                                   (:value (nth entries (min sel (- (length entries) 1)))))}"))
     (let* ((matches (:entries pv))
            (parsed  (parse-command input))
            ;; If the typed name is itself a command, run it; else run the selection.
            (known?  (get *commands* (:name parsed) #f)))
       (cond (known? input)
             ((> (length matches) 0)
-             (string/append "/" (:name (nth matches (min sel (- (length matches) 1))))
+             (string/append "/" (safe-palette-field
+                                   (:name (nth matches (min sel (- (length matches) 1)))))
                             (if (= (:args parsed) "") "" (string/append " " (:args parsed)))))
             (else input)))))
 
@@ -359,8 +367,8 @@
     (when (> (length entries) 0)
       (let ((e (nth entries (min sel (- (length entries) 1)))))
         (if (equal? (:mode pv) :args)
-          f"/${(:cmd (:ctx pv))} ${(:value e)}"
-          (string/append "/" (:name e) " "))))))
+          f"/${(:cmd (:ctx pv))} ${(safe-palette-field (:value e))}"
+          (string/append "/" (safe-palette-field (:name e)) " "))))))
 
 (defun palette-limit (matches) (min 8 (length matches)))
 
@@ -368,15 +376,19 @@
   "One palette row as plain text; palette-box styles selection afterwards.
    An :active entry (the value currently in effect) is marked with ●."
   (if (equal? mode :args)
-    (let* ((mark (if (get e :active #f) " ●" ""))
+    (let* ((value (safe-palette-field (:value e)))
+           (label (safe-palette-field (:label e)))
+           (mark (if (get e :active #f) " ●" ""))
            (value-width (min 24 (max 10 (quotient inner 3))))
            (label-width (max 4 (- inner value-width 1 (string/width mark)))))
       (string/append
-        (string/pad-right (clip-width (:value e) value-width) value-width) " "
-        (clip-width (:label e) label-width)
+        (string/pad-right (clip-width value value-width) value-width) " "
+        (clip-width label label-width)
         mark))
-    (string/append (string/pad-right (string/append "/" (:name e)) 12) " "
-                   (clip-width (:desc e) (max 4 (- inner 15))))))
+    (let ((name (safe-palette-field (:name e)))
+          (desc (safe-palette-field (:desc e))))
+      (string/append (string/pad-right (string/append "/" name) 12) " "
+                     (clip-width desc (max 4 (- inner 15)))))))
 
 (defun palette-box (pv sel bw)
   "Render the palette PV as a bordered box of outer width BW: gold parens/label,
@@ -468,6 +480,12 @@
 (define spinner-frames ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"])
 (defun spinner-frame () (nth spinner-frames (mod (quotient (time-ms) 80) 10)))
 
+(defun elapsed-seconds (started-at)
+  (round1 (/ (max 0 (- ((current-ui-clock)) started-at)) 1000.0)))
+
+(defun active-turn-elapsed-label ()
+  (if *turn-started-at* f" · ${(elapsed-seconds *turn-started-at*)}s" ""))
+
 (defun active-copy-notice ()
   (when *copy-notice*
     (if (< (time-ms) (:until *copy-notice*))
@@ -482,7 +500,8 @@
     (indent (cond
       (*config-error* (bad "⚠ config error — using last good (fix init.sema)"))
       (notice         ((if (:ok notice) ok warn) (:text notice)))
-      (*busy*         (faint (string/append (spinner-frame) " evaluating · tab queues · enter interrupts and sends"
+      (*busy*         (faint (string/append (spinner-frame) " evaluating" (active-turn-elapsed-label)
+                                           " · tab queues · enter interrupts and sends"
                                            (if (> (length *input-queue*) 0)
                                              f" · ${(length *input-queue*)} pending" "")
                                            (if (> background-count 0)
@@ -809,6 +828,7 @@
   (set! *busy* #t)
   (set! *active-turn-id* turn-id)
   (set! *active-turn-input* text)
+  (set! *turn-started-at* ((current-ui-clock)))
   (set! *turn-partial* #f)
   (reset-round-text!)
   (set! *active-tool-block-index* #f)
@@ -879,12 +899,49 @@
                       {:status :failed :turn-id turn-id})))))
           (set! *active-turn-id* #f)
           (set! *active-turn-input* "")
+          (set! *turn-started-at* #f)
           (set! *interrupt* #f)
           (set! *interrupt-mode* #f)
           (set! *interrupt-turn-id* #f)
           (set! *active-tool-block-index* #f)
           ((current-turn-render))
           terminal))))))
+
+(defun background-task-terminal? (task)
+  (member (get task :status :unknown) (list :completed :failed :stopped)))
+
+(defun background-task-notice-kind (task)
+  (match (get task :status :unknown)
+    (:completed :ok)
+    (:stopped :warn)
+    (_ :error)))
+
+(defun background-task-notice-text (task)
+  (let* ((summary (background-task-summary task))
+         (status (get summary :status "unknown"))
+         (code (get summary :exit-code nil))
+         (elapsed (round1 (/ (get summary :elapsed-ms 0) 1000.0))))
+    (string-append
+      (:task-id summary) " " status " · " f"${elapsed}s"
+      (if (number? code) f" · exit ${code}" "")
+      " · /debug tasks")))
+
+(defun handle-background-task-change! ()
+  "Announce each terminal background task once, then request a fresh frame."
+  (for-each
+    (lambda (task)
+      (let ((id (:id task)))
+        (when (and (background-task-terminal? task)
+                   (not (member id *background-task-notices*)))
+          (set! *background-task-notices* (cons id *background-task-notices*))
+          (add-block! {:kind (background-task-notice-kind task)
+                       :text (background-task-notice-text task)}))))
+    *background-tasks*)
+  ;; Settled records are evicted as new tasks start. Forget their notice ids so
+  ;; this bookkeeping stays bounded by the background-task registry.
+  (set! *background-task-notices*
+    (filter #(background-task-by-id %) *background-task-notices*))
+  (request-frame!))
 
 (defun take-steers-for! (turn-id)
   "Take every steer accepted for TURN-ID in FIFO order. Multiple steers sent
@@ -934,6 +991,7 @@
   ;; silently share (and clobber) one session file.
   (set! *session-id* f"${(time-ms)}-${(sys/pid)}")
   (set! *session-created* (time-ms))
+  (set! *session-custom-title* "")
   (set! *input-queue* '())
   (set! *queue-paused* #f)
   (clear-turn-events!)
@@ -945,7 +1003,7 @@
     (try (save-session! *session-id* *session-created*
            (effective-model) (effective-effort) *messages*
            {:queue *input-queue* :queue-paused *queue-paused*
-            :events (turn-events)})
+            :events (turn-events) :custom-title *session-custom-title*})
       (catch e
         (unless *persist-warned*
           (set! *persist-warned* #t)
@@ -964,6 +1022,7 @@
       (set! *agent*    (:agent f))
       (set! *session-id* id)
       (set! *session-created* (get (:meta f) :created (time-ms)))
+      (set! *session-custom-title* (get (:meta f) :custom-title ""))
       (set! *persist-warned* #f)
       (set! *input-queue* (get (:meta f) :queue '()))
       (set! *queue-paused*
@@ -1434,7 +1493,8 @@
 (defun tui-run (cwd model cfg agent)
   (set! *cwd* cwd) (set! *model* model) (set! *config* cfg) (set! *agent* agent)
   (set! *tui-active* #t)
-  (current-background-task-change (lambda () (request-frame!)))
+  (set! *background-task-notices* '())
+  (current-background-task-change handle-background-task-change!)
   (start-background-monitor!)
   (new-session!)
   (recompute-size!)

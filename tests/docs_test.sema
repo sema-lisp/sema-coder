@@ -42,14 +42,14 @@
 (for-each
   (lambda (flag)
     (check-contains f"README documents CLI flag ${flag}" readme flag))
-  (list "--model" "--print" "--version" "--help"))
+  (list "--model" "--print" "--json" "--version" "--help"))
 
 (for-each
   (lambda (name)
     (check-contains f"README documents /debug ${name}"
       readme
       f"`/debug ${name}`"))
-  (list "status" "session" "transcript" "tasks"))
+  (list "status" "session" "transcript" "tasks" "doctor"))
 
 (check-contains "GitHub classifies .sema files as Scheme"
   attributes

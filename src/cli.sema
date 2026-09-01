@@ -1,6 +1,6 @@
 ;; cli.sema — command-line argument parsing + usage text.
 ;;
-;; (parse-cli) → {:model "" :prompt #f|"…" :help #t|#f :version #t|#f}.
+;; (parse-cli) → {:model "" :prompt #f|"…" :json #t|#f :help #t|#f :version #t|#f}.
 ;; A malformed or unknown option prints an error and exits — a typo'd flag
 ;; must not quietly start an interactive session.
 
@@ -18,10 +18,13 @@
 (defun parse-args (args)
   "Parse the user's ARGS list → an options map. Split from parse-cli so it's
    testable without a real argv."
-  (let ((result {:model "" :prompt #f :help #f :version #f}))
+  (let ((result {:model "" :prompt #f :json #f :help #f :version #f}))
     (let loop ((rem args))
       (if (null? rem)
-        result
+        (let ((validation-error (cli-options-validation-error result)))
+          (if validation-error
+            (begin (io/println-error f"Error: ${validation-error}") (exit 2))
+            result))
         (let ((arg (car rem)) (rest (cdr rem)))
           (cond
             ((member arg (list "-h" "--help"))
@@ -36,9 +39,27 @@
               (if (null? rest)
                 (begin (io/println-error "Error: --print requires a value") (exit 1))
                 (begin (set! result (assoc result :prompt (car rest))) (loop (cdr rest)))))
+            ((= arg "--json")
+              (set! result (assoc result :json #t)) (loop rest))
             (else
               (io/println-error f"Error: unknown option: ${arg} (try --help)")
               (exit 1))))))))
+
+(defun cli-options-validation-error (options)
+  (if (and (get options :json #f)
+           (not (get options :prompt #f))
+           (not (get options :help #f))
+           (not (get options :version #f)))
+    "--json requires --print"
+    #f))
+
+(defun one-shot-json-payload (status model effort usage elapsed-ms . rest)
+  "Build the stable machine-readable one-shot result."
+  (let ((value (if (null? rest) "" (car rest))))
+    (merge
+      {:status status :model model :effort effort
+       :usage usage :elapsed-ms elapsed-ms}
+      (if (= status "completed") {:response value} {:error value}))))
 
 (defun parse-cli () (parse-args (cli-args)))
 
@@ -50,6 +71,7 @@
   (println "Options:")
   (println "  -m, --model <name>    Override the model")
   (println "  -p, --print <prompt>  One-shot: run prompt, print result, exit")
+  (println "      --json            Emit one JSON result (requires --print)")
   (println "  -V, --version         Print the version")
   (println "  -h, --help            Show this help")
   (println "")

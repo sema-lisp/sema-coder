@@ -11,6 +11,7 @@
   (set! *interrupt-mode* #f)
   (set! *active-turn-id* #f)
   (set! *active-turn-input* "")
+  (set! *turn-started-at* #f)
   (set! *turn-partial* #f)
   (reset-round-text!)
   (set! *active-tool-block-index* #f)
@@ -18,6 +19,7 @@
   (set! *session-id* #f)
   (set! *queue-seq* 0)
   (set! *turn-seq* 0)
+  (set! *background-task-notices* '())
   (clear-turn-events!)
   (clear-transcript!)
   (prompt-clear!))
@@ -88,7 +90,43 @@
       (tui-state)))
   (check "queue edit command updates by stable id"
     (:text (nth (queued-messages) 1)) "edited through command")
+  (set! *queue-paused* #t)
+  (let ((values (map :value (command-completions "queue" (tui-state)))))
+    (check-true "queue completions offer resume only while paused"
+      (member "resume" values))
+    (check-true "queue completions include the exact drop id"
+      (member f"drop ${(:id s)}" values))
+    (check-true "queue completions include an editable id"
+      (member f"edit ${(:id b)} " values)))
   (set! *tui-active* #f))
+
+(reset-controller!)
+(set! *busy* #t)
+(set! *turn-started-at* 1000)
+(parameterize ((current-ui-clock (lambda () 13450)))
+  (check-contains "busy status shows elapsed turn time"
+    (term/strip (status-line)) "evaluating · 12.4s"))
+
+(reset-controller!)
+(set! *background-tasks*
+  (map (lambda (record)
+         {:id (nth record 0) :command "test" :status (nth record 1)
+          :started-at 1000 :updated-at 2200 :finished-at 2250
+          :exit-code (nth record 2)
+          :stdout-capture (empty-background-capture)
+          :stderr-capture (empty-background-capture)})
+       (list (list "task-done" :completed 0)
+             (list "task-failed" :failed 7)
+             (list "task-stopped" :stopped -1))))
+(handle-background-task-change!)
+(handle-background-task-change!)
+(let ((notices (filter #(string/contains? (get % :text "") "/debug tasks")
+                       (transcript-blocks))))
+  (check "each settled background task is announced once" (length notices) 3)
+  (check "background completion uses success styling" (:kind (nth notices 0)) :ok)
+  (check "background failure uses error styling" (:kind (nth notices 1)) :error)
+  (check "background stop uses warning styling" (:kind (nth notices 2)) :warn))
+(set! *background-tasks* '())
 
 (set! *queue-paused* #t)
 (clear-input-queue!)

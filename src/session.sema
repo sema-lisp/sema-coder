@@ -24,6 +24,24 @@
     (if (null? u) "(no messages)"
       (truncate-str (string/replace (string/trim (get (car u) :content "")) "\n" " ") 56))))
 
+(defun normalized-session-title (title)
+  "A one-line, terminal-safe custom session title, or an error when empty."
+  (let ((clean (truncate-str
+                 (string/trim
+                   (flatten-terminal-row (sanitize-terminal-text title)))
+                 80)))
+    (when (= clean "") (error "session title must not be empty"))
+    clean))
+
+(defun write-session! (id meta messages)
+  "Atomically write one complete session record."
+  (file/mkdir (sessions-dir))
+  (let* ((dest (session-path id))
+         (tmp (string-append dest ".tmp")))
+    (file/write tmp
+      (string/join (cons (json/encode meta) (map json/encode messages)) "\n"))
+    (file/rename tmp dest)))
+
 (defun save-session! (id created model effort messages . rest)
   "Write the session as JSONL (meta line + one message per line). No-op if empty.
    MODEL and EFFORT are the session's effective values, so /resume restores them.
@@ -34,17 +52,17 @@
   (let* ((opts (if (null? rest) {} (car rest)))
          (queue (get opts :queue '()))
          (paused? (get opts :queue-paused #f))
-         (events (get opts :events '())))
+         (events (get opts :events '()))
+         (custom-title (get opts :custom-title "")))
   (when (or (> (length messages) 0) (> (length queue) 0))
-    (file/mkdir (sessions-dir))
-    (let* ((meta {:kind "meta" :id id :created created :model model :effort effort
-                  :title (session-title messages) :queue queue
-                  :queue-paused paused? :events events})
-           (dest (session-path id))
-           (tmp  (string/append dest ".tmp")))
-      (file/write tmp
-        (string/join (cons (json/encode meta) (map json/encode messages)) "\n"))
-      (file/rename tmp dest)))))
+    (let* ((explicit (if (= custom-title "") ""
+                       (normalized-session-title custom-title)))
+           (meta (merge
+                   {:kind "meta" :id id :created created :model model :effort effort
+                    :title (if (= explicit "") (session-title messages) explicit)
+                    :queue queue :queue-paused paused? :events events}
+                   (if (= explicit "") {} {:custom-title explicit}))))
+      (write-session! id meta messages)))))
 
 (defun read-lines (path)
   (filter #(not (= (string/trim %) "")) (string/split (file/read path) "\n")))
@@ -52,8 +70,13 @@
 (defun session-meta-of (path)
   "Parse a session file's meta line, adding :count. #f on a malformed file."
   (try
-    (let ((lines (read-lines path)))
-      (assoc (json/decode (car lines)) :count (- (length lines) 1)))
+    (let* ((lines (read-lines path))
+           (filename (path/filename path))
+           (id (string/slice filename 0 (- (string/length filename) 6))))
+      (if (valid-session-id? id)
+        (merge (json/decode (car lines))
+          {:id id :count (- (length lines) 1)})
+        #f))
     (catch e #f)))
 
 (defun list-sessions ()
@@ -69,8 +92,23 @@
 (defun load-session (id)
   "Read a session → {:meta … :messages (…)}."
   (let ((lines (read-lines (session-path id))))
-    {:meta (json/decode (car lines))
+    {:meta (assoc (json/decode (car lines)) :id id)
      :messages (map json/decode (cdr lines))}))
+
+(defun rename-session! (id title)
+  "Set a durable custom title and return the updated metadata."
+  (let* ((loaded (load-session id))
+         (custom (normalized-session-title title))
+         (meta (merge (:meta loaded) {:title custom :custom-title custom})))
+    (write-session! id meta (:messages loaded))
+    meta))
+
+(defun delete-session! (id)
+  "Delete ID after validating that it is a session file name."
+  (let ((dest (session-path id)))
+    (if (file/exists? dest)
+      (begin (file/delete dest) #t)
+      #f)))
 
 ;; ── Stored messages → transcript blocks (pure; the TUI renders them) ─────────
 

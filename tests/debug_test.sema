@@ -7,7 +7,7 @@
   (get *commands* "debug" #f))
 (check "debug completions list all diagnostics"
   (map :value (command-completions "debug" {:messages '()}))
-  (list "status" "session" "transcript" "tasks"))
+  (list "status" "session" "transcript" "tasks" "doctor"))
 
 (define emitted '())
 (parameterize ((current-emit
@@ -56,5 +56,26 @@
 (let ((tasks (json/decode (:text (car emitted)))))
   (check "headless debug tasks emits raw JSON" (:kind (car emitted)) :raw)
   (check "headless debug tasks starts empty" (:tasks tasks) '()))
+
+(set! emitted '())
+(define doctor-dir (test-temp-path "doctor"))
+(parameterize ((config-dir-override doctor-dir)
+               (current-emit
+                 (lambda (kind text)
+                   (set! emitted (append emitted (list {:kind kind :text text}))))))
+  (dispatch-command (parse-command "/debug doctor")
+    (assoc headless-state :config default-config)))
+(let* ((text (:text (car emitted)))
+       (doctor (json/decode text)))
+  (check "debug doctor emits raw JSON" (:kind (car emitted)) :raw)
+  (check-true "debug doctor reports a compatible Sema" (:compatible (:sema doctor)))
+  (check-true "debug doctor proves session storage writable" (:writable (:sessions doctor)))
+  (check-false "debug doctor removes its write probe"
+    (any #(string/starts-with? (path/filename %) ".doctor-")
+         (file/list (:dir (:sessions doctor)))))
+  (check-true "debug doctor reports provider presence as booleans"
+    (every boolean?
+      (map #(get (:providers doctor) %) (keys (:providers doctor)))))
+  (check-not-contains "debug doctor never serializes authorization values" text "Bearer "))
 
 (done)

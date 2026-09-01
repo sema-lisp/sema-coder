@@ -40,6 +40,9 @@ safety) is Rust. It depends on nothing but the `sema` binary.
 # One-shot (prose to stdout, pipeable)
 ./coder.sema -- -p "explain this codebase"
 
+# One-shot structured result (exactly one JSON document on stdout)
+./coder.sema -- --json -p "explain this codebase"
+
 # Override the model
 ./coder.sema -- -m claude-haiku-4-5
 ```
@@ -52,6 +55,7 @@ line-based REPL instead of the full-screen interface.
 | --- | --- |
 | `-m, --model ID` | Override `:model` for this process |
 | `-p, --print PROMPT` | Run one turn, print only the response to stdout, and exit |
+| `--json` | With `--print`, emit status, response/error, model, effort, usage, and elapsed time as one JSON document |
 | `-V, --version` | Print the Sema Coder version |
 | `-h, --help` | Print CLI help |
 
@@ -132,6 +136,8 @@ inserts the selected completion; `Enter` runs it.
 | `/queue edit ID TEXT` | TUI | Replace the text of one queued message without changing its ID or order |
 | `/mcp` | TUI / REPL | Open the MCP manager in the TUI; print server status in the plain REPL |
 | `/resume [ID]` | TUI / REPL | Open or print the session list, or restore a session directly by ID |
+| `/resume rename ID TITLE` | TUI / REPL | Give a saved session a durable custom title |
+| `/resume delete ID` | TUI / REPL | Delete a saved session; the active TUI session cannot be deleted |
 | `/cwd` | TUI / REPL | Print the workspace directory |
 | `/config` | TUI / REPL | Print the active `init.sema` path |
 | `/config edit` | TUI / REPL | Open `init.sema` with `$VISUAL`, `$EDITOR`, or the platform text-file opener |
@@ -156,10 +162,17 @@ lines.
 | `/debug session` | TUI / REPL | Effective model and effort, exact in-memory messages, session metadata, queued input, and paused state |
 | `/debug transcript` | TUI | Transcript blocks plus render-cache state and counters |
 | `/debug tasks` | TUI / REPL | Background task state plus retained stdout, stderr, exit codes, timing, and truncation flags |
+| `/debug doctor` | TUI / REPL | Secret-safe checks for Sema compatibility, provider keys, config, session storage, ripgrep, MCP, and model resolution |
 
 `/debug session`, `/debug transcript`, and `/debug tasks` can include full
 prompts, commands, tool arguments, tool results, and process output. Review
 their output before sharing it.
+
+`--json` is valid only with `--print`. Structured mode suppresses tool rendering
+and lifecycle hooks so user code cannot add text to stdout. A successful result
+uses `status: "completed"` and `response`; a failed result uses
+`status: "failed"` and `error`, then exits non-zero. Startup diagnostics remain
+on stderr where applicable.
 
 ## Configuration
 
@@ -431,9 +444,12 @@ paused state, and bounded controller event log.
 Interrupted turns retain completed tool rounds, currently streamed assistant
 text, correlated cancellation results for unfinished tool calls, and a typed
 model-visible control item warning that side effects can be partial. `/resume`
-or `⌃R` opens a newest-first picker: `↑`/`↓` selects, `Enter` previews, and `r`
-restores the selected session. `/resume ID` restores directly and brings back
-its model, effort, queue, paused state, events, and exact message history.
+or `⌃R` opens a newest-first picker. Typing filters by title, ID, or model;
+`Backspace` edits the query, `Enter` previews, `⌃R` restores, `⌃E` renames, and
+`Delete` twice removes the selected saved session. `/resume ID` restores directly
+and brings back its model, effort, custom title, queue, paused state, events, and
+exact message history. The slash-command palette also completes rename and delete
+forms from the current saved-session list.
 
 ## Tools
 
@@ -463,6 +479,9 @@ run it in a workspace you're prepared to let it modify.
 Background commands are non-interactive: Sema Coder closes their stdin at
 launch. They continue across normal turns and agent-turn interruption, but they
 are not persisted across app restart and are stopped when Sema Coder exits.
+When one completes, fails, or is stopped, the TUI adds one lifecycle notice with
+its task ID, elapsed time, and exit code; retained output remains under
+`task-output` and `/debug tasks`.
 Each stdout and stderr stream retains a bounded 25,000-character head and
 25,000-character tail; `task-output` and `/debug tasks` report omitted content.
 Use background mode for servers, file watchers, or independent long-running
@@ -478,6 +497,7 @@ foreground when its result is required before the next agent step.
 jake coder.run                     # interactive app
 jake coder.ask q='explain this'    # one-shot prompt
 jake coder.e2e                     # controller + process-level tests
+jake coder.live-smoke scenario=complete model=MODEL_ID
 jake coder.help                    # CLI help
 ```
 
@@ -499,11 +519,14 @@ Live provider interruption checks are opt-in and are not discovered by the
 default runner:
 
 ```bash
-SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- text
-SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- tool
+sema tests/live_interrupt_smoke.sema -- failure
+SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- complete
+SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- foreground
 SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- steer
 SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- background
 ```
+Set `SEMA_CODER_LIVE_MODEL` to override the configured default model for a live
+scenario. The deterministic `failure` scenario needs no provider or API key.
 
 Set `SEMA_CODER_TEST_TIMEOUT_MS` to a positive millisecond value to override the
 test runner's 30-second per-file timeout.

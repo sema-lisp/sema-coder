@@ -14,10 +14,23 @@
 (load "src/tui.sema") ;; brings in commands, agent, tools, mcp, session, …
 
 (define VERSION "0.3.0")
+(define structured-one-shot #f)
+(define structured-started-at (time-ms))
+
+(defun emit-structured-failure (message . context)
+  (let* ((ctx (if (null? context) {} (car context)))
+         (model (get ctx :model ""))
+         (effort (get ctx :effort ""))
+         (started-at (get ctx :started-at structured-started-at)))
+    (println
+      (json/encode
+        (one-shot-json-payload "failed" model effort
+          (get ctx :usage {}) (- (time-ms) started-at) message)))))
 
 (try
   (begin
     (define cli (parse-cli))
+    (set! structured-one-shot (and (:json cli) (:prompt cli)))
     (when (:help cli)
       (show-usage)
       (exit 0))
@@ -29,8 +42,10 @@
     ;; init.sema calls on every load/hot-reload (same trap as `agent` below).
     (define llm-provider (llm/auto-configure))
     (when (nil? llm-provider)
-      (io/println-error
-        f"Error: No API key found. Set ${(string/join (provider-env-keys) " or ")}.")
+      (let ((message f"No API key found. Set ${(string/join (provider-env-keys) " or ")}."))
+        (if structured-one-shot
+          (emit-structured-failure message {:model (:model cli)})
+          (io/println-error f"Error: ${message}")))
       (exit 1))
 
     (define cfg (boot-config!)) ;; ensure + load init.sema, reconcile commands + servers
@@ -46,15 +61,42 @@
     ;; One-shot mode — prose to stdout, nothing else. (The TUI path fires
     ;; :session-start from new-session!; here the non-TTY paths fire it.)
     (when (:prompt cli)
-      (run-hooks :session-start {:cwd cwd})
-      (let ((result
-              (run-turn sema-coder-agent
-                (:prompt cli)
-                '()
-                on-tool-call
-                (pick-effort "" (choose-model cli-model cfg) cfg))))
-        (println (:response result))
-        (exit 0)))
+      (let* ((model (choose-model cli-model cfg))
+             (effort (pick-effort "" model cfg))
+             (started-at (time-ms)))
+        (if (:json cli)
+          ;; Structured mode bypasses lifecycle hooks because user hooks may
+          ;; write arbitrary stdout. Machine-readable stdout must contain one
+          ;; JSON document and nothing else.
+          (let ((attempt
+                  (try
+                    {:result
+                      (agent/run sema-coder-agent (:prompt cli)
+                        (turn-opts {:on-tool-call (lambda (event) nil)
+                                    :messages '()}
+                                   effort))}
+                    (catch e {:error e}))))
+            (if-let (result (get attempt :result nil))
+              (begin
+                (println
+                  (json/encode
+                    (one-shot-json-payload "completed" model effort
+                      (llm/session-usage) (- (time-ms) started-at)
+                      (:response result))))
+                (exit 0))
+              (begin
+                (emit-structured-failure
+                  (get (:error attempt) :message (str (:error attempt)))
+                  {:model model :effort effort :usage (llm/session-usage)
+                   :started-at started-at})
+                (exit 1))))
+          (begin
+            (run-hooks :session-start {:cwd cwd})
+            (let ((result
+                    (run-turn sema-coder-agent
+                      (:prompt cli) '() on-tool-call effort)))
+              (println (:response result))
+              (exit 0))))))
 
     ;; Interactive, on a TTY → the full-screen TUI.
     (when (sys/tty)
@@ -122,5 +164,7 @@
       (loop)))
 
   (catch e
-    (io/println-error f"Fatal error: ${(get e :message (str e))}")
+    (if structured-one-shot
+      (emit-structured-failure (get e :message (str e)))
+      (io/println-error f"Fatal error: ${(get e :message (str e))}"))
     (exit 1)))

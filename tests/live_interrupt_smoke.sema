@@ -2,32 +2,40 @@
 ;; Opt-in live-provider smoke test. This is intentionally not an *_test.sema
 ;; file: CI and the default suite never spend API quota.
 ;;
-;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- text
-;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- tool
+;;   sema tests/live_interrupt_smoke.sema -- failure  # deterministic, no API
+;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- complete
+;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- foreground
 ;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- steer
 ;;   SEMA_CODER_LIVE=1 sema tests/live_interrupt_smoke.sema -- background
 
 (load "../src/tui.sema")
 
-(unless (= (env "SEMA_CODER_LIVE") "1")
+(define scenario
+  (let ((args (sys/args)))
+    (cond ((member "failure" args) "failure")
+          ((member "complete" args) "complete")
+          ((member "background" args) "background")
+          ((or (member "foreground" args) (member "tool" args)) "foreground")
+          ((member "steer" args) "steer")
+          ((member "text" args) "foreground")
+          (else "complete"))))
+
+(define live? (not (= scenario "failure")))
+
+(when (and live? (not (= (env "SEMA_CODER_LIVE") "1")))
   (io/println-error "set SEMA_CODER_LIVE=1 to allow live model calls")
   (exit 2))
 
-(define scenario
-  (let ((args (sys/args)))
-    (cond ((member "background" args) "background")
-          ((member "tool" args) "tool")
-          ((member "steer" args) "steer")
-          (else "text"))))
-
-(unless (llm/auto-configure)
+(when (and live? (not (llm/auto-configure)))
   (io/println-error "no configured LLM provider")
   (exit 2))
 
 (set! *cwd* (sys/cwd))
 (set! *config* default-config)
-(set! *model* "claude-haiku-4-5-20251001")
-(set! *agent* (create-agent *cwd* *model* *config*))
+(let ((requested (env "SEMA_CODER_LIVE_MODEL")))
+  (set! *model*
+    (if (and requested (not (= requested ""))) requested (:model default-config))))
+(set! *agent* (if live? (create-agent *cwd* *model* *config*) #f))
 (set! *messages* '())
 (set! *input-queue* '())
 (set! *queue-paused* #f)
@@ -37,7 +45,10 @@
 
 (define prompt
   (cond
-    ((= scenario "tool")
+    ((= scenario "failure") "exercise deterministic provider failure")
+    ((= scenario "complete")
+      "Reply only with the word completed. Do not call tools.")
+    ((= scenario "foreground")
       "For a cancellation smoke test, call the bash tool exactly once with the command `sleep 5; echo live-smoke`. Do not use another tool. Then report the output.")
     ((= scenario "background")
       "Start `sleep 0.2; echo background-live-smoke` with bash in background mode. Then use task-output with wait enabled, inspect its terminal status and output, and report both. Do not run the command in the foreground.")
@@ -54,17 +65,22 @@
                 (and b (= (get b :kind :none) :tool)
                      (= (get b :state :none) :running)))))
         (cond
-          ((and (= scenario "tool") tool-running?) (request-interrupt!))
-          ((and (= scenario "text") (>= ticks 50)) (request-interrupt!))
+          ((and (= scenario "foreground") tool-running?) (request-interrupt!))
           ((and (= scenario "steer") (= *active-turn-input* prompt) (>= ticks 50))
             (prompt-set! replacement)
             (on-steer-enter))
-          ((and (not (= scenario "background")) (>= ticks 250))
+          ((and (= scenario "foreground") (>= ticks 250))
             (request-interrupt!))
-          ((>= ticks 750) (request-interrupt!))
+          ((and (= scenario "steer") (>= ticks 750)) (request-interrupt!))
+          ((>= ticks 1500) (request-interrupt!))
           (else (async/sleep 20) (loop (+ ticks 1))))))))
 
-(parameterize ((current-turn-pump live-cancel-pump)
+(parameterize ((current-turn-runner
+                 (if (= scenario "failure")
+                   (lambda (agent input messages on-tool on-text on-partial effort)
+                     (error "deterministic provider failure"))
+                   run-turn-streaming))
+               (current-turn-pump live-cancel-pump)
                (current-turn-render (lambda () nil)))
   (run-agent-turn! prompt))
 
@@ -76,7 +92,25 @@
                   (transcript-blocks))))
 
 (define smoke-result
-  {:scenario scenario
+  (let* ((events (map :event (turn-events)))
+         (background-completed?
+           (any #(and (= (get % :status :unknown) :completed)
+                      (string/contains?
+                        (background-capture-text (:stdout-capture %))
+                        "background-live-smoke"))
+                *background-tasks*))
+         (ok?
+           (match scenario
+             ("failure" (if (member :turn-failed events) #t #f))
+             ("complete" (if (member :turn-completed events) #t #f))
+             ("foreground" (and (member :turn-interrupted events)
+                                 (> cancelled-tool-count 0)))
+             ("steer" (if (and (member :turn-interrupted events)
+                                (member :turn-completed events)) #t #f))
+             ("background" background-completed?)
+             (_ #f))))
+  {:ok ok?
+   :scenario scenario
    :state (turn-controller-state)
    :roles (map #(get % :role "") *messages*)
    :control-count control-count
@@ -86,7 +120,8 @@
      (foldl (lambda (n m)
               (if (= (get m :role "") "assistant")
                 (+ n (string/length (get m :content ""))) n))
-            0 *messages*)})
+            0 *messages*)}))
 
 (stop-all-background-tasks!)
 (println (json/encode smoke-result))
+(exit (if (:ok smoke-result) 0 1))

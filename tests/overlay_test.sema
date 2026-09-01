@@ -92,4 +92,60 @@
   (check-not-contains "MCP list strips terminal controls" mcp-row "\x1b;[2J")
   (check-contains "sanitized overlay keeps visible text" (term/strip message-row) "safeowned"))
 
+;; Resume search and management operate on validated session ids and refresh the
+;; same modal state after a filesystem change.
+(define resume-dir (test-temp-path "resume-overlay"))
+(define resume-messages (list {:role "user" :content "first"}))
+(parameterize ((config-dir-override resume-dir))
+  (save-session! "alpha-1" 10 "model-a" "" resume-messages
+    {:custom-title "Alpha session"})
+  (save-session! "beta-2" 20 "model-b" "" resume-messages
+    {:custom-title "Beta session"})
+  (set! *session-id* "current-session")
+  (close-all-overlays!)
+  (open-overlay! :resume)
+  (handle-overlay-key {:kind :char :char "a"})
+  (handle-overlay-key {:kind :char :char "l"})
+  (handle-overlay-key {:kind :char :char "p"})
+  (check "resume query filters by title" (map :id (:sessions (overlay))) (list "alpha-1"))
+  (check "resume filtering also matches model"
+    (map :id (resume-filter-sessions (:all-sessions (overlay)) "model-b"))
+    (list "beta-2"))
+  (handle-overlay-key {:kind :key :name :backspace})
+  (check "resume Backspace edits the query" (:query (overlay)) "al")
+  (handle-overlay-key {:kind :ctrl :char "e"})
+  (check "Ctrl-E opens inline rename" (:view (overlay)) :rename)
+  (overlay-merge! {:rename-input "Renamed alpha"})
+  (handle-overlay-key {:kind :key :name :enter})
+  (check "rename returns to the session list" (:view (overlay)) :list)
+  (check "inline rename persists custom metadata"
+    (:custom-title (:meta (load-session "alpha-1"))) "Renamed alpha")
+  (resume-set-query! "beta")
+  (handle-overlay-key {:kind :key :name :delete})
+  (check "first Delete only arms confirmation" (file/exists? (session-path "beta-2")) #t)
+  (handle-overlay-key {:kind :key :name :delete})
+  (check "second Delete removes the selected session" (file/exists? (session-path "beta-2")) #f)
+  (save-session! "current-session" 30 "model-c" "" resume-messages)
+  (resume-refresh! "current-session")
+  (resume-set-query! "current-session")
+  (handle-overlay-key {:kind :key :name :delete})
+  (check "the active session cannot be deleted"
+    (file/exists? (session-path "current-session")) #t)
+  (save-session! "command-session" 40 "model-d" "" resume-messages)
+  (set! *tui-active* #f)
+  (parameterize ((current-emit (lambda (kind text) nil)))
+    (dispatch-command
+      (parse-command "/resume rename command-session Command title")
+      {:cwd "." :model "" :effort "" :config default-config :messages '()})
+    (check "resume rename command persists its title"
+      (:title (:meta (load-session "command-session"))) "Command title")
+    (dispatch-command
+      (parse-command "/resume delete command-session")
+      {:cwd "." :model "" :effort "" :config default-config :messages '()}))
+  (check-false "resume delete command removes its session"
+    (file/exists? (session-path "command-session")))
+  (close-all-overlays!)
+  (file/delete (session-path "alpha-1"))
+  (file/delete (session-path "current-session")))
+
 (done)

@@ -6,16 +6,27 @@
 
 (check "no args → defaults"
        (parse-args '())
-       {:model "" :prompt #f :help #f :version #f})
+       {:model "" :prompt #f :json #f :help #f :version #f})
 
 (check "model flag"        (:model (parse-args (list "-m" "gpt-x"))) "gpt-x")
 (check "model long flag"   (:model (parse-args (list "--model" "gpt-x"))) "gpt-x")
 (check "print flag"        (:prompt (parse-args (list "-p" "hi there"))) "hi there")
+(check-true "json flag with print" (:json (parse-args (list "--json" "-p" "hi"))))
+(check "json without print has a validation error"
+  (cli-options-validation-error {:json #t :prompt #f}) "--json requires --print")
+(check-false "help remains valid when json is also present"
+  (cli-options-validation-error {:json #t :prompt #f :help #t}))
 (check "help flag"         (:help (parse-args (list "--help"))) #t)
 (check "version flag"      (:version (parse-args (list "-V"))) #t)
 
 (let ((r (parse-args (list "-m" "haiku" "-p" "explain"))))
   (check "combined model"  (:model r) "haiku")
   (check "combined prompt" (:prompt r) "explain"))
+
+(let ((payload (one-shot-json-payload "completed" "m" "high"
+                 {:prompt-tokens 2} 25 "done")))
+  (check "JSON payload carries terminal status" (:status payload) "completed")
+  (check "JSON payload carries response" (:response payload) "done")
+  (check "JSON payload carries usage" (:prompt-tokens (:usage payload)) 2))
 
 (done)

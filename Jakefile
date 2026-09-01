@@ -33,6 +33,12 @@ task e2e:
     sema test.sema -- e2e turn_control
 
 @group coder
+@desc "Run an opt-in live smoke scenario: jake coder.live-smoke [scenario=complete] [model=ID]"
+task live-smoke scenario="complete" model="":
+    @needs sema
+    SEMA_CODER_LIVE=1 SEMA_CODER_LIVE_MODEL="{{model}}" sema tests/live_interrupt_smoke.sema -- "{{scenario}}"
+
+@group coder
 @desc "Show the coder command-line help"
 task help:
     @needs sema

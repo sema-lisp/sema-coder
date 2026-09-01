@@ -48,6 +48,19 @@
 (check-frame "palette open")
 (prompt-clear!)
 
+;; Completion values and labels can come from saved sessions, config, or
+;; plugins. They must not inject row controls into the fixed-frame renderer.
+(prompt-set! "/unsafe ")
+(register-command! "unsafe" "unsafe completion" (lambda (state args) state))
+(register-completions! "unsafe"
+  (lambda (state)
+    (list {:value (string-append "safe" "\x1b;[2J" "value")
+           :label "line one\nline two\tend"})))
+(check-frame "dynamic completion terminal controls")
+(handle-named {:kind :key :name :tab})
+(check "completed dynamic value is terminal-safe" (prompt-text) "/unsafe safevalue")
+(prompt-clear!)
+
 ;; A queued multi-line paste used to embed its newline and tab directly in the
 ;; frame write. The terminal then painted the tail over the prompt/status rows.
 (set! *input-queue*

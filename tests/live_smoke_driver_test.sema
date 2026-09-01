@@ -1,0 +1,20 @@
+(load "harness.sema")
+
+(defun this-test-dir ()
+  (let loop ((args (sys/args)))
+    (cond ((null? args) "tests")
+          ((string/ends-with? (car args) "live_smoke_driver_test.sema")
+            (path/dir (car args)))
+          (else (loop (cdr args))))))
+
+(define result
+  (shell "sema" (path/join (this-test-dir) "live_interrupt_smoke.sema")
+    "--" "failure"))
+(check "deterministic smoke failure exits cleanly" (:exit-code result) 0)
+(check "deterministic smoke failure has no stderr" (string/trim (:stderr result)) "")
+(let ((report (json/decode (string/trim (:stdout result)))))
+  (check-true "deterministic smoke report passes" (:ok report))
+  (check "deterministic smoke selects failure scenario" (:scenario report) "failure")
+  (check "deterministic smoke controller returns idle" (:status (:state report)) "idle"))
+
+(done)

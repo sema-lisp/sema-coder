@@ -327,6 +327,50 @@
 
 (define RESUME-DETAIL-ROWS 14)   ;; visible message-preview lines in the detail view
 
+(defun resume-filter-sessions (sessions query)
+  "Filter SESSIONS by title, id, or model while preserving newest-first order."
+  (let ((needle (string/lower (string/trim query))))
+    (if (= needle "") sessions
+      (filter
+        (lambda (m)
+          (string/contains?
+            (string/lower
+              (string/join
+                (list (get m :title "") (get m :id "") (get m :model "")) " "))
+            needle))
+        sessions))))
+
+(defun resume-index-for-id (sessions id)
+  (let loop ((items sessions) (index 0))
+    (cond
+      ((null? items) 0)
+      ((= (get (car items) :id "") id) index)
+      (else (loop (cdr items) (+ index 1))))))
+
+(defun resume-set-query! (query)
+  (let* ((all (get (overlay) :all-sessions '()))
+         (filtered (resume-filter-sessions all query)))
+    (overlay-merge! {:query query :sessions filtered :sel 0
+                     :delete-id #f :notice ""})))
+
+(defun resume-refresh! (selected-id)
+  (let* ((all (list-sessions))
+         (query (get (overlay) :query ""))
+         (filtered (resume-filter-sessions all query)))
+    (overlay-merge!
+      {:all-sessions all :sessions filtered
+       :sel (resume-index-for-id filtered selected-id)
+       :delete-id #f})))
+
+(defun resume-list-title (state max-width)
+  (let ((notice (get state :notice ""))
+        (query (get state :query "")))
+    (cond
+      ((not (= notice "")) (clip-width (overlay-plain notice) max-width))
+      ((not (= query ""))
+        (clip-width f"Resume session · /${(overlay-plain query)}" max-width))
+      (else "Resume session"))))
+
 (defun resume-detail-view (state layout)
   ;; One preview line per message, so dscroll is a direct top offset (clamped).
   ;; Not a selectable list (no gutter), so it's rendered directly, not via
@@ -348,17 +392,35 @@
           (list (box-row (muted "empty session") inner))
           (map #(box-row % inner) win))
         (list (box-sep bw))
-        (list (box-row (faint "↑↓ scroll · ⏎/r restore · esc back") inner))
+        (list (box-row (faint "↑↓ scroll · ⏎/⌃R restore · esc back") inner))
+        (list (box-round-bot bw))))))
+
+(defun resume-rename-view (state layout)
+  (let* ((bw (get layout :max-width 58))
+         (inner (- bw 4))
+         (title (overlay-plain (get state :rename-input "")))
+         (notice (overlay-plain (get state :notice ""))))
+    (map #(center-h % bw)
+      (append
+        (list (box-round " Rename session " bw))
+        (list (box-row (string-append (accent "title: ") title "▏") inner))
+        (if (= notice "") '() (list (box-row (warn notice) inner)))
+        (list (box-sep bw))
+        (list (box-row (faint "⏎ save · esc cancel") inner))
         (list (box-round-bot bw))))))
 
 (defun resume-render (state layout)
-  (if (equal? (:view state) :detail)
-    (resume-detail-view state layout)
-    (list-modal {:title "Resume session"
-                 :items (:sessions state) :sel (:sel state) :layout layout
-                 :render-item resume-render-item
-                 :actions (list {:key "↑↓" :label "move"} {:key "⏎" :label "preview"}
-                                {:key "r" :label "restore"} {:key "esc" :label "close"})})))
+  (match (:view state)
+    (:detail (resume-detail-view state layout))
+    (:rename (resume-rename-view state layout))
+    (_
+      (list-modal {:title (resume-list-title state
+                            (max 12 (- (get layout :max-width 58) 10)))
+                   :items (:sessions state) :sel (:sel state) :layout layout
+                   :render-item resume-render-item
+                   :actions (list {:key "↑↓" :label "move"} {:key "⏎" :label "preview"}
+                                  {:key "⌃R" :label "restore"} {:key "⌃E" :label "rename"}
+                                  {:key "del" :label "delete"})}))))
 
 (defun resume-open-detail! ()
   (when-let (m (resume-sel-session))
@@ -369,14 +431,62 @@
   (when-let (m (resume-sel-session))
     (restore-session! (:id m)) (close-overlay!)))
 
+(defun resume-start-rename! ()
+  (when-let (m (resume-sel-session))
+    (overlay-merge! {:view :rename :rename-id (:id m)
+                     :rename-input (get m :title "") :notice ""})))
+
+(defun resume-commit-rename! ()
+  (let ((id (get (overlay) :rename-id ""))
+        (title (get (overlay) :rename-input "")))
+    (try
+      (let ((meta (rename-session! id title)))
+        (when (= id *session-id*)
+          (set! *session-custom-title* (:custom-title meta)))
+        (overlay-merge! {:view :list :query "" :notice f"renamed ${id}"})
+        (resume-refresh! id))
+      (catch e
+        (overlay-merge! {:notice (get e :message (str e))})))))
+
+(defun resume-delete-selected! ()
+  (when-let (m (resume-sel-session))
+    (let ((id (:id m)))
+      (cond
+        ((= id *session-id*)
+          (overlay-merge! {:delete-id #f
+                           :notice "cannot delete the active session; clear it first"}))
+        ((= (get (overlay) :delete-id "") id)
+          (if (delete-session! id)
+            (begin
+              (overlay-merge! {:notice f"deleted ${id}"})
+              (resume-refresh! ""))
+            (overlay-merge! {:delete-id #f :notice f"no session ${id}"})))
+        (else
+          (overlay-merge! {:delete-id id
+                           :notice f"delete ${id}? press Delete again"}))))))
+
+(defun resume-query-backspace! ()
+  (let* ((query (get (overlay) :query ""))
+         (n (string/length query)))
+    (when (> n 0) (resume-set-query! (string/slice query 0 (- n 1))))))
+
 (defun resume-list-key (k)
   (let ((n (length (:sessions (overlay)))))
     (cond
-      ((key-name= k :up)   (overlay-merge! {:sel (max 0 (- (:sel (overlay)) 1))}))
-      ((key-name= k :down) (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel (overlay)) 1))}))
-      ((or (key-name= k :esc) (key-ctrl= k (action-ctrl-char :resume))) (close-overlay!))
+      ((key-name= k :up)   (overlay-merge! {:sel (max 0 (- (:sel (overlay)) 1))
+                                            :delete-id #f :notice ""}))
+      ((key-name= k :down) (overlay-merge! {:sel (min (max 0 (- n 1)) (+ (:sel (overlay)) 1))
+                                            :delete-id #f :notice ""}))
+      ((key-name= k :esc)
+        (if (= (get (overlay) :query "") "") (close-overlay!) (resume-set-query! "")))
       ((key-name= k :enter) (resume-open-detail!))
-      ((key-char= k "r")    (resume-restore-selected!))
+      ((key-ctrl= k "r") (resume-restore-selected!))
+      ((key-ctrl= k "e") (resume-start-rename!))
+      ((key-name= k :delete) (resume-delete-selected!))
+      ((key-name= k :backspace) (resume-query-backspace!))
+      ((equal? (:kind k) :char)
+        (resume-set-query!
+          (string-append (get (overlay) :query "") (:char k))))
       (else nil))))
 
 (defun resume-detail-key (k)
@@ -385,16 +495,38 @@
       ((key-name= k :esc)  (overlay-merge! {:view :list}))
       ((key-name= k :up)   (overlay-merge! {:dscroll (max 0 (- (:dscroll (overlay)) 1))}))
       ((key-name= k :down) (overlay-merge! {:dscroll (min maxd (+ (:dscroll (overlay)) 1))}))
-      ((or (key-name= k :enter) (key-char= k "r")) (resume-restore-selected!))
+      ((or (key-name= k :enter) (key-ctrl= k "r")) (resume-restore-selected!))
+      (else nil))))
+
+(defun resume-rename-key (k)
+  (let ((input (get (overlay) :rename-input "")))
+    (cond
+      ((key-name= k :esc) (overlay-merge! {:view :list :notice ""}))
+      ((key-name= k :enter) (resume-commit-rename!))
+      ((key-name= k :backspace)
+        (let ((n (string/length input)))
+          (when (> n 0)
+            (overlay-merge! {:rename-input (string/slice input 0 (- n 1))
+                             :notice ""}))))
+      ((equal? (:kind k) :char)
+        (overlay-merge! {:rename-input (string-append input (:char k))
+                         :notice ""}))
       (else nil))))
 
 (defun handle-resume-key (k)
-  (if (equal? (:view (overlay)) :detail) (resume-detail-key k) (resume-list-key k)))
+  (match (:view (overlay))
+    (:detail (resume-detail-key k))
+    (:rename (resume-rename-key k))
+    (_ (resume-list-key k))))
 
 (register-overlay!
   (overlay-spec
     {:kind :resume
-     :open   (lambda (args) {:kind :resume :view :list :sel 0 :dscroll 0 :sessions (list-sessions)})
+     :open   (lambda (args)
+               (let ((sessions (list-sessions)))
+                 {:kind :resume :view :list :sel 0 :dscroll 0
+                  :query "" :notice "" :delete-id #f
+                  :all-sessions sessions :sessions sessions}))
      :render resume-render
      :on-key (lambda (state k) (handle-resume-key k))}))
 
