@@ -53,6 +53,7 @@
          (queue (get opts :queue '()))
          (paused? (get opts :queue-paused #f))
          (events (get opts :events '()))
+         (cwd (get opts :cwd (sys/cwd)))
          (custom-title (get opts :custom-title "")))
   (when (or (> (length messages) 0) (> (length queue) 0))
     (let* ((explicit (if (= custom-title "") ""
@@ -60,9 +61,24 @@
            (meta (merge
                    {:kind "meta" :id id :created created :model model :effort effort
                     :title (if (= explicit "") (session-title messages) explicit)
+                    :cwd cwd
                     :queue queue :queue-paused paused? :events events}
                    (if (= explicit "") {} {:custom-title explicit}))))
-      (write-session! id meta messages)))))
+      (write-session! id meta messages)
+      (prune-sessions!)))))
+
+(define MAX-SESSIONS 200)   ;; newest kept; older files are deleted on save
+
+(defun prune-sessions! ()
+  "Delete the oldest session files beyond MAX-SESSIONS. Only reads metadata
+   once the directory holds more files than the cap, so a normal save costs
+   one directory listing."
+  (let ((dir (sessions-dir)))
+    (when (and (file/exists? dir)
+               (> (length (filter #(string/ends-with? % ".jsonl") (file/list dir)))
+                  MAX-SESSIONS))
+      (for-each #(delete-session! (:id %))
+                (drop MAX-SESSIONS (list-sessions))))))
 
 (defun read-lines (path)
   (filter #(not (= (string/trim %) "")) (string/split (file/read path) "\n")))
@@ -80,7 +96,8 @@
     (catch e #f)))
 
 (defun list-sessions ()
-  "All saved sessions as meta maps ({:id :title :model :created :count …}), newest first."
+  "All saved sessions as meta maps ({:id :title :model :created :cwd :count …}),
+   newest first. :cwd is absent in files written before it was recorded."
   (let ((dir (sessions-dir)))
     (if (not (file/exists? dir)) '()
       (->> (file/list dir)

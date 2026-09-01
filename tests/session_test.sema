@@ -21,7 +21,12 @@
       (check "model preserved"           (:model m) "claude-opus-4-8")
       (check "effort preserved"          (:effort m) "high")
       (check "created preserved"         (:created m) 1700000000)
-      (check "message count"             (:count m) 4)))
+      (check "message count"             (:count m) 4)
+      (check "cwd defaults to the process cwd" (:cwd m) (sys/cwd))))
+  (save-session! "elsewhere" 1600000000 "m" "" msgs {:cwd "/other/project"})
+  (check "explicit cwd is recorded"
+    (:cwd (:meta (load-session "elsewhere"))) "/other/project")
+  (file/delete (session-path "elsewhere"))
 
   (let ((loaded (load-session "sess1")))
     (check "loaded message count" (length (:messages loaded)) 4)
@@ -80,6 +85,19 @@
     (lambda () (rename-session! "sess1" "  ")))
 
   (file/delete (session-path "sess1"))
-  (file/delete (session-path "queued")))
+  (file/delete (session-path "queued"))
+
+  ;; Saving past the cap deletes the oldest sessions, never the newest.
+  (let loop ((i 0))
+    (when (< i (+ MAX-SESSIONS 3))
+      (write-session! (string/append "p" (number->string i))
+                      {:kind "meta" :created i :title "x"} msgs)
+      (loop (+ i 1))))
+  (save-session! "p-newest" 999999 "m" "" msgs)
+  (let ((ids (map :id (list-sessions))))
+    (check "prune keeps the cap" (length ids) MAX-SESSIONS)
+    (check-true "prune keeps the newest" (if (member "p-newest" ids) #t #f))
+    (check-false "prune drops the oldest" (if (member "p0" ids) #t #f)))
+  (for-each #(delete-session! (:id %)) (list-sessions)))
 
 (done)
