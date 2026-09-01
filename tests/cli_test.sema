@@ -29,4 +29,9 @@
   (check "JSON payload carries response" (:response payload) "done")
   (check "JSON payload carries usage" (:prompt-tokens (:usage payload)) 2))
 
+(check "blank stdin leaves the prompt alone" (prompt-with-stdin "p" "  \n") "p")
+(check "stdin is appended as a block"
+  (prompt-with-stdin "review" "diff --git\n+x\n")
+  "review\n\n<stdin>\ndiff --git\n+x\n</stdin>")
+
 (done)

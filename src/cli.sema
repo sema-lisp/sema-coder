@@ -63,6 +63,19 @@
 
 (defun parse-cli () (parse-args (cli-args)))
 
+(defun prompt-with-stdin (prompt stdin-text)
+  "One-shot prompt plus piped input: `git diff | coder -- -p \"review\"`.
+   Blank input leaves the prompt unchanged."
+  (if (= (string/trim stdin-text) "")
+    prompt
+    f"${prompt}\n\n<stdin>\n${(string/trim-right stdin-text)}\n</stdin>"))
+
+(defun one-shot-prompt (cli)
+  "The -p prompt, with stdin appended when it is a pipe or file, never a TTY."
+  (if (sys/interactive?)
+    (:prompt cli)
+    (prompt-with-stdin (:prompt cli) (io/read-stdin))))
+
 (defun show-usage ()
   (println "Sema Coder — a terminal coding agent written in Sema")
   (println "")

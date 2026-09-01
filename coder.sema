@@ -63,6 +63,7 @@
     (when (:prompt cli)
       (let* ((model (choose-model cli-model cfg))
              (effort (pick-effort "" model cfg))
+             (prompt (one-shot-prompt cli))
              (started-at (time-ms)))
         (if (:json cli)
           ;; Structured mode bypasses lifecycle hooks because user hooks may
@@ -71,7 +72,7 @@
           (let ((attempt
                   (try
                     {:result
-                      (agent/run sema-coder-agent (:prompt cli)
+                      (agent/run sema-coder-agent prompt
                         (turn-opts {:on-tool-call (lambda (event) nil)
                                     :messages '()}
                                    effort))}
@@ -94,7 +95,7 @@
             (run-hooks :session-start {:cwd cwd})
             (let ((result
                     (run-turn sema-coder-agent
-                      (:prompt cli) '() on-tool-call effort)))
+                      prompt '() on-tool-call effort)))
               (println (:response result))
               (exit 0))))))
 
