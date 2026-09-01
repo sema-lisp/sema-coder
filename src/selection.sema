@@ -24,17 +24,38 @@
         ((> (:offset a) (:offset b)) 1)
         (else 0)))
 
+(define ZWJ "\u200d")
+
+;; ponytail: grapheme clusters are approximated (no string/graphemes builtin):
+;; zero-width codepoints (combining marks, ZWJ, variation selectors) and any
+;; codepoint after a ZWJ attach to the preceding one. Swap for the builtin
+;; when the runtime grows one.
+(defun cluster-joiner? (plain j)
+  "Is codepoint J glued to the codepoint before it?"
+  (or (= (string/width (string/slice plain j (+ j 1))) 0)
+      (= (string/slice plain (- j 1) j) ZWJ)))
+
+(defun cluster-start (plain i)
+  "Offset of the first codepoint of the cluster containing I."
+  (let loop ((i (max 0 (min i (string/length plain)))))
+    (if (and (> i 0) (< i (string/length plain)) (cluster-joiner? plain i))
+      (loop (- i 1)) i)))
+
+(defun cluster-end (plain i)
+  "Exclusive end of the cluster containing I (I itself when at a boundary)."
+  (let ((n (string/length plain)))
+    (let loop ((j (max 0 (min i n))))
+      (if (and (> j 0) (< j n) (cluster-joiner? plain j)) (loop (+ j 1)) j))))
+
 (defun display-col->offset (plain target)
   "Codepoint offset of the visible cell at zero-based display column TARGET.
-   A click in either half of a wide character resolves to that character."
+   A click anywhere in a wide character or emoji cluster resolves to its start."
   (let ((target (max 0 target)) (n (string/length plain)))
     (let loop ((i 0) (col 0))
       (if (>= i n) n
-        (let* ((ch (string/slice plain i (+ i 1)))
-               (cw (string/width ch)))
-          (cond ((= cw 0) (loop (+ i 1) col))
-                ((< target (+ col cw)) i)
-                (else (loop (+ i 1) (+ col cw)))))))))
+        (let* ((j (cluster-end plain (+ i 1)))
+               (cw (string/width (string/slice plain i j))))
+          (if (< target (+ col cw)) i (loop j (+ col cw))))))))
 
 (defun offset->display-col (plain offset)
   (string/width (string/slice plain 0 (max 0 (min offset (string/length plain))))))
@@ -67,9 +88,7 @@
                  (let* ((plain (line-at line))
                         (from (if (= line a) (:offset start) 0))
                         (to (if (= line b) (:offset end) (string/length plain))))
-                   (string/slice plain
-                     (max 0 (min from (string/length plain)))
-                     (max 0 (min to (string/length plain))))))
+                   (string/slice plain (cluster-start plain from) (cluster-end plain to))))
                (range a (+ b 1)))
           "\n")))))
 
@@ -117,7 +136,7 @@
       (let* ((plain (term/strip styled))
              (from (if (= absolute-line (:line start)) (:offset start) 0))
              (to (if (= absolute-line (:line end)) (:offset end) (string/length plain))))
-        (highlight-styled-range styled from to)))))
+        (highlight-styled-range styled (cluster-start plain from) (cluster-end plain to))))))
 
 ;; ── Double-click word/token ranges ───────────────────────────────────────────
 

@@ -9,6 +9,27 @@
 (check "column after wide char maps onward" (display-col->offset " 你x" 3) 2)
 (check "offset converts back to display col" (offset->display-col " 你x" 2) 3)
 
+;; Grapheme clusters: a ZWJ family emoji (5 codepoints, 2 cells) and e + U+0301.
+(define fam "👨‍👩‍👧")
+(define fam-line (string/append " " fam "x"))
+(define acute-line (string/append " e" "\u0301" "b"))
+(check "click in emoji cluster resolves to its start" (display-col->offset fam-line 2) 1)
+(check "column after emoji cluster maps onward" (display-col->offset fam-line 3) 6)
+(check "cluster end covers ZWJ sequence" (cluster-end fam-line 2) 6)
+(check "cluster start rewinds into ZWJ sequence" (cluster-start fam-line 4) 1)
+(check "selection cannot split an emoji cluster"
+  (selection-text (list fam-line)
+    (inclusive-selection {:line 0 :offset 1} {:line 0 :offset 1}))
+  fam)
+(check "selection keeps a combining mark with its base"
+  (selection-text (list acute-line)
+    (inclusive-selection {:line 0 :offset 1} {:line 0 :offset 1}))
+  (string/append "e" "\u0301"))
+(check-true "highlight wraps the whole emoji cluster"
+  (string/contains? (highlight-selection-line fam-line 0
+                      {:start {:line 0 :offset 1} :end {:line 0 :offset 2}})
+                    (string/append fam SELECT-OFF)))
+
 ;; ── Ordering, extraction, and reverse-video rendering ────────────────────────
 
 (define sample-lines (list " alpha" " beta" " gamma"))
