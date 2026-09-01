@@ -117,12 +117,26 @@
 (define resume-messages (list {:role "user" :content "first"}))
 (parameterize ((config-dir-override resume-dir))
   (save-session! "alpha-1" 10 "model-a" "" resume-messages
-    {:custom-title "Alpha session"})
+    {:custom-title "Alpha session" :cwd *cwd*})
   (save-session! "beta-2" 20 "model-b" "" resume-messages
-    {:custom-title "Beta session"})
+    {:custom-title "Beta session" :cwd *cwd*})
+  (save-session! "other-3" 30 "model-c" "" resume-messages
+    {:custom-title "Other project" :cwd "/elsewhere/proj"})
   (set! *session-id* "current-session")
   (close-all-overlays!)
   (open-overlay! :resume)
+  (check "resume opens on this workspace's sessions"
+    (map :id (:sessions (overlay))) (list "beta-2" "alpha-1"))
+  (handle-overlay-key {:kind :key :name :tab})
+  (check "Tab shows every workspace"
+    (map :id (:sessions (overlay))) (list "other-3" "beta-2" "alpha-1"))
+  (check-contains "other workspaces are labelled"
+    (term/strip (resume-render-item (nth (:sessions (overlay)) 0) #f 60)) "proj ·")
+  (check-contains "footer offers the way back" 
+    (string/join (map term/strip (overlay-rows)) "\n") "⇥ here")
+  (handle-overlay-key {:kind :key :name :tab})
+  (check "Tab returns to this workspace" (length (:sessions (overlay))) 2)
+  (file/delete (session-path "other-3"))
   (handle-overlay-key {:kind :char :char "a"})
   (handle-overlay-key {:kind :char :char "l"})
   (handle-overlay-key {:kind :char :char "p"})

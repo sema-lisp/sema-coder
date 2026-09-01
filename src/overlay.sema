@@ -291,12 +291,16 @@
   (let ((md (get m :model "")))
     (if (or (not md) (= md "")) "auto" (overlay-plain md))))
 
+(defun session-here? (m) (= (get m :cwd "") *cwd*))
+
 (defun resume-render-item (m selected? inner)
   (let ((title (overlay-plain (get m :title "(untitled)")))
-        (count (get m :count 0)))
+        (count (get m :count 0))
+        (where (if (session-here? m) ""
+                 (string/append (overlay-plain (path/filename (get m :cwd "?"))) " · "))))
     (modal-cell
       (if selected? (bright title) (muted title))
-      (muted (string/append (number->string count) " msgs · " (session-model-label m)))
+      (muted (string/append where (number->string count) " msgs · " (session-model-label m)))
       inner)))
 
 (defun session-first-line (s)
@@ -351,16 +355,31 @@
       ((= (get (car items) :id "") id) index)
       (else (loop (cdr items) (+ index 1))))))
 
+(defun resume-scope-sessions (sessions scope)
+  "SESSIONS limited to this workspace unless SCOPE is :all. Files written
+   before :cwd was recorded count as another workspace."
+  (if (equal? scope :all) sessions (filter session-here? sessions)))
+
+(defun resume-visible (all query scope)
+  (resume-filter-sessions (resume-scope-sessions all scope) query))
+
 (defun resume-set-query! (query)
   (let* ((all (get (overlay) :all-sessions '()))
-         (filtered (resume-filter-sessions all query)))
+         (filtered (resume-visible all query (get (overlay) :scope :here))))
     (overlay-merge! {:query query :sessions filtered :sel 0
+                     :delete-id #f :notice ""})))
+
+(defun resume-toggle-scope! ()
+  (let* ((scope (if (equal? (get (overlay) :scope :here) :all) :here :all))
+         (all (get (overlay) :all-sessions '()))
+         (filtered (resume-visible all (get (overlay) :query "") scope)))
+    (overlay-merge! {:scope scope :sessions filtered :sel 0
                      :delete-id #f :notice ""})))
 
 (defun resume-refresh! (selected-id)
   (let* ((all (list-sessions))
-         (query (get (overlay) :query ""))
-         (filtered (resume-filter-sessions all query)))
+         (filtered (resume-visible all (get (overlay) :query "")
+                                   (get (overlay) :scope :here))))
     (overlay-merge!
       {:all-sessions all :sessions filtered
        :sel (resume-index-for-id filtered selected-id)
@@ -373,6 +392,7 @@
       ((not (= notice "")) (clip-width (overlay-plain notice) max-width))
       ((not (= query ""))
         (clip-width f"Resume session · /${(overlay-plain query)}" max-width))
+      ((equal? (get state :scope :here) :all) "Resume session · all")
       (else "Resume session"))))
 
 (defun resume-detail-view (state layout)
@@ -423,9 +443,11 @@
                             (max 12 (- (get layout :max-width 58) 10)))
                    :items (:sessions state) :sel (:sel state) :layout layout
                    :render-item resume-render-item
-                   :actions (list {:key "↑↓" :label "move"} {:key "⏎" :label "preview"}
+                   :actions (list {:key "↑↓" :label ""} {:key "⏎" :label "open"}
                                   {:key "⌃R" :label "restore"} {:key "⌃E" :label "rename"}
-                                  {:key "del" :label "delete"})}))))
+                                  {:key "del" :label "delete"}
+                                  {:key "⇥" :label (if (equal? (get state :scope :here) :all)
+                                                     "here" "all")})}))))
 
 (defun resume-open-detail! ()
   (when-let (m (resume-sel-session))
@@ -485,6 +507,7 @@
       ((key-name= k :esc)
         (if (= (get (overlay) :query "") "") (close-overlay!) (resume-set-query! "")))
       ((key-name= k :enter) (resume-open-detail!))
+      ((key-name= k :tab) (resume-toggle-scope!))
       ((key-ctrl= k "r") (resume-restore-selected!))
       ((key-ctrl= k "e") (resume-start-rename!))
       ((key-name= k :delete) (resume-delete-selected!))
@@ -530,8 +553,9 @@
      :open   (lambda (args)
                (let ((sessions (list-sessions)))
                  {:kind :resume :view :list :sel 0 :dscroll 0
-                  :query "" :notice "" :delete-id #f
-                  :all-sessions sessions :sessions sessions}))
+                  :query "" :notice "" :delete-id #f :scope :here
+                  :all-sessions sessions
+                  :sessions (resume-scope-sessions sessions :here)}))
      :render resume-render
      :on-key (lambda (state k) (handle-resume-key k))}))
 
