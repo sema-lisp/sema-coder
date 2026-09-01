@@ -45,7 +45,14 @@ safety) is Rust. It depends on nothing but the `sema` binary.
 
 # Override the model
 ./coder.sema -- -m claude-haiku-4-5
+
+# Pipe context in: stdin is appended to the prompt inside a <stdin> block
+git diff | ./coder.sema -- -p "review this change"
 ```
+
+If the workspace root has an `AGENTS.md` or `CLAUDE.md`, its contents are added
+to the system prompt (each capped at 32 KB) so project conventions apply without
+pasting them in.
 
 `./coder.sema` works because the file is `chmod +x` with a `#!/usr/bin/env sema`
 shebang. If stdin is not a TTY and `--print` is absent, Sema Coder runs a plain
@@ -292,6 +299,12 @@ connections in the `/mcp` modal (`⌃O`): `↑↓` select, `c` connect, `d` disc
 into the agent for the rest of the session (only add servers you trust — they run
 real commands and reach real services).
 
+Tool names are unique: a built-in wins over an MCP tool of the same name, and
+between servers the first connected wins. `/tools` lists any dropped names.
+The handshake is bounded by `:connect-timeout-ms` in the server options
+(default 15000); a server that does not answer in time shows
+`connect timed out after N ms` in the MCP manager.
+
 ### Custom commands
 
 A `(command "name" spec)` becomes `/name`. The `spec` carries `:desc`, an
@@ -449,13 +462,16 @@ Restart Sema Coder after editing a plugin. See
 The TUI writes every turn to `<app-config-dir>/sessions/<id>.jsonl`. The plain
 REPL and one-shot mode do not persist sessions. Each file has a metadata line
 followed by one message per line in the exact `agent/run` shape, including tool
-calls and tool results. Metadata includes the model, effort, queued input,
-paused state, and bounded controller event log.
+calls and tool results. Metadata includes the model, effort, workspace
+directory, queued input, paused state, and bounded controller event log. At most
+200 sessions are kept; a save deletes the oldest beyond that.
 
 Interrupted turns retain completed tool rounds, currently streamed assistant
 text, correlated cancellation results for unfinished tool calls, and a typed
 model-visible control item warning that side effects can be partial. `/resume`
-or `⌃R` opens a newest-first picker. Typing filters by title, ID, or model;
+or `⌃R` opens a newest-first picker scoped to the current workspace; `Tab`
+switches between this workspace and all sessions, where other projects show
+their directory name. Typing filters by title, ID, or model;
 `Backspace` edits the query, `Enter` previews, `⌃R` restores, `⌃E` renames, and
 `Delete` twice removes the selected saved session. `/resume ID` restores directly
 and brings back its model, effort, custom title, queue, paused state, events, and
@@ -466,9 +482,9 @@ forms from the current saved-session list.
 
 | Tool | Purpose and limits |
 | --- | --- |
-| `read-file` | Read a numbered line window; defaults to 2,000 lines and caps returned text at 100,000 characters |
+| `read-file` | Read a numbered line window; defaults to 2,000 lines and caps returned text at 100,000 characters; refuses files over 2 MB and binary files |
 | `write-file` | Create or overwrite a file, creating parent directories |
-| `edit-file` | Replace one exact string; requires a unique match unless `replace_all` is true |
+| `edit-file` | Replace one exact string; requires a unique match unless `replace_all` is true; the result carries a line diff of each replacement |
 | `bash` | Run a foreground shell command in the workspace with a default 120-second timeout, or set `background=true` to return an application-owned task ID immediately |
 | `task-output` | Read a background task's retained stdout/stderr and status; optionally wait up to a caller-set deadline |
 | `task-list` | List background task IDs, commands, state, timing, exit codes, output sizes, and truncation flags |

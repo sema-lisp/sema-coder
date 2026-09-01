@@ -363,7 +363,10 @@
           (let ((srv (get origins (tool/name t) #f)))
             (emit :line (string/append "    " (accent (string/pad-right (tool/name t) 14))
                                        (if srv (muted f"· mcp:${srv}") "")))))
-        (agent-tools)))
+        (agent-tools))
+      (unless (null? *tool-name-collisions*)
+        (emit :warn (string/append "dropped duplicate tool names (first definition wins): "
+                                   (string/join ", " *tool-name-collisions*)))))
     state))
 
 (register-command! "queue" "Inspect or manage follow-ups: /queue [resume|clear|drop ID|edit ID TEXT]"

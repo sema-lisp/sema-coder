@@ -1041,7 +1041,7 @@
   (when *session-id*
     (try (save-session! *session-id* *session-created*
            (effective-model) (effective-effort) *messages*
-           {:queue *input-queue* :queue-paused *queue-paused*
+           {:queue *input-queue* :queue-paused *queue-paused* :cwd *cwd*
             :events (turn-events) :custom-title *session-custom-title*})
       (catch e
         (unless *persist-warned*
