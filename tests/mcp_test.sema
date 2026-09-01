@@ -78,4 +78,14 @@
 (check-true "reset closes the discarded MCP handle"
   (try (begin (mcp/tools->sema reset-handle) #f) (catch e #t)))
 
+;; ── a server that never completes the handshake fails under the deadline ──
+(mcp-reset!)
+(reconcile-servers! (list (mcp-server "hung" {:command "sh" :args ["-c" "sleep 4"]
+                                              :connect-timeout-ms 300})))
+(define hung-t0 (time-ms))
+(check "hung connect reports error"  (mcp-connect! "hung") :error)
+(check-true "hung connect returns before the child exits" (< (- (time-ms) hung-t0) 3000))
+(check-contains "hung connect message" (:error (mcp-get "hung")) "timed out after 300 ms")
+(check "hung connect leaves no handle" (:handle (mcp-get "hung")) #f)
+
 (done)

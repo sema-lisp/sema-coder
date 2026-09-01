@@ -9,6 +9,11 @@
 
 (define *mcp* (mutable-array/new 8))
 
+;; A server that never completes the MCP handshake (wrong binary, unreachable
+;; URL) must not hang boot or a reconnect. Per-server override: :connect-timeout-ms
+;; in the server's opts map.
+(define MCP-CONNECT-TIMEOUT-MS 15000)
+
 (defun mcp-reset! ()
   "Close all live connections, then clear the runtime registry."
   (for-each mcp-close-record! (mcp-records))
@@ -83,6 +88,21 @@
     (or (string/contains? m "401") (string/contains? m "unauthorized")
         (string/contains? m "auth"))))
 
+(defun mcp-connect-timed (opts)
+  "mcp/connect OPTS under a deadline. Returns the handle, or raises the timeout
+   condition. A connect that outlives the deadline is cancelled, and a handle it
+   still returns is closed."
+  (let* ((ms   (get opts :connect-timeout-ms MCP-CONNECT-TIMEOUT-MS))
+         (task (async (mcp/connect (dissoc opts :connect-timeout-ms)))))
+    (try
+      (async/timeout ms task)
+      (catch e
+        (async/cancel task)
+        (async (try (mcp/close (await task)) (catch late nil)))
+        (if (= (get e :type :unknown) :timeout)
+          (throw {:type :timeout :message f"connect timed out after ${ms} ms"})
+          (throw e))))))
+
 (defun mcp-connect! (name)
   "Connect the server NAME synchronously; update status/handle/tools in place.
    Returns the resulting status keyword."
@@ -99,7 +119,7 @@
               (result
                 (try
                   (begin
-                    (set! h (mcp/connect (:opts rec)))
+                    (set! h (mcp-connect-timed (:opts rec)))
                     {:ok h :tools (mcp/tools->sema h)})
                   (catch e
                     (when h (try (mcp/close h) (catch close-error nil)))
