@@ -9,7 +9,10 @@
 
 (define *mcp* (mutable-array/new 8))
 
-(defun mcp-reset! () (set! *mcp* (mutable-array/new 8)))
+(defun mcp-reset! ()
+  "Close all live connections, then clear the runtime registry."
+  (for-each mcp-close-record! (mcp-records))
+  (set! *mcp* (mutable-array/new 8)))
 
 (defun mcp-records () *mcp*)
 
@@ -83,20 +86,35 @@
 (defun mcp-connect! (name)
   "Connect the server NAME synchronously; update status/handle/tools in place.
    Returns the resulting status keyword."
-  (if-let (rec (mcp-get name))
-    (begin
-      (mcp-set! name #(assoc % :status :connecting :error #f))
-      (let ((result (try {:ok (mcp/connect (:opts rec))} (catch e {:err e}))))
-        (if-let (h (:ok result))
-          (begin
-            (mcp-set! name #(assoc % :status :connected :handle h
-                                   :tools (mcp/tools->sema h) :error #f))
-            :connected)
-          (let* ((errmsg (str (:err result)))
-                 (status (if (auth-error? errmsg) :needs-auth :error)))
-            (mcp-set! name #(assoc % :status status :error errmsg))
-            status))))
-    :no-such))
+  (let ((rec (mcp-get name)))
+    (cond
+      ((not rec) :no-such)
+      ((and (= (:status rec) :connected) (:handle rec)) :connected)
+      (else
+        ;; A failed or interrupted attempt may still have left a handle on the
+        ;; record. Close it before replacement so reconnect cannot orphan it.
+        (mcp-close-record! rec)
+        (mcp-set! name #(assoc % :status :connecting :handle #f :tools '() :error #f))
+        (let ((h #f)
+              (result
+                (try
+                  (begin
+                    (set! h (mcp/connect (:opts rec)))
+                    {:ok h :tools (mcp/tools->sema h)})
+                  (catch e
+                    (when h (try (mcp/close h) (catch close-error nil)))
+                    {:err e}))))
+          (if (get result :ok #f)
+            (begin
+              (mcp-set! name #(assoc % :status :connected
+                                     :handle (:ok result)
+                                     :tools (:tools result)
+                                     :error #f))
+              :connected)
+            (let* ((errmsg (str (:err result)))
+                   (status (if (auth-error? errmsg) :needs-auth :error)))
+              (mcp-set! name #(assoc % :status status :handle #f :tools '() :error errmsg))
+              status)))))))
 
 (defun mcp-disconnect! (name)
   "Close the server NAME's connection and clear its tools."
