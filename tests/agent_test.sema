@@ -37,4 +37,12 @@
 (check-true "read-file present" (member "read-file" (tool-names)))
 (check-true "task-output present" (member "task-output" (tool-names)))
 
+;; an MCP tool whose name matches a built-in is dropped, and reported
+(mutable-array/push! *mcp*
+  {:name "dup" :status :connected :tools (list (car (all-tools))) :handle #f})
+(check "duplicate tool name is dropped" (length (agent-tools)) 10)
+(check "dropped name is reported" *tool-name-collisions* (list (tool/name (car (all-tools)))))
+(mcp-reset!)
+(check "no collisions once the server is gone" (begin (agent-tools) *tool-name-collisions*) '())
+
 (done)
