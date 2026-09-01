@@ -10,6 +10,16 @@
 (check "bullet"         (plain (md-lines "- item" 40)) (list "• item"))
 (check "ordered"        (plain (md-lines "1. first" 40)) (list "1. first"))
 (check "quote"          (plain (md-lines "> quoted" 40)) (list "▏ quoted"))
+(check "nested quote"   (plain (md-lines ">> twice" 40)) (list "▏ ▏ twice"))
+(check "nested bullets keep depth"
+  (plain (md-lines "- top\n  - nested\n    - deeper\n\t- tab" 40))
+  (list "• top" "  • nested" "    • deeper" "  • tab"))
+(check "nested ordered keeps depth"
+  (plain (md-lines "1. one\n   2. two" 40))
+  (list "1. one" "  2. two"))
+(check "nested wrapped item hangs under its text"
+  (plain (md-lines "  - aaaa bbbb cccc" 12))
+  (list "  • aaaa" "    bbbb" "    cccc"))
 (check "code fence"     (plain (md-lines "```\ncode line\n```" 40)) (list "│ code line"))
 (check "open fence"     (plain (md-lines "```\nx = 1" 40)) (list "│ x = 1"))
 (check "different fence marker stays inside code"

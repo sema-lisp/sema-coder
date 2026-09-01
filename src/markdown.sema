@@ -148,6 +148,12 @@
          {:glyph (faint "☐") :text (string/slice text 4 (string/length text))})
         (else #f)))
 
+(defun md-list-indent (ws)
+  "Leading whitespace of a list item → the indent to render. A tab counts as
+   one level; every two spaces are one level."
+  (let ((cols (string/length (string/replace ws "\t" "  "))))
+    (md-spaces (* 2 (quotient cols 2)))))
+
 (defun md-render-line (line width)
   "Render one non-code, non-table markdown line to a list of styled lines."
   (cond
@@ -160,20 +166,31 @@
       (let ((m (regex/match #"^(#{1,6})\s+(.+)$" line)))
         (map heading (string/word-wrap (nth (:groups m) 1) width))))
     ((regex/match #"^>\s?(.*)$" line)
-      (let ((m (regex/match #"^>\s?(.*)$" line)))
-        (map #(string/append (faint "▏ ") %)
-             (string/word-wrap (md-inline (nth (:groups m) 0)) (max 4 (- width 2))))))
+      ;; One gutter per quote level: ">> x" strips both markers.
+      (let loop ((rest line) (depth 0))
+        (let ((m (regex/match #"^>\s?(.*)$" rest)))
+          (if m
+            (loop (nth (:groups m) 0) (+ depth 1))
+            (let ((gutter (faint (string/repeat "▏ " depth))))
+              (map #(string/append gutter %)
+                   (string/word-wrap (md-inline rest) (max 4(- width (* 2 depth))))))))))
     ((regex/match #"^(\s*)[-*+]\s+(.+)$" line)
       (let* ((m (regex/match #"^(\s*)[-*+]\s+(.+)$" line))
+             (lead (md-list-indent (nth (:groups m) 0)))
              (raw (nth (:groups m) 1))
              (task (md-task raw)))
         (if task
-          (wrap-hang (string/append (:glyph task) " ") (md-inline (:text task)) width "  ")
-          (wrap-hang (accent "• ") (md-inline raw) width "  "))))
+          (wrap-hang (string/append lead (:glyph task) " ") (md-inline (:text task)) width
+                     (string/append lead "  "))
+          (wrap-hang (string/append lead (accent "• ")) (md-inline raw) width
+                     (string/append lead "  ")))))
     ((regex/match #"^(\s*)(\d+)[.)]\s+(.+)$" line)
       (let* ((m (regex/match #"^(\s*)(\d+)[.)]\s+(.+)$" line))
+             (lead (md-list-indent (nth (:groups m) 0)))
              (num (nth (:groups m) 1)))
-        (wrap-hang (accent (string/append num ". ")) (md-inline (nth (:groups m) 2)) width "   ")))
+        (wrap-hang (string/append lead (accent (string/append num ". ")))
+                   (md-inline (nth (:groups m) 2)) width
+                   (string/append lead (md-spaces (+ 2 (string/length num)))))))
     (else (string/word-wrap (md-inline line) width))))
 
 (defun md-lines (text width)
