@@ -8,6 +8,15 @@
 (file/mkdir tools-test-root)
 (file/write (path/join tools-test-root "cwd-marker") "ok")
 
+;; ── read-file: size and binary guards run before the whole file is read ──
+(file/write (path/join tools-test-root "small.txt") "one\ntwo\n")
+(check-contains "read-file numbers lines" (tool/invoke read-file {:path "small.txt" :offset nil :limit nil}) "two")
+(file/write (path/join tools-test-root "nul.bin") "ab\0cd")
+(check-contains "read-file refuses NUL bytes" (tool/invoke read-file {:path "nul.bin" :offset nil :limit nil}) "binary file")
+(shell "sh" "-c" (string-append "head -c 2000001 /dev/zero | tr '\\0' 'a' > " (shell/quote (path/join tools-test-root "big.txt"))))
+(check-contains "read-file refuses oversized files" (tool/invoke read-file {:path "big.txt" :offset nil :limit nil}) "read limit")
+(check-contains "read-file missing file" (tool/invoke read-file {:path "nope.txt" :offset nil :limit nil}) "File not found")
+
 ;; ── apply-edit: the pure core of edit-file (unique match, or replace_all) ──
 (check "apply-edit empty old" (:error (apply-edit "abc" "" "x" #f)) "old_string must not be empty.")
 (check-contains "apply-edit not found" (:error (apply-edit "abc" "z" "x" #f)) "not found")

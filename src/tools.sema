@@ -12,6 +12,7 @@
 
 (define MAX-READ-LINES   2000)   ;; read-file line cap
 (define MAX-READ-CHARS   100000) ;; read-file character cap (bounds a few huge lines)
+(define MAX-READ-BYTES   2000000) ;; read-file refuses larger files: file/read has no partial read
 (define MAX-OUTPUT-LINES 500)    ;; bash output line cap
 (define MAX-OUTPUT-CHARS 100000) ;; bash output character cap (~100 KB ASCII)
 (define MAX-MATCH-LINES  100)    ;; grep result cap
@@ -47,13 +48,22 @@
    :limit  {:type :integer :description "Maximum number of lines to read (optional; default 2000)"}}
   (lambda (path offset limit)
     (try
-      (let ((resolved (resolve-path workspace-root path)))
-        (if (file/exists? resolved)
-          ;; numbered-window pages the file with true line numbers; the char cap
-          ;; is a backstop against a few lines too long for the line window.
-          (truncate-chars (numbered-window (file/read resolved) offset limit MAX-READ-LINES)
-                          MAX-READ-CHARS)
-          f"Error: File not found: ${path}"))
+      (let* ((resolved (resolve-path workspace-root path))
+             (size (if (file/exists? resolved) (get (file/info resolved) :size 0) -1)))
+        (cond
+          ((< size 0) f"Error: File not found: ${path}")
+          ;; file/read loads the whole file before offset/limit apply, so a huge
+          ;; file is refused up front instead of read and then truncated.
+          ((> size MAX-READ-BYTES)
+            f"Error: ${path} is ${size} bytes, above the ${MAX-READ-BYTES}-byte read limit. Use grep to locate what you need, or bash (head, sed -n) to read a slice.")
+          (else
+            (let ((text (file/read resolved)))
+              (if (string/contains? text "\0")
+                f"Error: ${path} is a binary file (contains NUL bytes)."
+                ;; numbered-window pages the file with true line numbers; the char cap
+                ;; is a backstop against a few lines too long for the line window.
+                (truncate-chars (numbered-window text offset limit MAX-READ-LINES)
+                                MAX-READ-CHARS))))))
       (catch e f"Error reading file ${path}: ${e}"))))
 
 (deftool write-file
