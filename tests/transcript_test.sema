@@ -127,3 +127,15 @@
     (string/contains? rendered "[2J") #f))
 
 (done)
+
+;; ── edit-file results paint as a diff; ⌃X expands past the preview cap ──
+(set! *tool-expanded* #f)
+(let* ((b {:kind :tool :tool "edit-file" :arg "x.txt" :state :done :ms 1
+           :result "Edited x.txt (1 replacement)\n  ctx\n- old\n+ new\n  more\n  more\n  more\n  more"})
+       (lines (map term/strip (block-lines b 60))))
+  (check-contains "removed line is red" (string/join "\n" (block-lines b 60)) (bad "- old"))
+  (check-contains "added line is green" (string/join "\n" (block-lines b 60)) (ok "+ new"))
+  (check "preview caps result lines" (length lines) 7)
+  (toggle-tool-expand!)
+  (check "expanded shows every line" (length (block-lines b 60)) 9)
+  (toggle-tool-expand!))

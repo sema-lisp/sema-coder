@@ -137,14 +137,30 @@
 ;; emoji / combining marks, which a char-count wrap gets wrong).
 (defun wrap-text (text w) (string/word-wrap text w))
 
+(define *tool-expanded* #f)  ;; ⌃T: show whole tool results instead of previews
+
+(defun toggle-tool-expand! () (set! *tool-expanded* (not *tool-expanded*)))
+
+(defun tool-preview-limit ()
+  (if *tool-expanded* 100000 (max 1 (get *config* :tool-preview-lines 5))))
+
+(defun diff-paint (line)
+  "Colour one edit-file result line: added green, removed red, else faint."
+  (cond ((string/starts-with? line "+ ") (ok line))
+        ((string/starts-with? line "- ") (bad line))
+        (else (faint line))))
+
 (defun tool-result-lines (b w)
   "A preview of a completed tool's result under its line — faint, or red if it
-   errored. Shows the first :tool-preview-lines lines (config, default 5);
+   errored; edit-file results are painted as a diff. Shows the first
+   :tool-preview-lines lines (config, default 5) unless ⌃T expanded them;
    anything longer collapses into a final “… +N lines” row."
   (let* ((r (get b :result ""))
          (s (sanitize-terminal-text r))
-         (paint (if (get b :error #f) bad faint))
-         (limit (max 1 (get *config* :tool-preview-lines 5)))
+         (paint (cond ((get b :error #f) bad)
+                      ((equal? (get b :tool "") "edit-file") diff-paint)
+                      (else faint)))
+         (limit (tool-preview-limit))
          (lines (string/split (string/trim-right s) "\n"))
          (shown (take (min limit (length lines)) lines))
          (extra (- (length lines) (length shown)))
@@ -214,7 +230,7 @@
     (_ '())))
 
 (defun transcript-lines (w)
-  (let* ((preview (get *config* :tool-preview-lines 5))
+  (let* ((preview (tool-preview-limit))
          (full? (or (not (= w (mutable-array/get *tstate* 2)))
                     (not (= preview (mutable-array/get *tstate* 6)))))
          (dirty (if full? 0 (mutable-array/get *tstate* 3))))

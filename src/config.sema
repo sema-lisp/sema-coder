@@ -416,7 +416,8 @@
        )
 
      ;; ── Keybindings — rebind any action, or bind a key to a command name. ──
-     ;; actions: :mcp :resume :palette :quit :interrupt :clear-line :line-start :line-end :repaint
+     ;; actions: :mcp :resume :palette :quit :interrupt :clear-line :kill-word :yank
+     ;;          :expand-tools :line-start :line-end :repaint
      :keys {}   ;; e.g. {:mcp \"ctrl-p\" :test \"ctrl-t\"}
 
      ;; ── Hooks — observe the turn lifecycle. Uncomment to add handlers; each

@@ -52,6 +52,10 @@
 (define *messages* '())
 (define *input* "")
 (define *cursor* 0)         ;; caret index into *input* (codepoints)
+(define *history* '())      ;; submitted prompts, newest first (this process only)
+(define *history-pos* -1)   ;; index into *history* being viewed; -1 = live text
+(define *history-draft* "") ;; the live text saved when Up leaves it
+(define *kill* "")          ;; last killed text; ⌃Y yanks it
 (define *scroll* 0)         ;; lines scrolled up from the bottom (0 = follow tail)
 (define *psel* 0)           ;; selected index in the slash palette
 (define *busy* #f)          ;; an agent turn is in flight
@@ -108,6 +112,8 @@
 ;; ── Turn controller state + inspection ──────────────────────────────────────
 
 (define QUEUE-LIMIT 100)
+(define HISTORY-LIMIT 100)
+(define PROMPT-MAX-ROWS 6)  ;; a multi-line prompt grows up to this many rows
 (define EVENT-LOG-LIMIT 1024)
 (define EVENT-LOG-RETAIN 512)
 
@@ -416,7 +422,11 @@
 
 (defun queue-height () (min QUEUE-DISPLAY-LIMIT (length *input-queue*)))
 
-(defun transcript-height () (max 1 (- *rows* 3 (queue-height))))
+(defun input-lines () (string/split *input* "\n"))
+
+(defun prompt-height () (min PROMPT-MAX-ROWS (length (input-lines))))
+
+(defun transcript-height () (max 1 (- *rows* 2 (prompt-height) (queue-height))))
 
 (defun queue-frame-lines ()
   "A fixed bottom region for future input. Queue contents remain separate from
@@ -513,27 +523,54 @@
       ((> *scroll* 0) (faint f"↕ scrolled +${*scroll*}"))
       (else           "")))))
 
-(defun prompt-view ()
-  "Window the input so the caret is always visible (input starts at column 4).
-   The window is measured in DISPLAY WIDTH — walk left from the caret until the
-   caret-to-here span fills the available columns, then extend right as far as
-   still fits — so `shown` never exceeds the row and wide chars can't overflow
-   the fixed-row diff model."
-  (let* ((avail (max 4 (- *cols* 4)))
-         (len   (string/length *input*))
-         (cw    #(string/width (string/slice *input* % (+ % 1))))
-         (start (let loop ((i *cursor*) (w 0))
+(defun window-line (line caret avail)
+  "Window one prompt LINE so CARET (an index into it) stays visible within
+   AVAIL columns. Measured in DISPLAY WIDTH — walk left from the caret until
+   the caret-to-here span fills the columns, then extend right as far as still
+   fits — so the text never exceeds the row and wide chars can't overflow the
+   fixed-row diff model. Returns {:text :col} with :col relative to the window."
+  (let* ((len   (string/length line))
+         (cw    #(string/width (string/slice line % (+ % 1))))
+         (start (let loop ((i caret) (w 0))
                   (if (<= i 0) 0
                     (let ((wprev (cw (- i 1))))
                       (if (> (+ w wprev) avail) i (loop (- i 1) (+ w wprev)))))))
-         (end   (let loop ((i *cursor*) (w (string/width (string/slice *input* start *cursor*))))
+         (end   (let loop ((i caret) (w (string/width (string/slice line start caret))))
                   (if (>= i len) len
                     (if (> (+ w (cw i)) avail) i (loop (+ i 1) (+ w (cw i))))))))
-    {:text (string/slice *input* start end)
-     :caret-col (min *cols* (+ 4 (string/width (string/slice *input* start *cursor*))))}))
+    {:text (string/slice line start end)
+     :col (string/width (string/slice line start caret))}))
 
-(defun prompt-line ()
-  (indent (string/append (accent (string/append prompt-glyph " ")) (:text (prompt-view)))))
+(defun cursor-line-index ()
+  "Which input line the caret is on (0-based)."
+  (- (length (string/split (string/slice *input* 0 *cursor*) "\n")) 1))
+
+(defun line-start-index (n)
+  "Caret index where input line N starts."
+  (let loop ((i 0) (lines (input-lines)))
+    (if (= i n) 0
+      (+ (string/length (car lines)) 1 (loop (+ i 1) (cdr lines))))))
+
+(defun prompt-view ()
+  "The prompt as up to PROMPT-MAX-ROWS rows (input starts at column 4). The
+   caret line is windowed horizontally; a taller input is windowed vertically
+   so the caret row stays visible. Returns {:rows :caret-row :caret-col} with
+   :caret-row relative to :rows."
+  (let* ((avail (max 4 (- *cols* 4)))
+         (lines (input-lines))
+         (cl    (cursor-line-index))
+         (top   (max 0 (- (+ cl 1) PROMPT-MAX-ROWS)))
+         (shown (take (prompt-height) (drop top lines)))
+         (win   (window-line (nth lines cl) (- *cursor* (line-start-index cl)) avail)))
+    {:rows (map-indexed (lambda (i l) (if (= (+ top i) cl) (:text win) (clip-width l avail))) shown)
+     :caret-row (- cl top)
+     :caret-col (min *cols* (+ 4 (:col win)))}))
+
+(defun prompt-lines ()
+  (map-indexed
+    (lambda (i text)
+      (indent (string/append (if (= i 0) (accent (string/append prompt-glyph " ")) "  ") text)))
+    (:rows (prompt-view))))
 
 (defun viewport-info (lines h)
   "Window metadata for transcript rendering and mouse-coordinate resolution."
@@ -612,7 +649,7 @@
                  (overlay-bottom tlines (palette-box pv *psel* (- *cols* 3)))
                  tlines))
          (rows (append (list (header-line)) body (queue-frame-lines)
-                       (list (prompt-line)) (list (status-line))))
+                       (prompt-lines) (list (status-line))))
          (rows (fit-rows rows *rows*))
          (rows (if (overlay-active?) (overlay-center rows (overlay-rows)) rows))
          ;; An overlay taller than the terminal yields more than *rows* rows;
@@ -645,7 +682,9 @@
     ;; One write: the changed rows, park + show the cursor at the prompt caret
     ;; (hidden while a modal is up, since the prompt is behind it).
     (display (string/append (apply string/append updates)
-                            (goto (- *rows* 1) (:caret-col (prompt-view)))
+                            (let ((pv (prompt-view)))
+                              (goto (+ (- *rows* 1 (prompt-height)) 1 (:caret-row pv))
+                                    (:caret-col pv)))
                             (if (overlay-active?) HIDE-CURSOR SHOW-CURSOR)))
     (io/flush)
     (set! *last-frame* frame)
@@ -1141,14 +1180,48 @@
                                  (string/slice *input* (+ *cursor* 1) (string/length *input*))))
     (set! *psel* 0)))
 
+(defun kill-range! (a b)
+  "Remove input [A, B) and remember it for yank. A no-op on an empty range."
+  (when (< a b)
+    (set! *kill* (string/slice *input* a b))
+    (set! *input* (string/append (string/slice *input* 0 a)
+                                 (string/slice *input* b (string/length *input*))))
+    (set! *cursor* a)
+    (set! *psel* 0)))
+
+(defun kill-to-line-start! () (kill-range! (line-start-index (cursor-line-index)) *cursor*))
+(defun kill-word-backward! () (kill-range! (word-left-index *input* *cursor*) *cursor*))
+(defun yank! () (prompt-insert! *kill*))
+
 (defun delete-word-backward! ()
-  "Delete from the previous word boundary up to the cursor (Option+Delete)."
-  (let ((start (word-left-index *input* *cursor*)))
-    (when (< start *cursor*)
-      (set! *input* (string/append (string/slice *input* 0 start)
-                                   (string/slice *input* *cursor* (string/length *input*))))
-      (set! *cursor* start)
-      (set! *psel* 0))))
+  "Kill from the previous word boundary up to the cursor (Option+Delete)."
+  (kill-word-backward!))
+
+(defun history-push! (text)
+  "Remember a submitted prompt. Skips a repeat of the newest entry."
+  (unless (or (= text "") (and (pair? *history*) (= (car *history*) text)))
+    (set! *history* (take (min HISTORY-LIMIT (+ 1 (length *history*))) (cons text *history*))))
+  (set! *history-pos* -1))
+
+(defun history-step! (dir)
+  "Show an older (DIR 1) or newer (DIR -1) submitted prompt; -1 is the live
+   text, which is saved when Up first leaves it."
+  (let ((next (+ *history-pos* dir)))
+    (when (and (>= next -1) (< next (length *history*)))
+      (when (= *history-pos* -1) (set! *history-draft* *input*))
+      (prompt-set! (if (= next -1) *history-draft* (nth *history* next)))
+      (set! *history-pos* next))))
+
+(defun cursor-vertical! (dir)
+  "Move the caret one input line up (DIR -1) or down (DIR 1), keeping its
+   column where the target line is long enough."
+  (let* ((lines (input-lines))
+         (cl    (cursor-line-index))
+         (target (+ cl dir))
+         (col   (- *cursor* (line-start-index cl))))
+    (when (and (>= target 0) (< target (length lines)))
+      (set! *cursor* (+ (line-start-index target)
+                        (min col (string/length (nth lines target))))))))
 
 (defun word-left! ()  (set! *cursor* (word-left-index *input* *cursor*)))
 (defun word-right! () (set! *cursor* (word-right-index *input* *cursor*)))
@@ -1158,6 +1231,7 @@
    for that turn and request cancellation. Slash commands stay in the prompt
    until the turn becomes idle."
   (let ((text (string/trim *input*)))
+    (unless (= text "") (history-push! text))
     (cond
       ((= text "") nil)
       (*busy*
@@ -1242,11 +1316,19 @@
     ;; wrong session file. (Typed /mcp and /resume are already gated by on-enter.)
     (:mcp        (unless *busy* (open-mcp-modal!)))
     (:resume     (unless *busy* (open-resume-modal!)))
-    (:clear-line (prompt-clear!))
+    (:clear-line (kill-to-line-start!))
+    (:kill-word  (kill-word-backward!))
+    (:yank       (yank!))
+    (:expand-tools (toggle-tool-expand!))
     (:line-start (set! *cursor* 0))
     (:line-end   (set! *cursor* (string/length *input*)))
     (:repaint    (full-repaint!))
     (action      (run-key-command! action))))
+
+(defun newline-mods? (k)
+  "Shift-Enter or Option-Enter inserts a line break instead of submitting."
+  (let ((mods (get k :mods '())))
+    (or (member :shift mods) (member :alt mods))))
 
 (defun word-motion? (k)
   "A held Option (alt) or Ctrl modifier turns arrow motion into word motion."
@@ -1255,7 +1337,7 @@
 
 (defun handle-named (k)
   (match (:name k)
-    (:enter     (on-enter))
+    (:enter     (if (newline-mods? k) (prompt-insert! "\n") (on-enter)))
     (:backspace (backspace!))
     (:delete    (forward-delete!))
     (:left      (if (word-motion? k) (word-left!)  (set! *cursor* (max 0 (- *cursor* 1)))))
@@ -1263,14 +1345,18 @@
     (:home      (set! *cursor* 0))
     (:end       (set! *cursor* (string/length *input*)))
     (:tab       (on-tab))
+    ;; Up/Down never scroll: they move within a multi-line prompt, and past
+    ;; its edge they walk prompt history. Page Up/Down and the wheel scroll.
     (:up
-      (if (palette-open?) (set! *psel* (max 0 (- *psel* 1)))
-        (scroll-by! 1)))
+      (cond ((palette-open?) (set! *psel* (max 0 (- *psel* 1))))
+            ((> (cursor-line-index) 0) (cursor-vertical! -1))
+            (else (history-step! 1))))
     (:down
-      (if (palette-open?)
-        (set! *psel* (min (+ *psel* 1)
-                          (max 0 (- (palette-limit (palette-entries)) 1))))
-        (scroll-by! -1)))
+      (cond ((palette-open?)
+              (set! *psel* (min (+ *psel* 1)
+                                (max 0 (- (palette-limit (palette-entries)) 1)))))
+            ((< (cursor-line-index) (- (length (input-lines)) 1)) (cursor-vertical! 1))
+            (else (history-step! -1))))
     (:page-up   (scroll-by! (transcript-height)))
     (:page-down (scroll-by! (- (transcript-height))))
     (:esc
@@ -1341,6 +1427,9 @@
     (match (:action k)
       (:wheel-up   (scroll-by! 3))
       (:wheel-down (scroll-by! -3))
+      ;; Horizontal wheel is decoded but has nothing to scroll.
+      (:wheel-left nil)
+      (:wheel-right nil)
       (:press
         (when (= (get k :button -1) 0)
           (when-let (p (resolve-transcript-position (:x k) (:y k)))
@@ -1386,7 +1475,9 @@
 
 (defun handle-alt (k)
   ;; Option+Delete arrives as Alt+DEL (0x7f) → delete the word before the cursor.
-  (when (= (:char k) "\u007f") (delete-word-backward!)))
+  ;; Option+Enter arrives as ESC CR on legacy terminals → line break.
+  (cond ((= (:char k) "\u007f") (delete-word-backward!))
+        ((member (:char k) '("\r" "\n")) (prompt-insert! "\n"))))
 
 (defun command-c? (k)
   "True for Command-C when a kitty-keyboard terminal forwards it to the app."

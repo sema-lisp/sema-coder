@@ -252,7 +252,7 @@ A complete `init.sema`:
            (file/write "last-interrupted-turn.txt" (:turn-id ctx)))))
 
      ;; Rebind any keyboard action (defaults shown in the table below).
-     :keys {}}))               ; e.g. {:mcp "ctrl-p" :resume "ctrl-y"}
+     :keys {}}))               ; e.g. {:mcp "ctrl-p" :resume "ctrl-j"}
 ```
 
 All recognized top-level keys are listed below. List fields also accept vectors.
@@ -374,9 +374,20 @@ logs a warning at boot/reload (first match wins).
 | `:palette` | `⌃K` | Open the slash-command palette |
 | `:quit` | `⌃D` | Quit |
 | `:interrupt` | `⌃C` | Interrupt the turn / clear input / quit; `⌘C` also interrupts mid-turn when the terminal forwards it |
-| `:clear-line` | `⌃U` | Clear the input line |
+| `:clear-line` | `⌃U` | Kill the text before the caret on the current line |
+| `:kill-word` | `⌃W` | Kill the word before the caret (`⌥⌫` does the same) |
+| `:yank` | `⌃Y` | Insert the last killed text at the caret |
+| `:expand-tools` | `⌃X` | Toggle full tool results instead of `:tool-preview-lines` previews |
 | `:line-start` / `:line-end` | `⌃A` / `⌃E` | Move the caret |
 | `:repaint` | `⌃L` | Force a full repaint |
+
+`↑` / `↓` walk the prompt history for this process (newest first); the text
+being edited is kept and comes back when you step past the newest entry. In a
+multi-line prompt they move between lines first. `Page Up` / `Page Down` and
+the mouse wheel scroll the transcript. `Shift-Enter` or `Option-Enter` inserts
+a line break; a pasted snippet keeps its line breaks. The prompt grows to six
+rows and windows vertically after that. `edit-file` results show the changed
+lines as a diff, removed lines red and added lines green.
 
 `Tab` queues a message while a turn is active. `Enter` is a fixed
 interrupt-and-send action: it targets the current turn id, saves the pending

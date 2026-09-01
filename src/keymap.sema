@@ -24,6 +24,9 @@
    :quit       "ctrl-d"
    :interrupt  "ctrl-c"
    :clear-line "ctrl-u"
+   :kill-word  "ctrl-w"
+   :yank       "ctrl-y"
+   :expand-tools "ctrl-x"
    :line-start "ctrl-a"
    :line-end   "ctrl-e"
    :repaint    "ctrl-l"})
