@@ -36,13 +36,45 @@
        (string/trim (:stdout (run-argv-in-workspace ["echo" "a; b"]))) "a; b")
 
 ;; ── run-in-workspace-timed: bash timeout (spawns a real child) ──
+(defun proc-handle-closed? (handle)
+  (try
+    (begin (proc/running? handle) #f)
+    (catch e (string/contains? (get e :message (str e)) "no such handle"))))
+
+(define handle-sentinel (proc/spawn ["sh" "-c" "true"]))
+(proc/wait handle-sentinel)
+(proc/close handle-sentinel)
+(define normal-foreground-handle (+ handle-sentinel 1))
 (let ((r (run-in-workspace-timed "echo hi; exit 2" 3000)))
   (check "timed: exit code passthrough" (:exit-code r) 2)
   (check "timed: not timed out"         (:timed-out r) #f)
-  (check-contains "timed: captured stdout" (:stdout r) "hi"))
+  (check-contains "timed: captured stdout" (:stdout r) "hi")
+  (check-true "completed foreground process handle is closed"
+    (proc-handle-closed? normal-foreground-handle)))
+(define timed-out-foreground-handle (+ normal-foreground-handle 1))
 (let ((r (run-in-workspace-timed "echo start; sleep 3" 120)))
   (check "timed: slow command is killed"  (:timed-out r) #t)
-  (check-contains "timed: partial stdout before kill" (:stdout r) "start"))
+  (check-contains "timed: partial stdout before kill" (:stdout r) "start")
+  (check-true "timed-out foreground process handle is closed"
+    (proc-handle-closed? timed-out-foreground-handle)))
+
+;; The interruption coordinator must stop a foreground command and its
+;; descendants before cancelling the Sema task. The delayed marker observes the
+;; OS process, independent of the tool's internal bookkeeping.
+(define cancelled-marker (path/join tools-test-root "cancelled-foreground-leaked"))
+(when (file/exists? cancelled-marker) (file/delete cancelled-marker))
+(let* ((inner (string-append "sleep 0.3; echo leaked > " (shell/quote cancelled-marker)))
+       (cmd (string-append "sh -c " (shell/quote inner) " & wait"))
+       (work (async (run-in-workspace-timed cmd 3000))))
+  (async/sleep 40)
+  (stop-active-foreground-processes!)
+  (async/cancel work)
+  (try (await work) (catch cancelled nil))
+  (async/sleep 450)
+  (check "cancelled foreground descendants cannot keep running"
+    (file/exists? cancelled-marker) #f)
+  (check "foreground cancellation clears process ownership"
+    *foreground-process-handles* '()))
 
 ;; A timeout must kill grandchildren too. The old proc/kill path killed only
 ;; the outer sh; this nested shell survived and wrote the marker afterwards.
@@ -203,6 +235,10 @@
 (async/sleep 600)
 (check "stopped background descendants cannot keep running"
   (file/exists? background-leak-marker) #f)
+
+(check "task-stop reports an unknown task without raising"
+  (tool/invoke task-stop {:task_id "task-missing"})
+  "Error: No background task task-missing")
 
 ;; If cancellation interrupts task-stop after it records :stopping, a retry
 ;; must still terminate and settle the process.

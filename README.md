@@ -79,7 +79,7 @@ sema-coder/
 │   ├── terminal_input.sema Buffered raw input + terminal event decoder
 │   ├── text.sema       Width-aware clip/pad/truncate string helpers
 │   ├── theme.sema      Brand palette (sema gold #c8a855)
-│   ├── tools.sema      7 LLM-callable tools
+│   ├── tools.sema      10 LLM-callable tools
 │   ├── transcript.sema Transcript blocks → styled lines (cached)
 │   ├── turn.sema       Interrupted-turn history repair + control markers
 │   ├── tui.sema        Full-screen TUI — frame-diffed, async agent turns

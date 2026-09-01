@@ -12,15 +12,28 @@
   (set! *active-turn-id* #f)
   (set! *active-turn-input* "")
   (set! *turn-partial* #f)
-  (set! *round-text* "")
+  (reset-round-text!)
   (set! *active-tool-block-index* #f)
-  (set! *type-buffer* "")
+  (reset-type-buffer!)
   (set! *session-id* #f)
   (set! *queue-seq* 0)
   (set! *turn-seq* 0)
   (clear-turn-events!)
   (clear-transcript!)
   (prompt-clear!))
+
+;; Streaming callbacks append O(1) chunks. The display and cancellation history
+;; still observe the exact ordered text after one materialization pass.
+(reset-controller!)
+(add-block! {:kind :assistant :text ""})
+(on-text-cb "one")
+(on-text-cb " two")
+(check "stream deltas remain chunked before a frame" *type-buffer* "")
+(check "streamed character count does not require concatenation"
+  (:streamed-chars (turn-controller-state)) 7)
+(flush-type-buffer!)
+(check "chunked stream reveals in arrival order" (:text (block-at 0)) "one two")
+(check "round history materializes in arrival order" (round-text-value!) "one two")
 
 (defun fake-result (messages input response)
   {:response response
@@ -150,6 +163,28 @@
 (check "duplicate cancel emits one request event"
   (length (filter #(= (:event %) :cancel-requested) (turn-events))) 1)
 
+;; The real interrupt path stops a foreground bash process before cancelling
+;; its agent task. A delayed descendant marker proves that no process survives.
+(reset-controller!)
+(define foreground-interrupt-marker
+  (path/join (sys/temp-dir)
+    (string-append "sema-coder-turn-interrupt-" (number->string (sys/pid)))))
+(when (file/exists? foreground-interrupt-marker) (file/delete foreground-interrupt-marker))
+(let* ((inner (string-append "sleep 0.3; echo leaked > "
+                (shell/quote foreground-interrupt-marker)))
+       (command (string-append "sh -c " (shell/quote inner) " & wait"))
+       (work (async (run-in-workspace-timed command 3000))))
+  (set! *busy* #t)
+  (set! *active-turn-id* "turn-foreground")
+  (set! *turn* work)
+  (async/sleep 40)
+  (check-true "interrupt accepts a turn running foreground bash"
+    (request-interrupt-for! "turn-foreground" :stop))
+  (try (await work) (catch cancelled nil))
+  (async/sleep 450)
+  (check-false "turn interrupt kills foreground descendants"
+    (file/exists? foreground-interrupt-marker)))
+
 ;; A normal completion automatically drains ordinary queued work exactly once.
 (reset-controller!)
 (define normal-calls '())
@@ -172,9 +207,11 @@
 (check "two turns persisted in model history" (length *messages*) 4)
 (check "two terminal completion events"
   (length (filter #(= (:event %) :turn-completed) (turn-events))) 2)
-(let ((before *round-text*))
+(let ((before *round-text*)
+      (before-chars *round-text-chars*))
   (late-text-callback "late delta")
-  (check "late delta cannot mutate terminal turn" *round-text* before))
+  (check "late delta cannot mutate terminal turn" *round-text* before)
+  (check "late delta cannot change the streamed count" *round-text-chars* before-chars))
 
 ;; The terminal event must be part of the same durable write as the messages.
 (reset-controller!)

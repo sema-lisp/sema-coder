@@ -66,4 +66,14 @@
 (check "prompt-clear! empties"      *input* "")
 (check "prompt-clear! caret to 0"   *cursor* 0)
 
+;; Bracketed paste inserts one event into the prompt. Newlines stay data and
+;; terminal controls are removed instead of being executed or dispatched.
+(set-input! "before after" 6)
+(handle-key {:kind :paste :text " one\ntwo "})
+(check "paste inserts multiline text at the caret" *input* "before one\ntwo  after")
+(check "paste advances the caret by all inserted codepoints" *cursor* 15)
+(set-input! "" 0)
+(handle-key {:kind :paste :text (string-append "safe" "\x1b;[2J" "owned")})
+(check "paste strips terminal control sequences" *input* "safeowned")
+
 (done)

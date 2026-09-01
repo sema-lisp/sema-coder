@@ -63,7 +63,9 @@
 (define *active-turn-input* "")
 (define *turn-seq* 0)
 (define *turn-partial* #f)  ;; captured only by agent/run :on-partial
-(define *round-text* "")    ;; streamed text in the current provider round
+(define *round-text* "")    ;; materialized text in the current provider round
+(define *round-text-chunks* '()) ;; newest-first provider deltas, joined once
+(define *round-text-chars* 0)
 (define *active-tool-block-index* #f)
 (define *input-queue* '())  ;; durable future submissions, oldest first
 (define *queue-paused* #f)  ;; interruption requires explicit resume (except steer)
@@ -71,7 +73,8 @@
 (define *event-seq* 0)
 (define *turn-events* (mutable-array/new 64))
 (define *resume-queue-after-command* #f)
-(define *type-buffer* "")   ;; received-but-not-yet-revealed text (typewriter)
+(define *type-buffer* "")   ;; materialized, received-but-not-yet-revealed text
+(define *type-buffer-chunks* '()) ;; newest-first deltas, joined once per frame
 (define *should-quit* #f)
 (define *last-frame* '())   ;; previous frame's rows, for diffing
 (define *config-watcher* #f)  ;; fs/watch handle on the config dir
@@ -161,7 +164,7 @@
      :active-input *active-turn-input*
      :active-tool active-tool
      :interrupt-mode *interrupt-mode*
-     :streamed-chars (string/length *round-text*)
+     :streamed-chars *round-text-chars*
      :partial-message-count
        (if (and (map? *turn-partial*) (get *turn-partial* :messages #f))
          (length (:messages *turn-partial*)) 0)
@@ -679,10 +682,44 @@
 ;; per-tick pace so display cadence is smooth regardless of burstiness, and the
 ;; whole transcript re-renders on the 16ms tick, not on every token.
 
+(defun reset-round-text! ()
+  (set! *round-text* "")
+  (set! *round-text-chunks* '())
+  (set! *round-text-chars* 0))
+
+(defun round-text-value! ()
+  "Materialize queued provider deltas once, preserving arrival order."
+  (unless (null? *round-text-chunks*)
+    (set! *round-text*
+      (string/append *round-text*
+        (string/join (reverse *round-text-chunks*) "")))
+    (set! *round-text-chunks* '()))
+  *round-text*)
+
+(defun reset-type-buffer! ()
+  (set! *type-buffer* "")
+  (set! *type-buffer-chunks* '()))
+
+(defun collect-type-buffer! ()
+  "Move queued provider deltas into the reveal buffer once per UI frame."
+  (unless (null? *type-buffer-chunks*)
+    (set! *type-buffer*
+      (string/append *type-buffer*
+        (string/join (reverse *type-buffer-chunks*) "")))
+    (set! *type-buffer-chunks* '()))
+  *type-buffer*)
+
+(defun type-buffer-pending? ()
+  (or (> (string/length *type-buffer*) 0)
+      (not (null? *type-buffer-chunks*))))
+
 (defun on-text-cb (delta)
   (when (> (string/length delta) 0)
-    (set! *type-buffer* (string/append *type-buffer* delta))
-    (set! *round-text* (string/append *round-text* delta))))
+    ;; Cons is O(1). Joining once per frame/turn avoids copying the complete
+    ;; response for every small network delta.
+    (set! *type-buffer-chunks* (cons delta *type-buffer-chunks*))
+    (set! *round-text-chunks* (cons delta *round-text-chunks*))
+    (set! *round-text-chars* (+ *round-text-chars* (string/length delta)))))
 
 (defun on-partial-cb (partial)
   ;; Called from cancellation teardown: capture only. No render, I/O, or await.
@@ -692,6 +729,7 @@
   "Move a chunk of *type-buffer* into the streaming block. #t if it revealed.
    Reveals ~a third of the pending text (min 5 chars) so it catches up on bursts
    but types char-by-char as it drains."
+  (collect-type-buffer!)
   (let ((len (string/length *type-buffer*)))
     (if (= len 0) #f
       (let* ((n (min len (max 5 (quotient len 3))))
@@ -702,6 +740,7 @@
 
 (defun flush-type-buffer! ()
   "Reveal everything pending at once (block boundaries, interrupts, errors)."
+  (collect-type-buffer!)
   (when (> (string/length *type-buffer*) 0)
     (append-assistant! *type-buffer*)
     (set! *type-buffer* "")))
@@ -713,7 +752,7 @@
       ((= evt "start")
         ;; The provider round which requested this tool is complete and therefore
         ;; present in :on-partial. Text after the tool belongs to the next round.
-        (set! *round-text* "")
+        (reset-round-text!)
         (let ((arg (tool-arg tool (if (map? args) args {}))))
           (set! *active-tool-block-index* (mutable-array/length (tblocks)))
           (add-block! {:kind :tool :tool tool :arg arg :state :running :ms 0})))
@@ -739,7 +778,7 @@
   ;; key/frame cannot stop updates for the rest of the turn; the turn's own
   ;; await/catch owns real errors.
   (let loop ()
-    (when (or (async/pending? turn) (> (string/length *type-buffer*) 0))
+    (when (or (async/pending? turn) (type-buffer-pending?))
       (try
         (begin
           (check-resize!)
@@ -771,9 +810,9 @@
   (set! *active-turn-id* turn-id)
   (set! *active-turn-input* text)
   (set! *turn-partial* #f)
-  (set! *round-text* "")
+  (reset-round-text!)
   (set! *active-tool-block-index* #f)
-  (set! *type-buffer* "")
+  (reset-type-buffer!)
   (record-turn-event! :turn-started
     {:turn-id turn-id :input-chars (string/length text) :source source})
   ;; The empty assistant block is the streaming target for :on-text.
@@ -793,55 +832,59 @@
     (let ((outcome (try {:result (await turn)} (catch e {:error e}))))
       (await pump)   ;; drain the remaining buffer at the typewriter pace
       (flush-type-buffer!)
-      (set! *turn* #f)
-      (set! *busy* #f)
-      (let ((terminal
-              (cond
-                ((get outcome :result #f)
-                  (let ((result (:result outcome)))
-                    (set! *messages* (continued-turn-messages prior (:messages result)))
-                    (record-turn-event! :turn-completed
-                      {:turn-id turn-id :message-count (length *messages*)})
-                    (persist-session!)
-                    {:status :completed :turn-id turn-id}))
-                (*interrupt*
-                  (if *active-tool-block-index*
-                    (cancel-running-tool-at! *active-tool-block-index*)
-                    (cancel-last-running-tool!))
-                  (set! *messages*
-                    (interrupted-turn-messages prior text *turn-partial* *round-text* turn-id))
-                  (set! *queue-paused* (queued-follow-ups?))
-                  (add-block!
-                    {:kind :warn
-                     :text (if *queue-paused*
-                             "turn interrupted; queued follow-ups are paused"
-                             "turn interrupted")})
-                  (record-turn-event! :turn-interrupted
-                    {:turn-id turn-id :mode *interrupt-mode*
-                     :message-count (length *messages*)})
-                  (persist-session!)
-                  (run-hooks :turn-interrupted
-                    {:input text :messages *messages* :turn-id turn-id})
-                  {:status :interrupted :turn-id turn-id})
-                (else
-                  (let ((e (:error outcome)))
-                    (when *active-tool-block-index*
-                      (fail-running-tool-at! *active-tool-block-index*))
+      (let ((terminal-round-text (round-text-value!)))
+        (set! *turn* #f)
+        (set! *busy* #f)
+        (let ((terminal
+                (cond
+                  ((get outcome :result #f)
+                    (let ((result (:result outcome)))
+                      (set! *messages*
+                        (continued-turn-messages prior (:messages result)))
+                      (record-turn-event! :turn-completed
+                        {:turn-id turn-id :message-count (length *messages*)})
+                      (persist-session!)
+                      {:status :completed :turn-id turn-id}))
+                  (*interrupt*
+                    (if *active-tool-block-index*
+                      (cancel-running-tool-at! *active-tool-block-index*)
+                      (cancel-last-running-tool!))
                     (set! *messages*
-                      (failed-turn-messages prior text *turn-partial* *round-text* turn-id))
-                    (add-block! {:kind :error :text (str (get e :message (str e)))})
-                    (record-turn-event! :turn-failed
-                      {:turn-id turn-id :error (str (get e :message (str e)))})
+                      (interrupted-turn-messages
+                        prior text *turn-partial* terminal-round-text turn-id))
+                    (set! *queue-paused* (queued-follow-ups?))
+                    (add-block!
+                      {:kind :warn
+                       :text (if *queue-paused*
+                               "turn interrupted; queued follow-ups are paused"
+                               "turn interrupted")})
+                    (record-turn-event! :turn-interrupted
+                      {:turn-id turn-id :mode *interrupt-mode*
+                       :message-count (length *messages*)})
                     (persist-session!)
-                    {:status :failed :turn-id turn-id})))))
-        (set! *active-turn-id* #f)
-        (set! *active-turn-input* "")
-        (set! *interrupt* #f)
-        (set! *interrupt-mode* #f)
-        (set! *interrupt-turn-id* #f)
-        (set! *active-tool-block-index* #f)
-        ((current-turn-render))
-        terminal)))))
+                    (run-hooks :turn-interrupted
+                      {:input text :messages *messages* :turn-id turn-id})
+                    {:status :interrupted :turn-id turn-id})
+                  (else
+                    (let ((e (:error outcome)))
+                      (when *active-tool-block-index*
+                        (fail-running-tool-at! *active-tool-block-index*))
+                      (set! *messages*
+                        (failed-turn-messages
+                          prior text *turn-partial* terminal-round-text turn-id))
+                      (add-block! {:kind :error :text (str (get e :message (str e)))})
+                      (record-turn-event! :turn-failed
+                        {:turn-id turn-id :error (str (get e :message (str e)))})
+                      (persist-session!)
+                      {:status :failed :turn-id turn-id})))))
+          (set! *active-turn-id* #f)
+          (set! *active-turn-input* "")
+          (set! *interrupt* #f)
+          (set! *interrupt-mode* #f)
+          (set! *interrupt-turn-id* #f)
+          (set! *active-tool-block-index* #f)
+          ((current-turn-render))
+          terminal))))))
 
 (defun take-steers-for! (turn-id)
   "Take every steer accepted for TURN-ID in FIFO order. Multiple steers sent
@@ -1117,6 +1160,9 @@
       (set! *interrupt-mode* mode)
       (set! *interrupt-turn-id* expected)
       (record-turn-event! :cancel-requested {:turn-id expected :mode mode})
+      ;; Foreground bash owns an OS process which ordinary Sema cancellation
+      ;; cannot unwind. Stop it while its proc handle is still available.
+      (stop-active-foreground-processes!)
       (when *turn* (async/cancel *turn*))
       #t)))
 
@@ -1315,6 +1361,7 @@
         (:key   (handle-named k))
         (:alt   (handle-alt k))
         (:char  (prompt-insert! (:char k)))
+        (:paste (prompt-insert! (sanitize-terminal-text (:text k))))
         (:mouse (handle-mouse k))
         (_ nil)))))
 
@@ -1399,37 +1446,38 @@
     (term/with-alt-screen
       (term/with-kitty-keys
         (term/with-mouse
-          (term/set-title "(sema) coder")
-          (add-block! {:kind :info :text f"(sema) coder — ${cwd} · ${(if (= model "") "auto" model)}"})
-          (add-block! {:kind :info :text f"; ${(epigraph)}"})
-          (warn-keymap-conflicts!)
-          (let ((na (mcp-needs-auth)))
-            (unless (null? na)
-              (add-block! {:kind :warn :text f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")} — ${(key-hint :mcp)} to sign in"})))
-          (start-config-watch!)
-          (full-repaint!)
-          (start-terminal-input!)
-          (try
-            (let loop ()
-              (check-resize!)
-              (poll-config!)
-              (let ((k ((current-key-poll) (frame-wait-ms 250))))
-                (when k
-                  (handle-key k)
-                  ;; Decode a bulk-read burst, coalescing intermediate motion,
-                  ;; then paint even if more bytes are already queued.
-                  (drain-input-burst!)
-                  (request-frame!)))
-              (render-pending-frame!)
-              ;; Expire a copy status even when no key arrives.
-              (when (and *copy-notice* (>= (time-ms) (:until *copy-notice*)))
-                (set! *copy-notice* #f)
-                (render!))
-              (unless *should-quit* (loop)))
-            (catch e
-              (stop-terminal-input!)
-              (throw e)))
-          (stop-terminal-input!)))))
+          (term/with-bracketed-paste
+            (term/set-title "(sema) coder")
+            (add-block! {:kind :info :text f"(sema) coder — ${cwd} · ${(if (= model "") "auto" model)}"})
+            (add-block! {:kind :info :text f"; ${(epigraph)}"})
+            (warn-keymap-conflicts!)
+            (let ((na (mcp-needs-auth)))
+              (unless (null? na)
+                (add-block! {:kind :warn :text f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")} — ${(key-hint :mcp)} to sign in"})))
+            (start-config-watch!)
+            (full-repaint!)
+            (start-terminal-input!)
+            (try
+              (let loop ()
+                (check-resize!)
+                (poll-config!)
+                (let ((k ((current-key-poll) (frame-wait-ms 250))))
+                  (when k
+                    (handle-key k)
+                    ;; Decode a bulk-read burst, coalescing intermediate motion,
+                    ;; then paint even if more bytes are already queued.
+                    (drain-input-burst!)
+                    (request-frame!)))
+                (render-pending-frame!)
+                ;; Expire a copy status even when no key arrives.
+                (when (and *copy-notice* (>= (time-ms) (:until *copy-notice*)))
+                  (set! *copy-notice* #f)
+                  (render!))
+                (unless *should-quit* (loop)))
+              (catch e
+                (stop-terminal-input!)
+                (throw e)))
+            (stop-terminal-input!))))))
   (stop-all-background-tasks!)
   (current-background-task-change (lambda () nil))
   ;; Back on the main screen — a quiet sign-off in the scrollback.

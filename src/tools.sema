@@ -24,6 +24,7 @@
 (define BACKGROUND-STREAM-CHARS (quotient MAX-OUTPUT-CHARS 2))
 (define BACKGROUND-STREAM-HEAD (quotient BACKGROUND-STREAM-CHARS 2))
 (define BACKGROUND-STREAM-TAIL (- BACKGROUND-STREAM-CHARS BACKGROUND-STREAM-HEAD))
+(define *foreground-process-handles* '())
 
 ;; Background processes belong to the Sema Coder process, not to the agent turn
 ;; which launched them. The native proc registry owns the OS handles; this list
@@ -153,6 +154,26 @@
           (async/cancel waiter)
           (try (await waiter) (catch cancelled nil)))))))
 
+(defun register-foreground-process! (handle)
+  (set! *foreground-process-handles*
+    (cons handle *foreground-process-handles*))
+  handle)
+
+(defun forget-foreground-process! (handle)
+  (set! *foreground-process-handles*
+    (filter #(not (= % handle)) *foreground-process-handles*)))
+
+(defun stop-active-foreground-processes! ()
+  "Stop foreground bash processes before their owning agent task is cancelled."
+  (let ((handles *foreground-process-handles*))
+    ;; Clear first so a concurrent or repeated interrupt is idempotent.
+    (set! *foreground-process-handles* '())
+    (for-each
+      (lambda (handle)
+        (try (terminate-proc! handle) (catch terminate-error nil))
+        (try (proc/close handle) (catch close-error nil)))
+      handles)))
+
 ;; ── Background process registry ─────────────────────────────────────────────
 
 (defun empty-background-capture () {:head "" :tail "" :chars 0})
@@ -200,7 +221,7 @@
 (defun background-task-by-id (id)
   (let loop ((tasks *background-tasks*))
     (cond
-      ((null? tasks) #f)
+      ((null? tasks) nil)
       ((= (get (car tasks) :id "") id) (car tasks))
       (else (loop (cdr tasks))))))
 
@@ -480,24 +501,40 @@
    elsewhere). Returns {:stdout :stderr :exit-code :timed-out}."
   (let ((h (proc/spawn (system-shell-argv command) {:cwd workspace-root}))
         (deadline (+ (time-ms) timeout-ms)))
-    (let loop ((out "") (err ""))
-      (let ((out2 (append-captured out (proc/read-stdout h)))
-            (err2 (append-captured err (proc/read-stderr h)))
-            (code (proc/exit-code h)))
-        (cond
-          (code
-            (proc/wait h)   ;; let the reader threads flush the tail
-            {:stdout (append-captured out2 (proc/read-stdout h))
-             :stderr (append-captured err2 (proc/read-stderr h))
-             :exit-code code :timed-out #f})
-          ((>= (time-ms) deadline)
-            (terminate-proc! h)
-            {:stdout out2
-             :stderr err2
-             :exit-code -1 :timed-out #t})
-          (else
-            (async/sleep (min 15 (max 0 (- deadline (time-ms)))))
-            (loop out2 err2)))))))
+    (register-foreground-process! h)
+    (try
+      (let loop ((out "") (err ""))
+        (let ((out2 (append-captured out (proc/read-stdout h)))
+              (err2 (append-captured err (proc/read-stderr h)))
+              (code (proc/exit-code h)))
+          (cond
+            (code
+              (proc/wait h)   ;; let the reader threads flush the tail
+              (let ((result
+                      {:stdout (append-captured out2 (proc/read-stdout h))
+                       :stderr (append-captured err2 (proc/read-stderr h))
+                       :exit-code code :timed-out #f}))
+                (forget-foreground-process! h)
+                (proc/close h)
+                result))
+            ((>= (time-ms) deadline)
+              (forget-foreground-process! h)
+              (terminate-proc! h)
+              (try (proc/close h) (catch close-error nil))
+              {:stdout out2
+               :stderr err2
+               :exit-code -1 :timed-out #t})
+            (else
+              (async/sleep (min 15 (max 0 (- deadline (time-ms)))))
+              (loop out2 err2)))))
+      (catch e
+        ;; Clean up ordinary failures here. User interruption calls
+        ;; stop-active-foreground-processes! before cancelling the agent task,
+        ;; because cancellation does not unwind this catch path.
+        (forget-foreground-process! h)
+        (try (terminate-proc! h) (catch terminate-error nil))
+        (try (proc/close h) (catch close-error nil))
+        (throw e)))))
 
 (deftool bash
   "Run a shell command in the workspace. Foreground commands return stdout, stderr, and exit code and are killed after 120s by default. Set background=true for servers, watchers, or independent long-running commands; this returns a task id immediately. Use task-output to inspect it and task-stop to end it. Background stdin is closed. Do not background a command whose result is required before the next step."
