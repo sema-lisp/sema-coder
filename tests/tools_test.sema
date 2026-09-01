@@ -24,6 +24,19 @@
 (check-contains "apply-edit multi is an error without replace_all"
                 (:error (apply-edit "a a a" "a" "b" #f)) "matches 3 times")
 (check "apply-edit replace_all replaces every match" (apply-edit "a a a" "a" "b" #t) {:text "b b b" :count 3})
+(check "edit-diff shows context, removed and added lines"
+       (edit-diff "l1\nl2\nold a\nold b\nl5\nl6\nl7" "old a\nold b" "new" #f)
+       (list "  l1" "  l2" "- old a" "- old b" "+ new" "  l5" "  l6"))
+(check "edit-diff keeps the untouched parts of a partial line"
+       (edit-diff "x foo y" "foo" "bar" #f)
+       (list "- x foo y" "+ x bar y"))
+(check "edit-diff emits one hunk per replace_all match"
+       (length (filter #(string/starts-with? % "- ") (edit-diff "a\nb\na" "a" "c" #t))) 2)
+(file/write (path/join tools-test-root "edit.txt") "keep\nold\nkeep")
+(let ((r (tool/invoke edit-file {:path "edit.txt" :old_string "old" :new_string "new" :replace_all #f})))
+  (check-contains "edit-file reports the edit" r "Edited edit.txt (1 replacement)")
+  (check-contains "edit-file result has a removed line" r "\n- old")
+  (check-contains "edit-file result has an added line" r "\n+ new"))
 
 ;; ── search-argv: grep/rg argv construction with ignore_case + glob ──
 (check "rg plain argv"

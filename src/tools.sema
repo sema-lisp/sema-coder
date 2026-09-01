@@ -100,6 +100,40 @@
           {:error f"old_string matches ${n} times. Add surrounding context to make it unique, or pass replace_all to replace them all."})
         (else {:text (string/replace content old_string new_string) :count n})))))
 
+(define MAX-DIFF-LINES 60)
+
+(defun edit-diff (content old new replace-all)
+  "Unified-style lines for each replacement of OLD by NEW in CONTENT: up to two
+   \"  \" context lines, the \"- \" lines OLD spans, the \"+ \" lines that
+   replace them. Line-based on the spanned lines only; no LCS."
+  (let* ((lines (string/split content "\n"))
+         (last-line (- (length lines) 1))
+         (segs (string/split content old))
+         (starts (let loop ((rest segs) (pos 0) (acc '()))
+                   (if (or (null? (cdr rest)) (and (not replace-all) (not (null? acc))))
+                     (reverse acc)
+                     (let ((o (+ pos (string/length (car rest)))))
+                       (loop (cdr rest) (+ o (string/length old)) (cons o acc))))))
+         (hunk (lambda (o)
+                 (let* ((before (string/slice content 0 o))
+                        (after  (string/slice content (+ o (string/length old)) (string/length content)))
+                        (s (count-occurrences before "\n"))
+                        (e (+ s (count-occurrences old "\n")))
+                        (prefix (last (string/split before "\n")))
+                        (suffix (first (string/split after "\n")))
+                        (ctx-before (take (- s (max 0 (- s 2))) (drop (max 0 (- s 2)) lines)))
+                        (ctx-after  (take (- (min last-line (+ e 2)) e) (drop (+ e 1) lines))))
+                   (append
+                     (map #(string/append "  " %) ctx-before)
+                     (map #(string/append "- " %) (take (+ 1 (- e s)) (drop s lines)))
+                     (map #(string/append "+ " %) (string/split (string/append prefix new suffix) "\n"))
+                     (map #(string/append "  " %) ctx-after)))))
+         (all (apply append (map hunk starts))))
+    (if (> (length all) MAX-DIFF-LINES)
+      (append (take MAX-DIFF-LINES all)
+              (list f"… +${(- (length all) MAX-DIFF-LINES)} more lines"))
+      all)))
+
 (deftool edit-file
   "Edit a file by replacing an exact string match. You MUST read the file first. old_string must match exactly (including whitespace) and, unless replace_all is set, appear exactly once."
   {:path        {:type :string  :description "Path to edit (relative to the workspace)"}
@@ -111,13 +145,17 @@
       (let ((resolved (resolve-path workspace-root path)))
         (if (not (file/exists? resolved))
           f"Error: File not found: ${path}"
-          (let ((r (apply-edit (file/read resolved) old_string new_string replace_all)))
+          (let* ((content (file/read resolved))
+                 (r (apply-edit content old_string new_string replace_all)))
             (if (:error r)
               f"Error: ${(:error r)} (${path})"
               (begin
                 (file/write resolved (:text r))
                 (let ((n (:count r)))
-                  f"Edited ${path} (${n} replacement${(if (= n 1) "" "s")})"))))))
+                  (string/join
+                    (cons f"Edited ${path} (${n} replacement${(if (= n 1) "" "s")})"
+                          (edit-diff content old_string new_string replace_all))
+                    "\n")))))))
       (catch e f"Error editing file ${path}: ${e}"))))
 
 ;; ── Shell-backed tools ───────────────────────────────────────────
