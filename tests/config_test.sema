@@ -68,6 +68,7 @@
 (define init-not-map (path/join config-fixture-dir "init-not-map.sema"))
 (define init-bad-turns (path/join config-fixture-dir "init-bad-turns.sema"))
 (define init-bad-commands (path/join config-fixture-dir "init-bad-commands.sema"))
+(define init-bad-command-record (path/join config-fixture-dir "init-bad-command-record.sema"))
 
 (file/write init-ok
   "(configure! (coder-config {:model \"m\" :max-turns 9 :commands (list (command \"t\" {:run [\"echo\"]}))}))")
@@ -94,6 +95,40 @@
   "(configure! (coder-config {:commands {}}))")
 (check-contains "commands must be a sequence"
                 (:error (load-config init-bad-commands)) ":commands")
+(file/write init-bad-command-record
+  "(configure! (coder-config {:commands (list {})}))")
+(check-contains "command records require a name and implementation"
+                (:error (load-config init-bad-command-record)) ":name")
+
+;; Nested records are validated before any runtime registry sees them.
+(check-contains "provider requires a name"
+  (config-validation-error (coder-config {:models (list {:models '()})}))
+  ":name")
+(check-contains "model requires an id"
+  (config-validation-error
+    (coder-config {:models (list {:name "P" :models (list {:label "M"})})}))
+  ":id")
+(check-contains "MCP stdio server requires a command"
+  (config-validation-error
+    (coder-config {:mcp-servers
+                    (list {:name "x" :opts {} :autostart #f :transport "stdio"})}))
+  ":command")
+(check-contains "MCP environment values must be strings"
+  (config-validation-error
+    (coder-config {:mcp-servers
+                    (list (mcp-server "x" {:command "x" :env {"TOKEN" 42}}))}))
+  ":env")
+(check-contains "command run argv rejects non-strings"
+  (config-validation-error
+    (coder-config {:commands (list {:name "x" :run ["echo" 42]})}))
+  ":run")
+(check-contains "hook event must be known"
+  (config-validation-error
+    (coder-config {:hooks (list {:event :unknown :handler (lambda (ctx) nil)})}))
+  ":event")
+(check-contains "keymap values must be strings"
+  (config-validation-error (coder-config {:keys {:mcp 42}}))
+  ":mcp")
 
 (shell "rm" "-rf" config-fixture-dir)
 

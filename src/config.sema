@@ -150,6 +150,138 @@
 (defun config-records? (v)
   (and (config-sequence? v) (every map? v)))
 
+(define config-hook-events
+  (list :session-start :pre-turn :pre-tool-call :post-turn :on-error
+        :turn-queued :turn-interrupted))
+
+(defun nonempty-config-string? (v)
+  (and (string? v) (not (= (string/trim v) ""))))
+
+(defun config-field-present? (record field)
+  (member field (keys record)))
+
+(defun config-sequence-of? (pred value)
+  (and (config-sequence? value) (every pred value)))
+
+(defun config-string-map? (value)
+  (and (map? value)
+       (every string? (keys value))
+       (every string? (map #(get value %) (keys value)))))
+
+(defun first-record-validation-error (records validate)
+  (let loop ((items (if (vector? records) (vector->list records) records)) (index 0))
+    (if (null? items) nil
+      (let ((error (validate (car items))))
+        (if error f"record ${(+ index 1)}: ${error}"
+          (loop (cdr items) (+ index 1)))))))
+
+(defun model-record-validation-error (record)
+  (cond
+    ((not (map? record)) "must be a map")
+    ((not (nonempty-config-string? (get record :id nil))) ":id must be a non-empty string")
+    ((not (nonempty-config-string? (get record :label nil))) ":label must be a non-empty string")
+    ((and (config-field-present? record :effort)
+          (not (string? (get record :effort nil))))
+      ":effort must be a string")
+    (else nil)))
+
+(defun provider-record-validation-error (record)
+  (cond
+    ((not (map? record)) "must be a map")
+    ((not (nonempty-config-string? (get record :name nil))) ":name must be a non-empty string")
+    ((not (config-sequence? (get record :models nil))) ":models must be a list or vector")
+    (else
+      (let ((error (first-record-validation-error
+                     (get record :models '()) model-record-validation-error)))
+        (if error f":models ${error}" nil)))))
+
+(defun mcp-server-record-validation-error (record)
+  (cond
+    ((not (map? record)) "must be a map")
+    ((not (nonempty-config-string? (get record :name nil))) ":name must be a non-empty string")
+    ((not (map? (get record :opts nil))) ":opts must be a map")
+    ((not (boolean? (get record :autostart #f))) ":autostart must be a boolean")
+    ((not (member (get record :transport nil) (list "stdio" "http")))
+      ":transport must be \"stdio\" or \"http\"")
+    ((and (= (get record :transport "") "http")
+          (not (nonempty-config-string? (get (get record :opts {}) :url nil))))
+      "HTTP server :opts must contain a non-empty :url string")
+    ((and (= (get record :transport "") "stdio")
+          (not (nonempty-config-string? (get (get record :opts {}) :command nil))))
+      "stdio server :opts must contain a non-empty :command string")
+    ((let ((args (get (get record :opts {}) :args '())))
+       (not (config-sequence-of? string? args)))
+      "server :opts :args must be a list or vector of strings")
+    ((let ((env-map (get (get record :opts {}) :env {})))
+       (not (config-string-map? env-map)))
+      "server :opts :env must map strings to strings")
+    ((let ((headers (get (get record :opts {}) :headers {})))
+       (not (config-string-map? headers)))
+      "server :opts :headers must map strings to strings")
+    ((let ((cwd (get (get record :opts {}) :cwd nil)))
+       (and cwd (not (nonempty-config-string? cwd))))
+      "server :opts :cwd must be a non-empty string")
+    ((let ((auth (get (get record :opts {}) :auth {})))
+       (not (map? auth)))
+      "server :opts :auth must be a map")
+    ((let* ((auth (get (get record :opts {}) :auth {}))
+            (client-id (get auth :client-id nil)))
+       (and client-id (not (nonempty-config-string? client-id))))
+      "server :opts :auth :client-id must be a non-empty string")
+    (else nil)))
+
+(defun command-mode-count (record)
+  (length
+    (filter #(config-field-present? record %)
+      (list :run :do :shell))))
+
+(defun command-record-validation-error (record)
+  (cond
+    ((not (map? record)) "must be a map")
+    ((not (nonempty-config-string? (get record :name nil))) ":name must be a non-empty string")
+    ((and (config-field-present? record :desc)
+          (not (string? (get record :desc nil))))
+      ":desc must be a string")
+    ((not (= (command-mode-count record) 1))
+      "must contain exactly one of :run, :do, or :shell")
+    ((and (config-field-present? record :run)
+          (not (and
+                 (config-sequence? (get record :run nil))
+                 (> (length (get record :run nil)) 0)
+                 (every #(or (string? %) (equal? % :args)) (get record :run nil)))))
+      ":run must be a non-empty list or vector of strings with optional :args")
+    ((and (config-field-present? record :do)
+          (not (procedure? (get record :do nil))))
+      ":do must be a function")
+    ((and (config-field-present? record :shell)
+          (not (nonempty-config-string? (get record :shell nil))))
+      ":shell must be a non-empty string")
+    ((and (config-field-present? record :key)
+          (not (nonempty-config-string? (get record :key nil))))
+      ":key must be a non-empty string")
+    ((and (config-field-present? record :keep-input)
+          (not (boolean? (get record :keep-input nil))))
+      ":keep-input must be a boolean")
+    (else nil)))
+
+(defun hook-record-validation-error (record)
+  (cond
+    ((not (map? record)) "must be a map")
+    ((not (member (get record :event nil) config-hook-events))
+      f":event must be one of ${(string/join (map str config-hook-events) ", ")}")
+    ((not (procedure? (get record :handler nil))) ":handler must be a function")
+    (else nil)))
+
+(defun keymap-validation-error (keymap)
+  (let loop ((actions (keys keymap)))
+    (if (null? actions) nil
+      (let ((action (car actions)))
+        (cond
+          ((not (keyword? action)) "action names must be keywords")
+          ((not (nonempty-config-string? (get keymap action nil)))
+            f"${action} must map to a non-empty key string")
+          (else (loop (cdr actions))))))))
+
 (defun config-validation-error (cfg)
   "The first invalid config field, or nil when CFG is safe to reconcile."
   (cond
@@ -162,13 +294,35 @@
       ":tool-preview-lines must be a positive integer")
     ((not (config-records? (get cfg :models '())))
       ":models must be a list or vector of provider maps")
+    ((first-record-validation-error
+       (get cfg :models '()) provider-record-validation-error)
+      (string-append ":models "
+        (first-record-validation-error
+          (get cfg :models '()) provider-record-validation-error)))
     ((not (config-records? (get cfg :mcp-servers '())))
       ":mcp-servers must be a list or vector of server maps")
+    ((first-record-validation-error
+       (get cfg :mcp-servers '()) mcp-server-record-validation-error)
+      (string-append ":mcp-servers "
+        (first-record-validation-error
+          (get cfg :mcp-servers '()) mcp-server-record-validation-error)))
     ((not (config-records? (get cfg :commands '())))
       ":commands must be a list or vector of command maps")
+    ((first-record-validation-error
+       (get cfg :commands '()) command-record-validation-error)
+      (string-append ":commands "
+        (first-record-validation-error
+          (get cfg :commands '()) command-record-validation-error)))
     ((not (config-records? (get cfg :hooks '())))
       ":hooks must be a list or vector of hook maps")
+    ((first-record-validation-error
+       (get cfg :hooks '()) hook-record-validation-error)
+      (string-append ":hooks "
+        (first-record-validation-error
+          (get cfg :hooks '()) hook-record-validation-error)))
     ((not (map? (get cfg :keys {}))) ":keys must be a map")
+    ((keymap-validation-error (get cfg :keys {}))
+      (string-append ":keys " (keymap-validation-error (get cfg :keys {}))))
     (else nil)))
 
 ;; ── Single sink + pure loader ────────────────────────────────────

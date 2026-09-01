@@ -36,6 +36,7 @@
 (define apply-warn (path/join apply-dir "warn.sema"))
 (define apply-bad (path/join apply-dir "bad.sema"))
 (define apply-wrong-shape (path/join apply-dir "wrong-shape.sema"))
+(define apply-bad-record (path/join apply-dir "bad-record.sema"))
 (define apply-hooks (path/join apply-dir "hooks.sema"))
 (parameterize ((config-dir-override apply-dir))
   (file/write apply-ok
@@ -63,6 +64,13 @@
   (let ((r (apply-config! apply-wrong-shape default-config)))
     (check-true "wrong shape is rejected" (:error r))
     (check "wrong shape keeps runtime commands" (config-command-names) (list "solo")))
+
+  (file/write apply-bad-record
+    "(configure! (coder-config {:commands (list {})}))")
+  (let ((r (apply-config! apply-bad-record default-config)))
+    (check-true "malformed nested record is rejected" (:error r))
+    (check "malformed nested record keeps runtime commands"
+      (config-command-names) (list "solo")))
 
   ;; apply-config! autoloads (tools-dir) on the ok path
   (file/mkdir (tools-dir))

@@ -16,9 +16,7 @@
 ;; A throwing handler is caught and swallowed, so a bad hook can never break the
 ;; turn it observes nor corrupt the TUI by printing — log inside your handler.
 
-(define hook-events
-  (list :session-start :pre-turn :pre-tool-call :post-turn :on-error
-        :turn-queued :turn-interrupted))
+(define hook-events config-hook-events)
 
 (define *hooks* {})   ;; event(keyword) → (handler …), in registration order
 
