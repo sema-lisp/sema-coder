@@ -18,9 +18,10 @@
 
 (define hook-events config-hook-events)
 
-(define *hooks* {})   ;; event(keyword) → (handler …), in registration order
+(define *hooks* {})        ;; plugin/runtime hooks (add-hook!): event → (handler …)
+(define *config-hooks* {})  ;; init.sema :hooks, replaced whole by reconcile-hooks!
 
-(defun clear-hooks! () (set! *hooks* {}))
+(defun clear-hooks! () (set! *hooks* {}) (set! *config-hooks* {}))
 
 (defun add-hook! (event handler)
   "Subscribe HANDLER to EVENT. Later handlers run after earlier ones."
@@ -31,11 +32,17 @@
    return values ignored). A throwing handler is caught and swallowed. Returns nil."
   (for-each
     (lambda (h) (try (h ctx) (catch e nil)))
-    (get *hooks* event '()))
+    (append (get *config-hooks* event '()) (get *hooks* event '())))
   nil)
 
 (defun reconcile-hooks! (hooks)
   "Replace the config-owned hook set with HOOKS (a list of (hook …) records), so
-   a reload drops removed hooks — no accumulation."
-  (clear-hooks!)
-  (for-each (lambda (h) (add-hook! (:event h) (:handler h))) hooks))
+   a reload drops removed hooks — no accumulation. Hooks added with add-hook!
+   (plugins) are a separate layer and survive the reload."
+  (set! *config-hooks* {})
+  (for-each
+    (lambda (h)
+      (set! *config-hooks*
+        (assoc *config-hooks* (:event h)
+               (append (get *config-hooks* (:event h) '()) (list (:handler h))))))
+    hooks))

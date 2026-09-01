@@ -83,7 +83,7 @@
   (file/write apply-hooks
     "(configure! (coder-config {:hooks (list (hook :pre-turn (lambda (ctx) #t)))}))")
   (apply-config! apply-hooks default-config)
-  (check "apply reconciles declared hooks" (length (get *hooks* :pre-turn '())) 1)
+  (check "apply reconciles declared hooks" (length (get *config-hooks* :pre-turn '())) 1)
 
   ;; ── unified restore: session-restore-fields is the one builder both /resume
   ;;    front-ends use, so the REPL path and the TUI restore can't drift ──

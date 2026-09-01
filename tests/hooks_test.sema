@@ -24,10 +24,22 @@
 ;; ── reconcile-hooks! replaces the config-declared set (drops removed on reload) ──
 (reconcile-hooks! (list (hook :post-turn (lambda (ctx) #t))
                         (hook :post-turn (lambda (ctx) #t))))
-(check "reconcile installs two post-turn" (length (get *hooks* :post-turn '())) 2)
+(check "reconcile installs two post-turn" (length (get *config-hooks* :post-turn '())) 2)
 (reconcile-hooks! (list (hook :on-error (lambda (ctx) #t))))
-(check "reconcile drops removed"  (get *hooks* :post-turn '()) '())
-(check "reconcile keeps declared" (length (get *hooks* :on-error '())) 1)
+(check "reconcile drops removed"  (get *config-hooks* :post-turn '()) '())
+(check "reconcile keeps declared" (length (get *config-hooks* :on-error '())) 1)
+
+;; ── plugin hooks (add-hook!) survive a config reconcile; dropped config hooks don't ──
+(clear-hooks!)
+(define log3 '())
+(add-hook! :post-turn (lambda (ctx) (set! log3 (append log3 (list "plugin")))))
+(reconcile-hooks! (list (hook :post-turn (lambda (ctx) (set! log3 (append log3 (list "cfg1")))))))
+(run-hooks :post-turn {})
+(check "config and plugin hooks both fire" log3 (list "cfg1" "plugin"))
+(reconcile-hooks! (list (hook :post-turn (lambda (ctx) (set! log3 (append log3 (list "cfg2")))))))
+(set! log3 '())
+(run-hooks :post-turn {})
+(check "reload keeps plugin hook, replaces config hook" log3 (list "cfg2" "plugin"))
 
 ;; ── with-tool-hooks fires :pre-tool-call on "start" only, passes events through ──
 (clear-hooks!)
