@@ -71,6 +71,8 @@
     (string/contains? wrapped (string/append "\x1b;\x1b;]52"))))
 (check "oversized OSC52 is refused"
   (osc52-sequence (string/repeat "x" (+ OSC52-MAX-BYTES 1)) #f) #f)
+(check "oversized OSC52 copy is refused without raising"
+  (copy-with-osc52 (string/repeat "x" (+ OSC52-MAX-BYTES 1))) #f)
 
 ;; ── Mouse integration: drag copies and release clears gesture feedback ────────
 

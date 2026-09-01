@@ -113,9 +113,22 @@
 
 ;; ── Block constructs ─────────────────────────────────────────────
 
-(defun md-fence? (line)
-  (let ((t (string/trim-left line)))
-    (or (string/starts-with? t "```") (string/starts-with? t "~~~"))))
+(defun md-fence-marker (line)
+  "Fence marker data for LINE, or #f. The caller decides whether it opens or
+   closes based on the active marker."
+  (let ((m (regex/match #"^(`{3,}|~{3,})(.*)$" (string/trim-left line))))
+    (if m
+      (let ((run (nth (:groups m) 0)))
+        {:char (string/slice run 0 1)
+         :length (string/length run)
+         :rest (nth (:groups m) 1)})
+      #f)))
+
+(defun md-fence-closes? (active marker)
+  (and marker
+       (= (:char marker) (:char active))
+       (>= (:length marker) (:length active))
+       (= (string/trim (:rest marker)) "")))
 
 (defun md-code-line (line width)
   (string/append (faint "│ ") (muted (clip-plain line (max 0 (- width 2))))))
@@ -165,15 +178,20 @@
 
 (defun md-lines (text width)
   "Render markdown TEXT to a list of styled lines fitting WIDTH."
-  (let loop ((lines (string/split text "\n")) (out '()) (code #f))
+  (let loop ((lines (string/split text "\n")) (out '()) (fence #f))
     (if (null? lines) out
-      (let ((line (car lines)) (rest (cdr lines)))
+      (let ((line (car lines))
+            (rest (cdr lines))
+            (marker (md-fence-marker (car lines))))
         (cond
-          ((md-fence? line) (loop rest out (not code)))
-          (code (loop rest (append out (list (md-code-line line width))) code))
+          (fence
+            (if (md-fence-closes? fence marker)
+              (loop rest out #f)
+              (loop rest (append out (list (md-code-line line width))) fence)))
+          (marker (loop rest out marker))
           ((and (not (null? rest)) (table-row? line) (separator-row? (car rest)))
             (let ((span (span-table-rows (cdr rest))))
               (loop (:rest span)
                     (append out (render-table line (car rest) (:rows span) width))
-                    code)))
-          (else (loop rest (append out (md-render-line line width)) code)))))))
+                    fence)))
+          (else (loop rest (append out (md-render-line line width)) fence)))))))

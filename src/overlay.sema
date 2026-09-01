@@ -109,6 +109,10 @@
 (defun key-char= (k ch)   (and (equal? (:kind k) :char) (equal? (:char k) ch)))
 (defun key-ctrl= (k ch)   (and (equal? (:kind k) :ctrl) (equal? (:char k) ch)))
 
+(defun overlay-plain (value)
+  "Sanitize untrusted data for one terminal row before applying app styles."
+  (flatten-terminal-row (sanitize-terminal-text value)))
+
 ;; ── Layout context ───────────────────────────────────────────────
 ;; Passed to each overlay's :render so a render never reaches for TUI globals
 ;; directly (which also makes it headless-testable).
@@ -195,16 +199,18 @@
     (:connected  "connected")
     (:connecting "connecting…")
     (:needs-auth "needs auth — press c to sign in")
-    (:error      f"error: ${(get rec :error "")}")
+    (:error      f"error: ${(overlay-plain (get rec :error ""))}")
     (_           "idle — press c to connect")))
 
 (defun mcp-render-item (rec selected? inner)
-  (modal-cell
-    (string/append (mcp-status-glyph (:status rec)) " "
-                   (if selected? (bright (:name rec)) (muted (:name rec)))
-                   "  " (faint (:transport rec)))
-    (muted (mcp-status-label rec))
-    inner))
+  (let ((name (overlay-plain (get rec :name "")))
+        (transport (overlay-plain (get rec :transport ""))))
+    (modal-cell
+      (string/append (mcp-status-glyph (:status rec)) " "
+                     (if selected? (bright name) (muted name))
+                     "  " (faint transport))
+      (muted (mcp-status-label rec))
+      inner)))
 
 (defun mcp-sel-tools ()
   "Tool names of the selected server, when connected."
@@ -212,12 +218,15 @@
     (if (and srv (equal? (:status srv) :connected)) (map tool/name (:tools srv)) '())))
 
 (defun mcp-tool-item (name selected? inner)
-  (modal-cell (string/append "◦ " (if selected? (bright name) (accent name))) "" inner))
+  (let ((plain-name (overlay-plain name)))
+    (modal-cell
+      (string/append "◦ " (if selected? (bright plain-name) (accent plain-name)))
+      "" inner)))
 
 (defun mcp-render (state layout)
   (if (equal? (:view state) :tools)
     (let ((srv (mcp-sel-server)))
-      (list-modal {:title (string/append (if srv (:name srv) "?") " · tools")
+      (list-modal {:title (string/append (if srv (overlay-plain (:name srv)) "?") " · tools")
                    :items (mcp-sel-tools) :sel (:tsel state) :layout layout
                    :render-item mcp-tool-item
                    :actions (list {:key "↑↓" :label "scroll"} {:key "esc" :label "back"})}))
@@ -277,16 +286,20 @@
     (if (and (> (length ss) 0) (< i (length ss))) (nth ss i) nil)))
 
 (defun session-model-label (m)
-  (let ((md (:model m))) (if (or (not md) (= md "")) "auto" md)))
+  (let ((md (get m :model "")))
+    (if (or (not md) (= md "")) "auto" (overlay-plain md))))
 
 (defun resume-render-item (m selected? inner)
-  (modal-cell
-    (if selected? (bright (:title m)) (muted (:title m)))
-    (muted (string/append (number->string (:count m)) " msgs · " (session-model-label m)))
-    inner))
+  (let ((title (overlay-plain (get m :title "(untitled)")))
+        (count (get m :count 0)))
+    (modal-cell
+      (if selected? (bright title) (muted title))
+      (muted (string/append (number->string count) " msgs · " (session-model-label m)))
+      inner)))
 
 (defun session-first-line (s)
-  (let ((parts (filter #(not (= (string/trim %) "")) (string/split s "\n"))))
+  (let ((parts (filter #(not (= (string/trim %) ""))
+                        (string/split (sanitize-terminal-text s) "\n"))))
     (if (null? parts) "" (string/trim (car parts)))))
 
 (defun msg-role-label (role)
@@ -294,15 +307,17 @@
     ("user"      (accent "▸ you "))
     ("assistant" (ok "● sema"))
     ("tool"      (faint "   tool"))
-    (_           (muted role))))
+    (_           (muted (overlay-plain role)))))
 
 (defun msg-preview-text (m)
   (let ((role (get m :role "")) (calls (get m :tool-calls '())))
     (cond
       ((= role "tool")
-        (string/append "→ " (get m :tool-name "") ": " (session-first-line (get m :content ""))))
+        (string/append "→ " (overlay-plain (get m :tool-name "")) ": "
+          (session-first-line (get m :content ""))))
       ((and (= role "assistant") (> (length calls) 0) (= (string/trim (get m :content "")) ""))
-        (string/append "→ " (string/join (map #(get % :name "") calls) ", ")))
+        (string/append "→ "
+          (string/join (map #(overlay-plain (get % :name "")) calls) ", ")))
       (else (session-first-line (get m :content ""))))))
 
 (defun msg-preview-row (m inner)
@@ -325,7 +340,10 @@
          (sel   (resume-sel-session)))
     (map #(center-h % bw)
       (append
-        (list (box-round (string/append " " (if sel (clip-width (:title sel) 30) "session") " ") bw))
+        (list (box-round
+                (string/append " "
+                  (if sel (clip-width (overlay-plain (get sel :title "(untitled)")) 30) "session")
+                  " ") bw))
         (if (null? lines)
           (list (box-row (muted "empty session") inner))
           (map #(box-row % inner) win))

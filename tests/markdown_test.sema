@@ -12,6 +12,15 @@
 (check "quote"          (plain (md-lines "> quoted" 40)) (list "▏ quoted"))
 (check "code fence"     (plain (md-lines "```\ncode line\n```" 40)) (list "│ code line"))
 (check "open fence"     (plain (md-lines "```\nx = 1" 40)) (list "│ x = 1"))
+(check "different fence marker stays inside code"
+  (plain (md-lines "```\na\n~~~\nb\n```" 40))
+  (list "│ a" "│ ~~~" "│ b"))
+(check "shorter matching fence stays inside code"
+  (plain (md-lines "````\na\n```\nb\n````" 40))
+  (list "│ a" "│ ```" "│ b"))
+(check "longer matching fence closes code"
+  (plain (md-lines "```\na\n````\nafter" 40))
+  (list "│ a" "after"))
 (check "blank kept"     (plain (md-lines "a\n\nb" 40)) (list "a" "" "b"))
 (check-true "wraps"     (> (length (md-lines "word word word word word word word word" 18)) 1))
 (check-contains "link text" (car (plain (md-lines "see [docs](http://x)" 40))) "docs")

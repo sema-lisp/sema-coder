@@ -194,9 +194,10 @@
         raw))))
 
 (defun copy-with-osc52 (text)
-  (if-let (payload (osc52-sequence text (env-present? "TMUX")))
-    (try (begin (display payload) (io/flush) #t) (catch e #f))
-    #f))
+  (let ((payload (osc52-sequence text (env-present? "TMUX"))))
+    (if payload
+      (try (begin (display payload) (io/flush) #t) (catch e #f))
+      #f)))
 
 (defun copy-to-clipboard! (text)
   "Copy TEXT using OSC52 first over SSH/tmux, native commands first locally."

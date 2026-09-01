@@ -77,4 +77,19 @@
 (open-overlay! :boom)   ;; must not throw
 (check-true "failed :open pushes nothing" (not (overlay-active?)))
 
+;; Session files and MCP peers are untrusted terminal input. They may contain
+;; ANSI/OSC sequences, but overlay rows must contain only app-owned styling.
+(let* ((attack (string-append "safe" "\x1b;[2J" "owned"))
+       (session-row (resume-render-item
+                      {:title attack :count 1 :model attack} #f 50))
+       (message-row (msg-preview-row
+                      {:role "tool" :tool-name attack :content attack} 50))
+       (mcp-row (mcp-render-item
+                  {:name attack :transport attack :status :error :error attack}
+                  #f 50)))
+  (check-not-contains "session list strips terminal controls" session-row "\x1b;[2J")
+  (check-not-contains "message preview strips terminal controls" message-row "\x1b;[2J")
+  (check-not-contains "MCP list strips terminal controls" mcp-row "\x1b;[2J")
+  (check-contains "sanitized overlay keeps visible text" (term/strip message-row) "safeowned"))
+
 (done)
