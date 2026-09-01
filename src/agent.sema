@@ -23,6 +23,28 @@
           (loop (cdr rem) seen kept (cons n dropped))
           (loop (cdr rem) (cons n seen) (cons (car rem) kept) dropped))))))
 
+(define INSTRUCTION-FILES (list "AGENTS.md" "CLAUDE.md"))
+(define INSTRUCTION-FILE-MAX-CHARS 32000)
+
+(defun project-instructions (cwd)
+  "Contents of the workspace's instruction files, each under its own heading.
+   Identical files (a CLAUDE.md that only @-includes AGENTS.md is not
+   identical; a copy is) appear once. Returns \"\" when none exist."
+  (let loop ((names INSTRUCTION-FILES) (seen '()) (out '()))
+    (if (null? names)
+      (string/join (reverse out) "\n\n")
+      (let* ((name (car names))
+             (path (path/join cwd name))
+             (text (if (file/exists? path) (try (file/read path) (catch e "")) "")))
+        (if (or (= (string/trim text) "") (member text seen))
+          (loop (cdr names) seen out)
+          (let ((body (if (> (string/length text) INSTRUCTION-FILE-MAX-CHARS)
+                        (string/append (string/slice text 0 INSTRUCTION-FILE-MAX-CHARS)
+                          f"\n[truncated: ${name} is longer than ${INSTRUCTION-FILE-MAX-CHARS} characters]")
+                        text)))
+            (loop (cdr names) (cons text seen)
+              (cons f"<project_instructions source=\"${name}\">\n${(string/trim body)}\n</project_instructions>" out))))))))
+
 (defun build-system-prompt (cwd platform)
   (string/join
     (list
@@ -65,7 +87,9 @@ There is a little of the Lisp elder in you — sixty years of parentheses, dry a
       f"<environment>
 Working directory: ${cwd}
 Platform: ${platform}
-</environment>")
+</environment>"
+
+      (project-instructions cwd))
     "\n\n"))
 
 (defun choose-model (model cfg)

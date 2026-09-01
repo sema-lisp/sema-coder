@@ -45,4 +45,20 @@
 (mcp-reset!)
 (check "no collisions once the server is gone" (begin (agent-tools) *tool-name-collisions*) '())
 
+;; project instruction files are folded into the system prompt
+(define instr-dir (test-temp-path "instructions"))
+(file/mkdir instr-dir)
+(check "no instruction files → empty" (project-instructions instr-dir) "")
+(file/write (path/join instr-dir "AGENTS.md") "Use tabs.\n")
+(file/write (path/join instr-dir "CLAUDE.md") "Use tabs.\n")
+(check "identical files appear once"
+  (project-instructions instr-dir)
+  "<project_instructions source=\"AGENTS.md\">\nUse tabs.\n</project_instructions>")
+(file/write (path/join instr-dir "CLAUDE.md") "@AGENTS.md\n")
+(check-contains "different files both appear" (project-instructions instr-dir) "source=\"CLAUDE.md\"")
+(file/write (path/join instr-dir "CLAUDE.md") (string/repeat "x" 40000))
+(check-contains "long file is truncated" (project-instructions instr-dir) "[truncated: CLAUDE.md")
+(check-contains "instructions reach the system prompt"
+  (agent/system (create-agent instr-dir "" {})) "Use tabs.")
+
 (done)
