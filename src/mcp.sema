@@ -115,8 +115,8 @@
         ;; record. Close it before replacement so reconnect cannot orphan it.
         (mcp-close-record! rec)
         (mcp-set! name #(assoc % :status :connecting :handle #f :tools '() :error #f))
-        (let ((h #f)
-              (result
+        (let* ((h #f)
+               (result
                 (try
                   (begin
                     (set! h (mcp-connect-timed (:opts rec)))
