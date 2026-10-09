@@ -14,56 +14,45 @@ constructor — both already supported); item 4 was narrowed to PARTIAL. One
 incidental gap surfaced during verification and was filed as **#94** (prelude
 macro names can't be `(define (name …) …)` heads).
 
-## Upstream status (re-checked 2026-08-31)
+## Upstream status (re-checked 2026-10-09)
 
-The global and latest released binary is **v1.35.0**. The first release with
-the original audited fixes was **v1.31.0** (2026-07-26). Sema Coder now requires
-`sema >= 1.35`; CI tests both 1.35.0 (the floor) and the latest release because
-turn interruption recovery depends on `agent/run :on-partial`.
+Sema 1.37.0-rc.1 includes the fixes below. Sema Coder requires Sema >= 1.37;
+CI pins the RC until 1.37.0 is published, then should test 1.37.0 and latest.
+The historical notes below describe the original findings, not current gaps.
 
-Folded onto released APIs and verified live on 1.35.0:
+- **#82 / #104** global and captured-local reads observe `set!`; direct reads
+  remain in use.
+- **#83** `string/index-of` accepts a character start offset (since 1.36).
+  Keep the split-based occurrence counter: repeated offset searches rescan
+  UTF-8 prefixes. On a 20,000-match ASCII fixture, split took 3 ms and an
+  offset-search loop took 663 ms on the same installed RC. The API gap is
+  fixed, but replacing this counter would reduce performance.
+- **#84** `take`/`drop` remain count-first. Swapped arguments now receive a
+  specific hint. Keep count-first calls; both argument orders are not supported.
+- **#85** `deftool :default` injects omitted values and makes those arguments
+  optional (since 1.36). Paging, replacement, search, and shell tools declare
+  defaults; a search glob is explicitly optional. Explicit nil and invalid
+  user values still need validation.
+- **#86** `agent/run` with options returns per-turn `:usage` in both blocking
+  and streaming paths. Successful one-shot JSON and post-turn hooks use it.
+  The TUI HUD keeps `llm/session-usage` because it displays session totals.
+  Failed one-shot JSON retains session usage because no completed result exists.
+- **#87** cancellation history uses `:on-partial` (since 1.35).
+- **#88–#92** cooperative key waits, shell options and quoting, indexed
+  iteration, mutable-array HOFs, and width-aware clipping remain in use.
+  ANSI clipping stays custom because `string/truncate-width` is not ANSI-aware.
+- **#94** prelude macro names work in binding positions (since 1.31).
+- **Cancelled process cleanup**: `proc/close` removes cancelled/tombstoned
+  handles in 1.37. Tests now require `no such handle`; `no longer usable` is
+  evidence of a retained slot and cannot count as successful cleanup.
 
-- **#82 / #104 global and captured-local visibility** — direct reads in loaded
-  recursive loops now observe `set!`. The TUI quit loop reads `*should-quit*`
-  directly.
-- **#88 cooperative terminal waits** — `io/read-key-timeout` parks without
-  blocking sibling tasks. The turn input pump uses a 16 ms wait instead of a
-  zero-timeout poll plus `async/sleep`.
-- **#89 shell quoting and working directories** — shell commands use
-  `{:cwd workspace-root}`, argv commands execute directly, and the remaining
-  POSIX interpolation uses `shell/quote`. The local `sh-quote` and `cd &&`
-  workarounds are gone.
-- **#90 indexed iteration** — call sites use `map-indexed` and `enumerate`.
-- **#91 mutable-array sequence HOFs** — MCP and transcript render paths pass
-  mutable arrays directly instead of copying them to vectors every frame.
-- **#92 width-aware truncation** — `clip-width` and `clip-plain` delegate to
-  `string/truncate-width`, including its grapheme-safe ellipsis form.
-  `clip-styled` stays custom because the builtin is not ANSI-aware.
-- **#94 prelude-macro names in binding positions** — the issue is still open,
-  but the fix shipped in 1.31.0 and `(define (when-let x) x)` works on 1.35.0.
+Remaining gaps:
 
-Still open upstream, re-verified on 1.35.0:
-
-- **#83** `string/index-of` is strictly 2-arity ("expects 2 args, got 3"), so
-  the `count-occurrences`-via-`string/split` workaround stays.
-- **#84** `take`/`drop` remain count-first; list-first raises
-  `expected int, got list`.
-- **#85** `deftool :default` is stored in `tool/parameters` but is not injected
-  into an omitted argument (`tool/invoke` binds `nil`), so nil-guards stay.
-- **#86** `agent/run` results still have no per-turn cumulative `:usage`.
-- **#87 partial agent history** — fixed in 1.35.0 with
-  `agent/run {:on-partial callback}`. Sema Coder captures the correlated
-  completed messages on cancellation, combines them with the current streamed
-  text, completes any unfinished tool-call/result pair, and persists the turn.
-- **#93** `markdown/to-ansi` remains unbound, so `src/markdown.sema` stays.
-- **Cancelled `proc/wait` poisons the handle.** Cancelling an in-flight
-  `proc/wait` is the only way to kill a child's process group (descendants
-  included), but afterwards every `proc/*` op on that handle, including
-  `proc/close`, fails with "no longer usable … the resource cannot be
-  reclaimed". There is no `proc/pid` to kill the group by hand instead. Every
-  timed-out or stopped command therefore leaks one registry slot; the test
-  suite treats that state as closed. Needs an upstream fix (a `proc/kill-group`
-  or a reclaimable handle after cancellation).
+- **#93** `markdown/to-ansi` remains unbound. Keep `src/markdown.sema`.
+- **Terminal editor handoff**: `proc/run` can run an editor on the terminal.
+  The TUI also has an offloaded stdin reader, so handoff needs a tested way to
+  stop and reap that reader before the child reads the same terminal. Keep the
+  current GUI-editor/opener path until that ownership transition is verified.
 
 ## Blocker (filed separately)
 

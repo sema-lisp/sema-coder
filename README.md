@@ -22,10 +22,10 @@ safety) is Rust. It depends on nothing but the `sema` binary.
 
 ## Requirements
 
-- **`sema` ≥ 1.35** — install with
-  `curl -fsSL https://sema-lang.com/install.sh | sh` (or
-  `brew install helgesverre/tap/sema-lang`, or `cargo install sema-lang`;
-  see the [sema README](https://github.com/sema-lisp/sema#installation)).
+- **`sema` ≥ 1.37** — during the prerelease period, install with
+  `cargo install sema-lang --version 1.37.0-rc.1`. After 1.37.0 is released,
+  use `curl -fsSL https://sema-lang.com/install.sh | sh`,
+  `brew install helgesverre/tap/sema-lang`, or `cargo install sema-lang`.
 - **An API key** — `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in the environment.
 - Optional: **`rg`** (ripgrep) — the grep tool prefers it, falling back to `grep`.
 - Optional: **`jake`** — enables the `coder.run`, `coder.ask`, `coder.test`,
@@ -354,7 +354,7 @@ An exception is caught so one hook cannot stop the turn or later hooks.
 | `:session-start` | `{:cwd}` | The process starts a TUI, plain REPL, or one-shot session |
 | `:pre-turn` | `{:input :messages}` | Immediately before `agent/run` |
 | `:pre-tool-call` | `{:tool :args}` | When a tool-call start event arrives |
-| `:post-turn` | `{:input :result}` | After a turn completes successfully |
+| `:post-turn` | `{:input :result :usage}` | After a turn completes successfully; usage covers this turn only |
 | `:on-error` | `{:input :error}` | Before a turn error or cancellation is re-raised |
 | `:turn-queued` | `{:entry}` | A TUI follow-up or interrupt-and-send message enters the queue |
 | `:turn-interrupted` | `{:input :messages :turn-id}` | The TUI has recovered and persisted an interrupted turn |

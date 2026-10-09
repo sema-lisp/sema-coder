@@ -456,9 +456,9 @@
          (major (if match (string->number (nth (:groups match) 0)) 0))
          (minor (if match (string->number (nth (:groups match) 1)) 0)))
     {:version (if match (:match match) "unknown")
-     :minimum "1.35"
+     :minimum "1.37"
      :compatible
-       (if (and match (or (> major 1) (and (= major 1) (>= minor 35)))) #t #f)}))
+       (if (and match (or (> major 1) (and (= major 1) (>= minor 37)))) #t #f)}))
 
 (defun doctor-env-present? (name)
   (let ((value (env name))) (if (and value (not (= value ""))) #t #f)))

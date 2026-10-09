@@ -61,4 +61,20 @@
 (check-contains "instructions reach the system prompt"
   (agent/system (create-agent instr-dir "" {})) "Use tabs.")
 
+;; Per-turn accounting must use the result, not the process-wide session tally.
+(define saved-agent-run agent/run)
+(define scoped-usage {:prompt-tokens 7 :completion-tokens 3 :total-tokens 10})
+(define post-context #f)
+(clear-hooks!)
+(add-hook! :post-turn (lambda (ctx) (set! post-context ctx)))
+(set! agent/run (lambda (a input opts)
+  {:response "done" :messages '() :usage scoped-usage}))
+(run-turn (agent {}) "hi" '() (lambda (event) nil) "")
+(check "blocking post-turn hook carries scoped usage" (:usage post-context) scoped-usage)
+(set! post-context #f)
+(run-turn-streaming (agent {}) "hi" '() (lambda (event) nil)
+  (lambda (text) nil) (lambda (partial) nil) "")
+(check "streaming post-turn hook carries scoped usage" (:usage post-context) scoped-usage)
+(set! agent/run saved-agent-run)
+
 (done)
