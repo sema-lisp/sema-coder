@@ -44,8 +44,8 @@
 (deftool read-file
   "Read a file and return its contents with line numbers. Always read a file before editing it. Reads up to 2000 lines from the top by default; pass offset/limit to page through a larger file."
   {:path   {:type :string  :description "Path to the file to read (relative to the workspace)"}
-   :offset {:type :integer :description "1-based line to start reading from (optional; default 1)"}
-   :limit  {:type :integer :description "Maximum number of lines to read (optional; default 2000)"}}
+   :offset {:type :integer :description "1-based line to start reading from (optional; default 1)" :default 1}
+   :limit  {:type :integer :description "Maximum number of lines to read (optional; default 2000)" :default 2000}}
   (lambda (path offset limit)
     (try
       (let* ((resolved (resolve-path workspace-root path))
@@ -85,7 +85,7 @@
       (catch e f"Error writing file ${path}: ${e}"))))
 
 (defun count-occurrences (haystack needle)
-  "How many times NEEDLE appears in HAYSTACK (n matches → n+1 split parts)."
+  "Count non-overlapping matches in one scan; index-of loops rescan UTF-8 prefixes."
   (- (length (string/split haystack needle)) 1))
 
 (defun apply-edit (content old_string new_string replace-all)
@@ -139,7 +139,7 @@
   {:path        {:type :string  :description "Path to edit (relative to the workspace)"}
    :old_string  {:type :string  :description "Exact string to find"}
    :new_string  {:type :string  :description "Replacement string"}
-   :replace_all {:type :boolean :description "Replace every occurrence instead of requiring a unique match (optional)"}}
+   :replace_all {:type :boolean :description "Replace every occurrence instead of requiring a unique match (optional)" :default #f}}
   (lambda (path old_string new_string replace_all)
     (try
       (let ((resolved (resolve-path workspace-root path)))
@@ -587,7 +587,7 @@
 (deftool bash
   "Run a shell command in the workspace. Foreground commands return stdout, stderr, and exit code and are killed after 120s by default. Set background=true for servers, watchers, or independent long-running commands; this returns a task id immediately. Use task-output to inspect it and task-stop to end it. Background stdin is closed. Do not background a command whose result is required before the next step."
   {:command {:type :string  :description "The shell command to run"}
-   :timeout {:type :integer :description "Seconds before a foreground command is killed (optional; default 120)" :optional #t}
+   :timeout {:type :integer :description "Seconds before a foreground command is killed (optional; default 120)" :default 120}
    :background {:type :boolean :description "Run as an application-owned background task and return its task id immediately (optional; default false)" :default #f}}
   (lambda (command timeout background)
     (try
@@ -666,9 +666,9 @@
 (deftool grep
   "Search file contents for a pattern (regex). Returns matching lines with paths and line numbers. Prefers ripgrep, falls back to grep."
   {:pattern     {:type :string  :description "Search pattern (text or regex)"}
-   :path        {:type :string  :description "Directory or file to search (default: workspace root)"}
-   :ignore_case {:type :boolean :description "Case-insensitive match (optional)"}
-   :glob        {:type :string  :description "Only search files matching this glob, e.g. '*.rs' (optional)"}}
+   :path        {:type :string  :description "Directory or file to search (default: workspace root)" :default "."}
+   :ignore_case {:type :boolean :description "Case-insensitive match (optional)" :default #f}
+   :glob        {:type :string  :description "Only search files matching this glob, e.g. '*.rs' (optional)" :optional #t}}
   (lambda (pattern path ignore_case glob)
     (if (or (nil? pattern) (= pattern ""))
       "Error: pattern is required"
@@ -685,7 +685,7 @@
 (deftool find-files
   "Find files by glob pattern. Skips .git, node_modules, target."
   {:pattern {:type :string :description "Glob (e.g. '*.rs', 'Cargo.toml')"}
-   :path    {:type :string :description "Directory to search (default: workspace root)"}}
+   :path    {:type :string :description "Directory to search (default: workspace root)" :default "."}}
   (lambda (pattern path)
     (if (or (nil? pattern) (= pattern ""))
       "Error: pattern is required"
@@ -700,7 +700,7 @@
 
 (deftool list-dir
   "List directory contents with types and sizes."
-  {:path {:type :string :description "Directory to list (default: workspace root)"}}
+  {:path {:type :string :description "Directory to list (default: workspace root)" :default "."}}
   (lambda (path)
     (try
       (let* ((result (shell "ls" "-la" (resolve-dir workspace-root path)))

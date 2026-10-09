@@ -82,7 +82,7 @@
                 (println
                   (json/encode
                     (one-shot-json-payload "completed" model effort
-                      (llm/session-usage) (- (time-ms) started-at)
+                      (:usage result) (- (time-ms) started-at)
                       (:response result))))
                 (exit 0))
               (begin

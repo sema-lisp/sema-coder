@@ -11,6 +11,10 @@
 ;; ── read-file: size and binary guards run before the whole file is read ──
 (file/write (path/join tools-test-root "small.txt") "one\ntwo\n")
 (check-contains "read-file numbers lines" (tool/invoke read-file {:path "small.txt" :offset nil :limit nil}) "two")
+(check-contains "read-file injects omitted paging defaults"
+  (tool/invoke read-file {:path "small.txt"}) "two")
+(check "read-file offset defaults to one"
+  (get (get (tool/parameters read-file) :offset) :default) 1)
 (file/write (path/join tools-test-root "nul.bin") "ab\0cd")
 (check-contains "read-file refuses NUL bytes" (tool/invoke read-file {:path "nul.bin" :offset nil :limit nil}) "binary file")
 (shell "sh" "-c" (string-append "head -c 2000001 /dev/zero | tr '\\0' 'a' > " (shell/quote (path/join tools-test-root "big.txt"))))
@@ -18,6 +22,11 @@
 (check-contains "read-file missing file" (tool/invoke read-file {:path "nope.txt" :offset nil :limit nil}) "File not found")
 
 ;; ── apply-edit: the pure core of edit-file (unique match, or replace_all) ──
+(check "count-occurrences uses character offsets"
+  (count-occurrences "🙂é🙂é" "🙂é") 2)
+(check "count-occurrences skips overlapping matches"
+  (count-occurrences "aaaaa" "aa") 2)
+(check "count-occurrences handles no match" (count-occurrences "abc" "x") 0)
 (check "apply-edit empty old" (:error (apply-edit "abc" "" "x" #f)) "old_string must not be empty.")
 (check-contains "apply-edit not found" (:error (apply-edit "abc" "z" "x" #f)) "not found")
 (check "apply-edit unique replace" (apply-edit "a b a" "b" "B" #f) {:text "a B a" :count 1})
@@ -33,6 +42,9 @@
 (check "edit-diff emits one hunk per replace_all match"
        (length (filter #(string/starts-with? % "- ") (edit-diff "a\nb\na" "a" "c" #t))) 2)
 (file/write (path/join tools-test-root "edit.txt") "keep\nold\nkeep")
+(check-contains "edit-file injects omitted replace_all default"
+  (tool/invoke edit-file {:path "edit.txt" :old_string "old" :new_string "old"})
+  "1 replacement")
 (let ((r (tool/invoke edit-file {:path "edit.txt" :old_string "old" :new_string "new" :replace_all #f})))
   (check-contains "edit-file reports the edit" r "Edited edit.txt (1 replacement)")
   (check-contains "edit-file result has a removed line" r "\n- old")
@@ -59,15 +71,12 @@
 
 ;; ── run-in-workspace-timed: bash timeout (spawns a real child) ──
 (defun proc-handle-closed? (handle)
-  "A handle is closed when the registry no longer serves it. Sema 1.35 keeps a
-   handle whose proc/wait was cancelled in flight (the only process-group kill)
-   and refuses every later op on it; that terminal state counts as closed too."
+  "A closed handle has been removed from the registry, including after cancellation."
   (try
     (begin (proc/running? handle) #f)
     (catch e
       (let ((msg (get e :message (str e))))
-        (or (string/contains? msg "no such handle")
-            (string/contains? msg "no longer usable"))))))
+        (string/contains? msg "no such handle")))))
 
 (define handle-sentinel (proc/spawn ["sh" "-c" "true"]))
 (proc/wait handle-sentinel)

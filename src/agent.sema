@@ -152,7 +152,7 @@ Platform: ${platform}
           (try (agent/run agent input
                  (turn-opts {:on-tool-call (with-tool-hooks on-tool) :messages messages} effort))
             (catch e (run-hooks :on-error {:input input :error e}) (throw e)))))
-    (run-hooks :post-turn {:input input :result result})
+    (run-hooks :post-turn {:input input :result result :usage (:usage result)})
     result))
 
 (defun run-turn-streaming (agent input messages on-tool on-text on-partial effort)
@@ -169,5 +169,5 @@ Platform: ${platform}
                              :messages messages}
                             effort))
             (catch e (run-hooks :on-error {:input input :error e}) (throw e)))))
-    (run-hooks :post-turn {:input input :result result})
+    (run-hooks :post-turn {:input input :result result :usage (:usage result)})
     result))

@@ -10,7 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        sema-version: ["1.35.0", "latest"]
+        # Pin the RC while 1.37 is in prerelease. Switch to ["1.37.0", "latest"]
+        # after stable publication; latest currently resolves to 1.36.1.
+        sema-version: ["1.37.0-rc.1"]
     steps:
       - uses: actions/checkout@v7
 
