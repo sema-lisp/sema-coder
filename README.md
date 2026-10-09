@@ -23,7 +23,7 @@ safety) is Rust. It depends on nothing but the `sema` binary.
 ## Requirements
 
 - **`sema` ≥ 1.37** — during the prerelease period, install with
-  `cargo install sema-lang --version 1.37.0-rc.1`. After 1.37.0 is released,
+  `cargo install sema-lang --version 1.37.0-rc.2`. After 1.37.0 is released,
   use `curl -fsSL https://sema-lang.com/install.sh | sh`,
   `brew install helgesverre/tap/sema-lang`, or `cargo install sema-lang`.
 - **An API key** — `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in the environment.
