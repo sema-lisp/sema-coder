@@ -279,10 +279,33 @@ block; width/preview changes invalidate cache. Tests: `terminal_input_test`,
 
 ## Verification and limits
 
+Final local verification on Sema 1.37.0: `./test.sema` passes **41 files / 973
+checks** after all fixes. `git diff --check` passes. Five related issue groups
+(#6–#10) are fixed and closed; each fix and this document were committed and
+pushed as work progressed. The implementation diff was reviewed for ownership,
+cleanup order, old-session compatibility and unintended state-map changes.
+
+| Evidence | Production transition exercised | Reproduce |
+| --- | --- | --- |
+| [Session lifecycle regressions](../tests/state_machines_test.sema) | [Queue/reset/restore](../src/tui.sema), [empty save](../src/session.sema) | `sema tests/state_machines_test.sema` |
+| [Overlapping snapshot writers](../tests/session_writers_test.sema) | [Write → rename / failure cleanup](../src/session.sema) with real files and a channel barrier before rename | `sema tests/session_writers_test.sema` |
+| [MCP attempt races](../tests/mcp_races_test.sema) | [Connect → disconnect/reconcile/retry](../src/mcp.sema) with real handles and channel barriers | `sema tests/mcp_races_test.sema` |
+| [Cancellation cleanup race](../tests/foreground_race_test.sema) | [Interrupt](../src/tui.sema) across two real [foreground commands](../src/tools.sema); injected cleanup delay expands the scheduling window | `sema tests/foreground_race_test.sema` |
+| [Input action boundaries](../tests/event_boundaries_test.sema) | [Byte decode](../src/terminal_input.sema) → [routing/drag release](../src/tui.sema), plus [tool reflow](../src/transcript.sema) | `sema tests/event_boundaries_test.sema` |
+| [Controller regressions](../tests/turn_control_test.sema) | Direct/queued/steer rendering, cancellation, late callbacks, terminal history | `sema tests/turn_control_test.sema` |
+
 Baseline: `./test.sema` passed 36 files / 918 checks before synchronization;
-affected Sema 1.37 compatibility checks passed after synchronization. Each fix
-below must update its issue status and record red→green evidence here. The
-inventory covers repository-owned transitions, including retry and concurrency
-boundaries; it is not a proof about arbitrary plugin code, OS failure, live
-provider replay, or every possible malformed local JSON file. Potential concerns
-without a reachable reproducer are not counted as confirmed bugs.
+Sema 1.37 compatibility changes from origin add eight checks. The fixes add
+47 checks, including existing-controller coverage. Each confirmed failure above
+was reproduced before its corresponding fix; the same-tick identity test uses
+a fixed clock, and the original timestamp/PID collision follows directly from
+`new-session!`'s former ID expression.
+
+The inventory covers repository-owned transitions, including retry and
+concurrency boundaries. Live provider/network replay and interactive terminal
+integration were not exercised. There is no proof about arbitrary plugin code,
+OS failure, provider-side exactly-once execution, or malformed local JSON.
+Atomic session snapshots use last-completed-rename semantics; simultaneous
+editing of a restored session does not merge conversations. Active turns are
+saved at terminal settlement, so a process crash may lose in-flight work.
+These are scope/contract limits, not additional reproduced failures.

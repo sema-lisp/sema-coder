@@ -1,9 +1,9 @@
 ;; mcp.sema — MCP server runtime: records, sync connect, reconcile, tool-merge.
 ;;
 ;; Records are a mutable-array mutated in place and read only via the accessors
-;; here, so status changes stay visible to the render/pump loop. Connect is
-;; synchronous (mcp/connect blocks the scheduler); a remote/OAuth connect
-;; suspends the TUI (see the modal).
+;; here, so status changes stay visible to the render/pump loop. Callers wait
+;; for connect, but the handshake can park cooperatively; other async callers
+;; may disconnect or reconcile meanwhile. Remote/OAuth connect suspends the TUI.
 
 (load "config.sema")
 
