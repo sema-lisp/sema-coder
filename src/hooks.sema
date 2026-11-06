@@ -18,14 +18,17 @@
 
 (define hook-events config-hook-events)
 
-(define *hooks* {})        ;; plugin/runtime hooks (add-hook!): event → (handler …)
-(define *config-hooks* {})  ;; init.sema :hooks, replaced whole by reconcile-hooks!
+(define *hooks* {}) ;; plugin/runtime hooks (add-hook!): event → (handler …)
+(define *config-hooks* {}) ;; init.sema :hooks, replaced whole by reconcile-hooks!
 
-(defun clear-hooks! () (set! *hooks* {}) (set! *config-hooks* {}))
+(defun clear-hooks! ()
+  (set! *hooks* {})
+  (set! *config-hooks* {}))
 
 (defun add-hook! (event handler)
   "Subscribe HANDLER to EVENT. Later handlers run after earlier ones."
-  (set! *hooks* (assoc *hooks* event (append (get *hooks* event '()) (list handler)))))
+  (set! *hooks*
+    (assoc *hooks* event (append (get *hooks* event '()) (list handler)))))
 
 (defun run-hooks (event ctx)
   "Invoke every handler for EVENT with the context map CTX (side-effecting;
@@ -43,6 +46,7 @@
   (for-each
     (lambda (h)
       (set! *config-hooks*
-        (assoc *config-hooks* (:event h)
-               (append (get *config-hooks* (:event h) '()) (list (:handler h))))))
+        (assoc *config-hooks*
+          (:event h)
+            (append (get *config-hooks* (:event h) '()) (list (:handler h))))))
     hooks))

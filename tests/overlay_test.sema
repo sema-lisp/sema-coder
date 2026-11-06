@@ -1,66 +1,89 @@
 (load "harness.sema")
-(load "../src/tui.sema")   ;; overlay + *cols*/*rows* + the mcp/resume descriptors
+(load "../src/tui.sema") ;; overlay + *cols*/*rows* + the mcp/resume descriptors
 
-(set! *cols* 70) (set! *rows* 30)
+(set! *cols* 70)
+(set! *rows* 30)
 
 ;; ── list-modal: Style-B chrome, ▌ gutter on the selected row ──
-(let* ((rows (list-modal {:title "Test"
-                          :items (list {:name "alpha" :meta "one"} {:name "beta" :meta "two"})
-                          :sel 0 :layout (overlay-layout)
-                          :render-item (lambda (it s? inner) (modal-cell (:name it) (:meta it) inner))
-                          :actions (list {:key "esc" :label "close"})}))
+(let* ((rows
+         (list-modal
+           {:title "Test"
+            :items (list {:name "alpha" :meta "one"} {:name "beta" :meta "two"})
+            :sel 0
+            :layout (overlay-layout)
+            :render-item (lambda (it s? inner) (modal-cell (:name it) (:meta it) inner))
+            :actions (list {:key "esc" :label "close"})}))
        (txt (string/join (map term/strip rows) "\n")))
   (check-contains "title carries the count" txt "Test · 2")
-  (check-contains "renders item alpha"      txt "alpha")
-  (check-contains "renders item beta"       txt "beta")
-  (check-contains "selection gutter shown"  txt "▌")
-  (check-contains "footer from actions"     txt "esc close")
-  (check-contains "rounded top"             txt "╭")
-  (check-contains "rounded bottom"          txt "╰"))
+  (check-contains "renders item alpha" txt "alpha")
+  (check-contains "renders item beta" txt "beta")
+  (check-contains "selection gutter shown" txt "▌")
+  (check-contains "footer from actions" txt "esc close")
+  (check-contains "rounded top" txt "╭")
+  (check-contains "rounded bottom" txt "╰"))
 
 ;; ── sizing follows the terminal: narrow columns and short rows never clip ──
-(set! *cols* 24) (set! *rows* 12)
-(let ((rows (list-modal {:title "Narrow"
-                         :items (list {:name "alpha" :meta "one"})
-                         :sel 0 :layout (overlay-layout)
-                         :render-item (lambda (it s? inner) (modal-cell (:name it) (:meta it) inner))
-                         :actions (list {:key "esc" :label "close"})})))
+(set! *cols* 24)
+(set! *rows* 12)
+(let ((rows
+        (list-modal
+          {:title "Narrow"
+           :items (list {:name "alpha" :meta "one"})
+           :sel 0
+           :layout (overlay-layout)
+           :render-item (lambda (it s? inner) (modal-cell (:name it) (:meta it) inner))
+           :actions (list {:key "esc" :label "close"})})))
   (check "narrow modal fits the terminal width"
-    (length (filter #(> (string/width %) 24) rows)) 0)
-  (check-contains "narrow modal keeps its right border" (term/strip (car rows)) "╮"))
+    (length (filter #(> (string/width %) 24) rows))
+    0)
+  (check-contains "narrow modal keeps its right border"
+    (term/strip (car rows))
+    "╮"))
 (push-overlay! {:kind :resume :view :detail :sel 0 :sessions '()})
-(let* ((msgs (map (lambda (i) {:role "user" :content (number->string i)}) (range 0 30)))
+(let* ((msgs
+         (map (lambda (i) {:role "user" :content (number->string i)})
+           (range 0 30)))
        (rows (resume-detail-view {:detail msgs :dscroll 0} (overlay-layout))))
   (close-all-overlays!)
-  (check-true "short detail view fits the terminal height" (<= (length rows) 12))
+  (check-true "short detail view fits the terminal height"
+    (<= (length rows) 12))
   (check "short detail view fits the terminal width"
-    (length (filter #(> (string/width %) 24) rows)) 0))
-(set! *cols* 70) (set! *rows* 30)
+    (length (filter #(> (string/width %) 24) rows))
+    0))
+(set! *cols* 70)
+(set! *rows* 30)
 
 (check-contains "empty list shows an empty marker"
-  (string/join (map term/strip
-    (list-modal {:title "Empty" :items '() :sel 0 :layout (overlay-layout)
-                 :render-item (lambda (it s? inner) "") :actions '()})) "\n")
+  (string/join
+    (map term/strip
+      (list-modal
+        {:title "Empty"
+         :items '()
+         :sel 0
+         :layout (overlay-layout)
+         :render-item (lambda (it s? inner) "")
+         :actions '()}))
+    "\n")
   "(empty)")
 
 ;; ── stack + registry ──
 (close-all-overlays!)
-(check-true "no overlay initially"   (not (overlay-active?)))
-(check-true "mcp registered"         (overlay-registered? :mcp))
-(check-true "resume registered"      (overlay-registered? :resume))
+(check-true "no overlay initially" (not (overlay-active?)))
+(check-true "mcp registered" (overlay-registered? :mcp))
+(check-true "resume registered" (overlay-registered? :resume))
 (check-true "unknown not registered" (not (overlay-registered? :nope)))
 
 (open-overlay! :mcp)
 (check-true "active after open" (overlay-active?))
-(check "top kind is mcp"        (:kind (overlay)) :mcp)
-(check "descriptor resolves"    (:kind (overlay-desc)) :mcp)
+(check "top kind is mcp" (:kind (overlay)) :mcp)
+(check "descriptor resolves" (:kind (overlay-desc)) :mcp)
 
 (push-overlay! {:kind :resume :view :list :sel 0 :sessions '()})
 (check "stack depth 2 after push" (length (overlay-stack)) 2)
-(check "top is the child"         (:kind (overlay)) :resume)
+(check "top is the child" (:kind (overlay)) :resume)
 (close-overlay!)
-(check "pop returns to parent"    (:kind (overlay)) :mcp)
-(check "depth back to 1"          (length (overlay-stack)) 1)
+(check "pop returns to parent" (:kind (overlay)) :mcp)
+(check "depth back to 1" (length (overlay-stack)) 1)
 
 (overlay-merge! {:sel 5})
 (check "merge mutates the top frame" (:sel (overlay)) 5)
@@ -69,78 +92,109 @@
 
 ;; ── the mcp descriptor: dispatch render + key routing ──
 (mcp-reset!)
-(reconcile-servers! (list (mcp-server "sema" {:command "sema" :args ["mcp"]})
-                          (mcp-server "fs"   {:command "npx"  :args ["x"]})))
+(reconcile-servers!
+  (list (mcp-server "sema" {:command "sema" :args ["mcp"]})
+    (mcp-server "fs" {:command "npx" :args ["x"]})))
 (open-overlay! :mcp)
 (let ((txt (string/join (map term/strip (overlay-rows)) "\n")))
   (check-contains "dispatch renders the mcp title" txt "MCP servers")
-  (check-contains "dispatch renders a server"      txt "sema"))
+  (check-contains "dispatch renders a server" txt "sema"))
 (check "selection starts at 0" (:sel (overlay)) 0)
 (handle-overlay-key {:kind :key :name :down})
-(check "down moves selection"  (:sel (overlay)) 1)
+(check "down moves selection" (:sel (overlay)) 1)
 (handle-overlay-key {:kind :key :name :down})
-(check "clamped at last"        (:sel (overlay)) 1)
+(check "clamped at last" (:sel (overlay)) 1)
 (handle-overlay-key {:kind :key :name :up})
-(check "up moves back"          (:sel (overlay)) 0)
-(handle-overlay-key {:kind :key :name :enter})   ;; enter → tools view
+(check "up moves back" (:sel (overlay)) 0)
+(handle-overlay-key {:kind :key :name :enter}) ;; enter → tools view
 (check "enter opens tools view" (:view (overlay)) :tools)
 (close-all-overlays!)
 
 ;; ── a throwing :open surfaces an error, never crashes / pushes ──
 (register-overlay!
-  (overlay-spec {:kind :boom
-                 :open   (lambda (args) (raise {:message "scan failed"}))
-                 :render (lambda (state layout) '())
-                 :on-key (lambda (state k) nil)}))
+  (overlay-spec
+    {:kind :boom
+     :open (lambda (args) (raise {:message "scan failed"}))
+     :render (lambda (state layout) '())
+     :on-key (lambda (state k) nil)}))
 (close-all-overlays!)
-(open-overlay! :boom)   ;; must not throw
+(open-overlay! :boom) ;; must not throw
 (check-true "failed :open pushes nothing" (not (overlay-active?)))
 
 ;; Session files and MCP peers are untrusted terminal input. They may contain
 ;; ANSI/OSC sequences, but overlay rows must contain only app-owned styling.
 (let* ((attack (string-append "safe" "\x1b;[2J" "owned"))
-       (session-row (resume-render-item
-                      {:title attack :count 1 :model attack} #f 50))
-       (message-row (msg-preview-row
-                      {:role "tool" :tool-name attack :content attack} 50))
-       (mcp-row (mcp-render-item
-                  {:name attack :transport attack :status :error :error attack}
-                  #f 50)))
-  (check-not-contains "session list strips terminal controls" session-row "\x1b;[2J")
-  (check-not-contains "message preview strips terminal controls" message-row "\x1b;[2J")
+       (session-row
+         (resume-render-item {:title attack :count 1 :model attack}
+           #f
+           50))
+       (message-row
+         (msg-preview-row {:role "tool" :tool-name attack :content attack}
+           50))
+       (mcp-row
+         (mcp-render-item
+           {:name attack :transport attack :status :error :error attack}
+           #f
+           50)))
+  (check-not-contains "session list strips terminal controls"
+    session-row
+    "\x1b;[2J")
+  (check-not-contains "message preview strips terminal controls"
+    message-row
+    "\x1b;[2J")
   (check-not-contains "MCP list strips terminal controls" mcp-row "\x1b;[2J")
-  (check-contains "sanitized overlay keeps visible text" (term/strip message-row) "safeowned"))
+  (check-contains "sanitized overlay keeps visible text"
+    (term/strip message-row)
+    "safeowned"))
 
 ;; Resume search and management operate on validated session ids and refresh the
 ;; same modal state after a filesystem change.
 (define resume-dir (test-temp-path "resume-overlay"))
 (define resume-messages (list {:role "user" :content "first"}))
 (parameterize ((config-dir-override resume-dir))
-  (save-session! "alpha-1" 10 "model-a" "" resume-messages
+  (save-session! "alpha-1"
+    10
+    "model-a"
+    ""
+    resume-messages
     {:custom-title "Alpha session" :cwd *cwd*})
-  (save-session! "beta-2" 20 "model-b" "" resume-messages
+  (save-session! "beta-2"
+    20
+    "model-b"
+    ""
+    resume-messages
     {:custom-title "Beta session" :cwd *cwd*})
-  (save-session! "other-3" 30 "model-c" "" resume-messages
+  (save-session! "other-3"
+    30
+    "model-c"
+    ""
+    resume-messages
     {:custom-title "Other project" :cwd "/elsewhere/proj"})
   (set! *session-id* "current-session")
   (close-all-overlays!)
   (open-overlay! :resume)
   (check "resume opens on this workspace's sessions"
-    (map :id (:sessions (overlay))) (list "beta-2" "alpha-1"))
+    (map :id (:sessions (overlay)))
+    (list "beta-2" "alpha-1"))
   (handle-overlay-key {:kind :key :name :tab})
   (check "Tab shows every workspace"
-    (map :id (:sessions (overlay))) (list "other-3" "beta-2" "alpha-1"))
+    (map :id (:sessions (overlay)))
+    (list "other-3" "beta-2" "alpha-1"))
   (check-contains "other workspaces are labelled"
-    (term/strip (resume-render-item (nth (:sessions (overlay)) 0) #f 60)) "proj ·")
-  (check-contains "footer offers the way back" 
-    (string/join (map term/strip (overlay-rows)) "\n") "⇥ here")
+    (term/strip (resume-render-item (nth (:sessions (overlay)) 0) #f 60))
+    "proj ·")
+  (check-contains "footer offers the way back"
+    (string/join (map term/strip (overlay-rows)) "\n")
+    "⇥ here")
   (handle-overlay-key {:kind :key :name :tab})
   (check "Tab returns to this workspace" (length (:sessions (overlay))) 2)
   (file/delete (session-path "other-3"))
   (handle-overlay-key {:kind :char :char "a"})
   (handle-overlay-key {:kind :char :char "l"})
   (handle-overlay-key {:kind :char :char "p"})
-  (check "resume query filters by title" (map :id (:sessions (overlay))) (list "alpha-1"))
+  (check "resume query filters by title"
+    (map :id (:sessions (overlay)))
+    (list "alpha-1"))
   (check "resume filtering also matches model"
     (map :id (resume-filter-sessions (:all-sessions (overlay)) "model-b"))
     (list "beta-2"))
@@ -152,18 +206,24 @@
   (handle-overlay-key {:kind :key :name :enter})
   (check "rename returns to the session list" (:view (overlay)) :list)
   (check "inline rename persists custom metadata"
-    (:custom-title (:meta (load-session "alpha-1"))) "Renamed alpha")
+    (:custom-title (:meta (load-session "alpha-1")))
+    "Renamed alpha")
   (resume-set-query! "beta")
   (handle-overlay-key {:kind :key :name :delete})
-  (check "first Delete only arms confirmation" (file/exists? (session-path "beta-2")) #t)
+  (check "first Delete only arms confirmation"
+    (file/exists? (session-path "beta-2"))
+    #t)
   (handle-overlay-key {:kind :key :name :delete})
-  (check "second Delete removes the selected session" (file/exists? (session-path "beta-2")) #f)
+  (check "second Delete removes the selected session"
+    (file/exists? (session-path "beta-2"))
+    #f)
   (save-session! "current-session" 30 "model-c" "" resume-messages)
   (resume-refresh! "current-session")
   (resume-set-query! "current-session")
   (handle-overlay-key {:kind :key :name :delete})
   (check "the active session cannot be deleted"
-    (file/exists? (session-path "current-session")) #t)
+    (file/exists? (session-path "current-session"))
+    #t)
   (save-session! "command-session" 40 "model-d" "" resume-messages)
   (set! *tui-active* #f)
   (parameterize ((current-emit (lambda (kind text) nil)))
@@ -171,9 +231,9 @@
       (parse-command "/resume rename command-session Command title")
       {:cwd "." :model "" :effort "" :config default-config :messages '()})
     (check "resume rename command persists its title"
-      (:title (:meta (load-session "command-session"))) "Command title")
-    (dispatch-command
-      (parse-command "/resume delete command-session")
+      (:title (:meta (load-session "command-session")))
+      "Command title")
+    (dispatch-command (parse-command "/resume delete command-session")
       {:cwd "." :model "" :effort "" :config default-config :messages '()}))
   (check-false "resume delete command removes its session"
     (file/exists? (session-path "command-session")))

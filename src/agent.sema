@@ -3,17 +3,20 @@
 (load "util.sema")
 (load "tools.sema")
 (load "mcp.sema")
-(load "config.sema")   ;; model-effort — per-model :effort defaults
-(load "hooks.sema")    ;; pre/post-turn, pre-tool-call, on-error lifecycle hooks
+(load "config.sema") ;; model-effort — per-model :effort defaults
+(load "hooks.sema") ;; pre/post-turn, pre-tool-call, on-error lifecycle hooks
 
-(define *tool-name-collisions* '())   ;; names dropped by the last agent-tools
+(define *tool-name-collisions* '()) ;; names dropped by the last agent-tools
 
 (defun agent-tools ()
   "The agent's full tool set: the app's own tools plus every connected MCP
    server's tools. Rebuild the agent (create-agent) to pick up a change.
    A duplicate tool name keeps the first definition (built-ins, then servers in
    connection order); the dropped names land in *tool-name-collisions*."
-  (let loop ((rem (append (all-tools) (all-mcp-tools))) (seen '()) (kept '()) (dropped '()))
+  (let loop ((rem (append (all-tools) (all-mcp-tools)))
+             (seen '())
+             (kept '())
+             (dropped '()))
     (if (null? rem)
       (begin
         (set! *tool-name-collisions* (reverse dropped))
@@ -35,15 +38,21 @@
       (string/join (reverse out) "\n\n")
       (let* ((name (car names))
              (path (path/join cwd name))
-             (text (if (file/exists? path) (try (file/read path) (catch e "")) "")))
+             (text
+               (if (file/exists? path) (try (file/read path) (catch e "")) "")))
         (if (or (= (string/trim text) "") (member text seen))
           (loop (cdr names) seen out)
-          (let ((body (if (> (string/length text) INSTRUCTION-FILE-MAX-CHARS)
-                        (string/append (string/slice text 0 INSTRUCTION-FILE-MAX-CHARS)
-                          f"\n[truncated: ${name} is longer than ${INSTRUCTION-FILE-MAX-CHARS} characters]")
-                        text)))
-            (loop (cdr names) (cons text seen)
-              (cons f"<project_instructions source=\"${name}\">\n${(string/trim body)}\n</project_instructions>" out))))))))
+          (let ((body
+                  (if (> (string/length text) INSTRUCTION-FILE-MAX-CHARS)
+                    (string/append
+                      (string/slice text 0 INSTRUCTION-FILE-MAX-CHARS)
+                      f"\n[truncated: ${name} is longer than ${INSTRUCTION-FILE-MAX-CHARS} characters]")
+                    text)))
+            (loop (cdr names)
+              (cons text seen)
+              (cons
+                f"<project_instructions source=\"${name}\">\n${(string/trim body)}\n</project_instructions>"
+                out))))))))
 
 (defun build-system-prompt (cwd platform)
   (string/join
@@ -127,21 +136,25 @@ Platform: ${platform}
    the config's :models entry for MODEL-ID → the config :effort. \"\" means
    the provider default."
   (let ((m-eff (model-effort cfg model-id)))
-    (cond ((and override (not (= override ""))) override)
-          ((not (= m-eff "")) m-eff)
-          (else (get cfg :effort "")))))
+    (cond
+      ((and override (not (= override ""))) override)
+      ((not (= m-eff "")) m-eff)
+      (else (get cfg :effort "")))))
 
 (defun turn-opts (opts effort)
   "Merge a non-empty reasoning EFFORT into an agent/run OPTS map. Effort is
    portable — providers/models without it treat the option as a no-op."
-  (if (and effort (not (= effort ""))) (assoc opts :reasoning-effort effort) opts))
+  (if (and effort (not (= effort "")))
+    (assoc opts :reasoning-effort effort)
+    opts))
 
 (defun with-tool-hooks (on-tool)
   "Wrap an :on-tool-call callback so :pre-tool-call hooks fire as each tool
    starts, then delegate to the original ON-TOOL (which does the rendering)."
   (lambda (event)
     (when (= (get event :event "") "start")
-      (run-hooks :pre-tool-call {:tool (get event :tool "") :args (get event :args {})}))
+      (run-hooks :pre-tool-call
+        {:tool (get event :tool "") :args (get event :args {})}))
     (on-tool event)))
 
 (defun run-turn (agent input messages on-tool effort)
@@ -149,25 +162,33 @@ Platform: ${platform}
    Fires pre-turn / pre-tool-call / on-error / post-turn hooks around the run."
   (run-hooks :pre-turn {:input input :messages messages})
   (let ((result
-          (try (agent/run agent input
-                 (turn-opts {:on-tool-call (with-tool-hooks on-tool) :messages messages} effort))
+          (try
+            (agent/run agent
+              input
+              (turn-opts
+                {:on-tool-call (with-tool-hooks on-tool) :messages messages}
+                effort))
             (catch e (run-hooks :on-error {:input input :error e}) (throw e)))))
     (run-hooks :post-turn {:input input :result result :usage (:usage result)})
     result))
 
-(defun run-turn-streaming (agent input messages on-tool on-text on-partial effort)
+(defun run-turn-streaming
+  (agent input messages on-tool on-text on-partial effort)
   "Turn used by the TUI: :on-text streams assistant deltas, :on-tool-call streams
    tool events, and :on-partial recovers completed history if the cooperative
    task fails or is cancelled. The partial callback must only capture the map;
    Sema invokes it during cancellation teardown where it cannot park."
   (run-hooks :pre-turn {:input input :messages messages})
   (let ((result
-          (try (agent/run agent input
-                 (turn-opts {:on-tool-call (with-tool-hooks on-tool)
-                             :on-text on-text
-                             :on-partial on-partial
-                             :messages messages}
-                            effort))
+          (try
+            (agent/run agent
+              input
+              (turn-opts
+                {:on-tool-call (with-tool-hooks on-tool)
+                 :on-text on-text
+                 :on-partial on-partial
+                 :messages messages}
+                effort))
             (catch e (run-hooks :on-error {:input input :error e}) (throw e)))))
     (run-hooks :post-turn {:input input :result result :usage (:usage result)})
     result))

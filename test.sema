@@ -26,18 +26,20 @@
 
 (defun script-dir ()
   (let loop ((rem (sys/args)))
-    (cond ((null? rem) ".")
-          ((string/ends-with? (car rem) "test.sema") (path/dir (car rem)))
-          (else (loop (cdr rem))))))
+    (cond
+      ((null? rem) ".")
+      ((string/ends-with? (car rem) "test.sema") (path/dir (car rem)))
+      (else (loop (cdr rem))))))
 
 (define tests-dir (path/join (script-dir) "tests"))
 
 (defun name-filters ()
   "Everything after \"--\" in argv: substring filters on test names."
   (let loop ((rem (sys/args)))
-    (cond ((null? rem) '())
-          ((= (car rem) "--") (cdr rem))
-          (else (loop (cdr rem))))))
+    (cond
+      ((null? rem) '())
+      ((= (car rem) "--") (cdr rem))
+      (else (loop (cdr rem))))))
 
 (define filters (name-filters))
 
@@ -46,15 +48,15 @@
 
 (defun test-name (path)
   (let* ((parts (string/split path "/"))
-         (base  (nth parts (- (length parts) 1))))
+         (base (nth parts (- (length parts) 1))))
     (string/replace base "_test.sema" "")))
 
 (defun test-files ()
   (->> (file/list tests-dir)
-       (filter #(string/ends-with? % "_test.sema"))
-       (map #(if (string/contains? % "/") % (path/join tests-dir %)))
-       (filter #(wanted? (test-name %)))
-       (sort)))
+    (filter #(string/ends-with? % "_test.sema"))
+    (map #(if (string/contains? % "/") % (path/join tests-dir %)))
+    (filter #(wanted? (test-name %)))
+    (sort)))
 
 ;; ── Running one file ─────────────────────────────────────────────
 
@@ -62,36 +64,41 @@
   (positive-number-or (env "SEMA_CODER_TEST_TIMEOUT_MS") 30000))
 
 (defun run-one (path)
-  (let* ((t0  (time-ms))
+  (let* ((t0 (time-ms))
          (attempt
-           (try {:result (async/with-timeout TEST-TIMEOUT-MS
-                           (fn () (shell "sema" path)))}
+           (try
+             {:result (async/with-timeout TEST-TIMEOUT-MS
+                (fn () (shell "sema" path)))}
              (catch e {:error e})))
-         (ms  (- (time-ms) t0))
+         (ms (- (time-ms) t0))
          (run-error (get attempt :error #f))
          (timed-out? (and run-error (= (get run-error :type #f) :timeout)))
-         (res (get attempt :result
-                    {:exit-code (if timed-out? 124 1) :stderr "" :stdout ""}))
-         (output (if run-error
-                   (str (get run-error :message (str run-error)))
-                   (child-output res)))
+         (res
+           (get attempt
+             :result
+             {:exit-code (if timed-out? 124 1) :stderr "" :stdout ""}))
+         (output
+           (if run-error
+             (str (get run-error :message (str run-error)))
+             (child-output res)))
          (summary (parse-summary output))
          (exit-code (get res :exit-code 1)))
-    {:name    (test-name path)
-     :ms      ms
-     :ok      (test-result-ok? exit-code summary)
+    {:name (test-name path)
+     :ms ms
+     :ok (test-result-ok? exit-code summary)
      :summary summary
-     :detail  (test-result-detail exit-code summary timed-out?)
-     :output  (if timed-out? f"test exceeded ${TEST-TIMEOUT-MS}ms" output)}))
+     :detail (test-result-detail exit-code summary timed-out?)
+     :output (if timed-out? f"test exceeded ${TEST-TIMEOUT-MS}ms" output)}))
 
 ;; ── Report ───────────────────────────────────────────────────────
 
 (defun report-row (r)
-  (let* ((glyph  (if (:ok r) (ok "✔") (bad "✖")))
-         (name   (string/pad-right (:name r) 19))
+  (let* ((glyph (if (:ok r) (ok "✔") (bad "✖")))
+         (name (string/pad-right (:name r) 19))
          (detail ((if (:ok r) muted bad) (:detail r)))
-         (time   (faint f"${(:ms r)}ms")))
-    (io/println-error f"   ${glyph} ${(if (:ok r) (bright name) (bad name))} ${detail}  ${time}")))
+         (time (faint f"${(:ms r)}ms")))
+    (io/println-error
+      f"   ${glyph} ${(if (:ok r) (bright name) (bad name))} ${detail}  ${time}")))
 
 (defun report-failure (r)
   (io/println-error "")
@@ -120,24 +127,33 @@
 (define results (map run-one files))
 (define elapsed (- (time-ms) t0))
 
-(for-each report-row results)
+(for-each
+  report-row
+  results)
 
-(define failed  (filter #(not (:ok %)) results))
+(define failed (filter #(not (:ok %)) results))
 (define checks
-  (foldl (lambda (n r)
-           (let ((s (get r :summary #f)))
-             (+ n (if (map? s) (get s :checks 0) 0))))
-         0 results))
+  (foldl
+    (lambda (n r)
+      (let ((s (get r :summary #f)))
+        (+ n (if (map? s) (get s :checks 0) 0))))
+    0
+    results))
 
-(for-each report-failure failed)
+(for-each
+  report-failure
+  failed)
 
 (io/println-error "")
 (io/println-error
   (if (null? failed)
-    (string/append "   " (ok f"(✔ all green)")
-                   (muted f" · ${(length results)} files · ${checks} checks · ${(/ elapsed 1000.0)}s"))
-    (string/append "   " (bad f"(✖ ${(length failed)} of ${(length results)} files failed)")
-                   (muted f" · ${checks} checks · ${(/ elapsed 1000.0)}s"))))
+    (string/append "   "
+      (ok f"(✔ all green)")
+      (muted
+        f" · ${(length results)} files · ${checks} checks · ${(/ elapsed 1000.0)}s"))
+    (string/append "   "
+      (bad f"(✖ ${(length failed)} of ${(length results)} files failed)")
+      (muted f" · ${checks} checks · ${(/ elapsed 1000.0)}s"))))
 (io/println-error "")
 
 (exit (if (null? failed) 0 1))

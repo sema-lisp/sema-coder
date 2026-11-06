@@ -31,7 +31,8 @@
 (defun tblocks () (mutable-array/get *tstate* 0))
 (defun mark-tdirty-from! (index)
   (let ((dirty (mutable-array/get *tstate* 3)))
-    (mutable-array/set! *tstate* 3
+    (mutable-array/set! *tstate*
+      3
       (if (number? dirty) (min dirty index) index)))
   (mutable-array/set! *tstate* 4 (+ 1 (mutable-array/get *tstate* 4))))
 (defun transcript-version () (mutable-array/get *tstate* 4))
@@ -41,13 +42,12 @@
   "A JSON-safe snapshot of transcript storage and render-cache state."
   {:block-count (mutable-array/length (tblocks))
    :version (transcript-version)
-   :cache
-     {:line-count (length (mutable-array/get *tstate* 1))
-      :width (mutable-array/get *tstate* 2)
-      :dirty-from (mutable-array/get *tstate* 3)
-      :block-count (length (mutable-array/get *tstate* 5))
-      :tool-preview-lines (mutable-array/get *tstate* 6)
-      :block-renders (transcript-render-count)}
+   :cache {:line-count (length (mutable-array/get *tstate* 1))
+    :width (mutable-array/get *tstate* 2)
+    :dirty-from (mutable-array/get *tstate* 3)
+    :block-count (length (mutable-array/get *tstate* 5))
+    :tool-preview-lines (mutable-array/get *tstate* 6)
+    :block-renders (transcript-render-count)}
    :blocks (map (lambda (block) block) (tblocks))})
 
 (defun add-block! (b)
@@ -67,15 +67,19 @@
 
 (defun block-at (index)
   (let ((blocks (tblocks)))
-    (when (and (number? index) (>= index 0)
-               (< index (mutable-array/length blocks)))
+    (when
+      (and (number? index)
+        (>= index 0)
+        (< index (mutable-array/length blocks)))
       (mutable-array/get blocks index))))
 
 (defun update-block-at! (index f)
   "Update one transcript block by stable array index."
   (let ((blocks (tblocks)))
-    (when (and (number? index) (>= index 0)
-               (< index (mutable-array/length blocks)))
+    (when
+      (and (number? index)
+        (>= index 0)
+        (< index (mutable-array/length blocks)))
       (mutable-array/set! blocks index (f (mutable-array/get blocks index)))
       (mark-tdirty-from! index))))
 
@@ -111,11 +115,13 @@
         #(assoc % :state state :ms 0 :result result :error #t)))))
 
 (defun cancel-running-tool-at! (index)
-  (settle-running-tool-at! index :cancelled
+  (settle-running-tool-at! index
+    :cancelled
     "interrupted; partial side effects are possible"))
 
 (defun fail-running-tool-at! (index)
-  (settle-running-tool-at! index :failed
+  (settle-running-tool-at! index
+    :failed
     "turn failed; partial side effects are possible"))
 
 (defun cancel-last-running-tool! ()
@@ -137,7 +143,7 @@
 ;; emoji / combining marks, which a char-count wrap gets wrong).
 (defun wrap-text (text w) (string/word-wrap text w))
 
-(define *tool-expanded* #f)  ;; ⌃T: show whole tool results instead of previews
+(define *tool-expanded* #f) ;; ⌃T: show whole tool results instead of previews
 
 (defun toggle-tool-expand! () (set! *tool-expanded* (not *tool-expanded*)))
 
@@ -146,9 +152,10 @@
 
 (defun diff-paint (line)
   "Colour one edit-file result line: added green, removed red, else faint."
-  (cond ((string/starts-with? line "+ ") (ok line))
-        ((string/starts-with? line "- ") (bad line))
-        (else (faint line))))
+  (cond
+    ((string/starts-with? line "+ ") (ok line))
+    ((string/starts-with? line "- ") (bad line))
+    (else (faint line))))
 
 (defun tool-result-lines (b w)
   "A preview of a completed tool's result under its line — faint, or red if it
@@ -157,15 +164,18 @@
    anything longer collapses into a final “… +N lines” row."
   (let* ((r (get b :result ""))
          (s (sanitize-terminal-text r))
-         (paint (cond ((get b :error #f) bad)
-                      ((equal? (get b :tool "") "edit-file") diff-paint)
-                      (else faint)))
+         (paint
+           (cond
+             ((get b :error #f) bad)
+             ((equal? (get b :tool "") "edit-file") diff-paint)
+             (else faint)))
          (limit (tool-preview-limit))
          (lines (string/split (string/trim-right s) "\n"))
          (shown (take (min limit (length lines)) lines))
          (extra (- (length lines) (length shown)))
-         (pw    (max 4 (- w 6))))
-    (if (= (string/trim s) "") '()
+         (pw (max 4 (- w 6))))
+    (if (= (string/trim s) "")
+      '()
       (append
         (map #(indent (string/append "  " (paint (clip-width % pw)))) shown)
         (if (> extra 0)
@@ -177,24 +187,30 @@
   (match (get b :kind :none)
     (:user
       (append
-        (map (lambda ([i l])
-               (if (= i 0)
-                 (indent (string/append (accent (string/append user-glyph " ")) (bright l)))
-                 (indent (string/append "  " (bright l)))))
-             (enumerate (wrap-text (sanitize-terminal-text (:text b)) (- w 2))))
+        (map
+          (lambda ([i l])
+            (if (= i 0)
+              (indent
+                (string/append (accent (string/append user-glyph " "))
+                  (bright l)))
+              (indent (string/append "  " (bright l)))))
+          (enumerate (wrap-text (sanitize-terminal-text (:text b)) (- w 2))))
         (list "")))
     (:assistant
       ;; Markdown-rendered. An empty assistant block (the pre-first-token
       ;; streaming target, or a post-tool round with no text) renders nothing.
       (let ((text (sanitize-terminal-text (:text b))))
-        (if (= (string/trim text) "") '()
+        (if (= (string/trim text) "")
+          '()
           (append (map indent (md-lines text w)) (list "")))))
     (:raw
       ;; Preformatted output (command stdout, pretty JSON): preserve internal
       ;; whitespace — split on newlines only, clip each line to width instead of
       ;; reflowing (word-wrap would collapse the spaces columns depend on).
-      (append (map #(fit-line % w) (string/split (sanitize-terminal-text (:text b)) "\n"))
-              (list "")))
+      (append
+        (map #(fit-line % w)
+          (string/split (sanitize-terminal-text (:text b)) "\n"))
+        (list "")))
     (:tool
       ;; Budget the row: glyphs/spaces and the duration are fixed, then the
       ;; name and arg split what's left — so a long MCP tool name can't push
@@ -204,35 +220,52 @@
              (cancelled? (equal? state :cancelled))
              (failed? (equal? state :failed))
              (aborted? (or cancelled? failed?))
-             (ms-txt   (if running? "" f"${(get b :ms 0)}ms"))
-             (avail    (max 8 (- w 5 (string/width ms-txt))))
-             (name     (clip-width (sanitize-terminal-text (:tool b)) (max 8 (- avail 12))))
-             (arg      (clip-width (sanitize-terminal-text (get b :arg "")) (max 4 (- avail (string/width name)))))
-             (styled   (string/append (accent-dim (term/style name :bold)) " " (muted arg))))
+             (ms-txt (if running? "" f"${(get b :ms 0)}ms"))
+             (avail (max 8 (- w 5 (string/width ms-txt))))
+             (name
+               (clip-width (sanitize-terminal-text (:tool b))
+                 (max 8 (- avail 12))))
+             (arg
+               (clip-width (sanitize-terminal-text (get b :arg ""))
+                 (max 4 (- avail (string/width name)))))
+             (styled
+               (string/append (accent-dim (term/style name :bold))
+                 " "
+                 (muted arg))))
         (if running?
           (list (indent (string/append (faint "·") " " styled)))
           (cons
-            (indent (string/append ((if failed? bad (if cancelled? warn ok))
-                                     (if aborted? "×" "✔"))
-                                   " " styled " "
-                                   (cond (cancelled? (warn "interrupted"))
-                                         (failed? (bad "failed"))
-                                         (else (faint ms-txt)))))
+            (indent
+              (string/append
+                ((if failed? bad (if cancelled? warn ok)) (if aborted? "×" "✔"))
+                " "
+                styled
+                " "
+                (cond
+                  (cancelled? (warn "interrupted"))
+                  (failed? (bad "failed"))
+                  (else (faint ms-txt)))))
             (tool-result-lines b w)))))
-    (:info  (map #(indent (muted %)) (wrap-text (sanitize-terminal-text (:text b)) w)))
-    (:ok    (map #(indent (ok %)) (wrap-text (sanitize-terminal-text (:text b)) w)))
-    (:warn  (map #(indent (warn %)) (wrap-text (sanitize-terminal-text (:text b)) w)))
+    (:info
+      (map #(indent (muted %)) (wrap-text (sanitize-terminal-text (:text b)) w)))
+    (:ok (map #(indent (ok %)) (wrap-text (sanitize-terminal-text (:text b)) w)))
+    (:warn
+      (map #(indent (warn %)) (wrap-text (sanitize-terminal-text (:text b)) w)))
     ;; Pre-styled chrome (help rows, /tools): keep its ANSI and column padding
     ;; intact — split on newlines only, never word-wrap; fit-line guards the
     ;; rare too-narrow-terminal overflow.
-    (:line  (map #(fit-line % w) (string/split (:text b) "\n")))
-    (:error (map #(indent (bad %)) (wrap-text (string/append "error: " (sanitize-terminal-text (:text b))) w)))
+    (:line (map #(fit-line % w) (string/split (:text b) "\n")))
+    (:error
+      (map #(indent (bad %))
+        (wrap-text (string/append "error: " (sanitize-terminal-text (:text b)))
+          w)))
     (_ '())))
 
 (defun transcript-lines (w)
   (let* ((preview (tool-preview-limit))
-         (full? (or (not (= w (mutable-array/get *tstate* 2)))
-                    (not (= preview (mutable-array/get *tstate* 6)))))
+         (full?
+           (or (not (= w (mutable-array/get *tstate* 2)))
+             (not (= preview (mutable-array/get *tstate* 6)))))
          (dirty (if full? 0 (mutable-array/get *tstate* 3))))
     (when (number? dirty)
       (let* ((blocks (tblocks))
@@ -241,14 +274,17 @@
              (old-cache (mutable-array/get *tstate* 5))
              (prefix (take (min start (length old-cache)) old-cache))
              (suffix
-               (map (lambda (i)
-                      (mutable-array/set! *tstate* 7
-                        (+ 1 (mutable-array/get *tstate* 7)))
-                      (block-lines (mutable-array/get blocks i) w))
-                    (range start count)))
+               (map
+                 (lambda (i)
+                   (mutable-array/set! *tstate*
+                     7
+                     (+ 1 (mutable-array/get *tstate* 7)))
+                   (block-lines (mutable-array/get blocks i) w))
+                 (range start count)))
              (per-block (append prefix suffix)))
         (mutable-array/set! *tstate* 5 per-block)
-        (mutable-array/set! *tstate* 1
+        (mutable-array/set! *tstate*
+          1
           (if (null? per-block) '() (apply append per-block)))))
     (mutable-array/set! *tstate* 2 w)
     (mutable-array/set! *tstate* 3 #f)

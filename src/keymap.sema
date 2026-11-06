@@ -18,18 +18,18 @@
 ;; Change all three together.
 
 (define default-keymap
-  {:mcp        "ctrl-o"
-   :resume     "ctrl-r"
-   :palette    "ctrl-k"
-   :quit       "ctrl-d"
-   :interrupt  "ctrl-c"
+  {:mcp "ctrl-o"
+   :resume "ctrl-r"
+   :palette "ctrl-k"
+   :quit "ctrl-d"
+   :interrupt "ctrl-c"
    :clear-line "ctrl-u"
-   :kill-word  "ctrl-w"
-   :yank       "ctrl-y"
+   :kill-word "ctrl-w"
+   :yank "ctrl-y"
    :expand-tools "ctrl-x"
    :line-start "ctrl-a"
-   :line-end   "ctrl-e"
-   :repaint    "ctrl-l"})
+   :line-end "ctrl-e"
+   :repaint "ctrl-l"})
 
 ;; The two mutable layers share one container. Slot 0 holds command-declared
 ;; keys (replaced on config reconcile); slot 1 holds runtime binds (which
@@ -49,11 +49,15 @@
   "Bind KEY (e.g. \"ctrl-t\") to ACTION — a built-in action keyword, or a
    command name (string or keyword) to run that slash command. Strongest layer;
    survives config reloads."
-  (mutable-array/set! *keymap-layers* 1 (assoc (runtime-keys) (as-action action) key)))
+  (mutable-array/set! *keymap-layers*
+    1
+    (assoc (runtime-keys) (as-action action) key)))
 
 (defun unbind-key! (action)
   "Drop ACTION's runtime bind (weaker layers show through again)."
-  (mutable-array/set! *keymap-layers* 1 (dissoc (runtime-keys) (as-action action))))
+  (mutable-array/set! *keymap-layers*
+    1
+    (dissoc (runtime-keys) (as-action action))))
 
 (defun active-keymap ()
   (merge default-keymap (command-keys) (get *config* :keys {}) (runtime-keys)))
@@ -62,9 +66,10 @@
   "Which action is bound to KEYSTR (e.g. \"ctrl-o\"), or #f."
   (let ((km (active-keymap)))
     (let loop ((ks (keys km)))
-      (cond ((null? ks) #f)
-            ((= (get km (car ks)) keystr) (car ks))
-            (else (loop (cdr ks)))))))
+      (cond
+        ((null? ks) #f)
+        ((= (get km (car ks)) keystr) (car ks))
+        (else (loop (cdr ks)))))))
 
 (defun key-for (action) (get (active-keymap) action ""))
 
@@ -87,7 +92,7 @@
     (let loop ((ks (keys km)) (seen {}) (dups '()))
       (if (null? ks)
         (reverse dups)
-        (let* ((k    (car ks))
+        (let* ((k (car ks))
                (bind (get km k)))
           (if (get seen bind #f)
             (loop (cdr ks) seen (if (member bind dups) dups (cons bind dups)))

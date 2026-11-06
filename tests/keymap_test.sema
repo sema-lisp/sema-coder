@@ -3,28 +3,34 @@
 
 ;; defaults
 (set! *config* {})
-(check "default mcp"        (key-for :mcp) "ctrl-o")
-(check "default hint"       (key-hint :mcp) "⌃O")
-(check "action lookup"      (keymap-action "ctrl-o") :mcp)
-(check "ctrl-char"          (action-ctrl-char :mcp) "o")
-(check "palette hint"       (key-hint :palette) "⌃K")
+(check "default mcp" (key-for :mcp) "ctrl-o")
+(check "default hint" (key-hint :mcp) "⌃O")
+(check "action lookup" (keymap-action "ctrl-o") :mcp)
+(check "ctrl-char" (action-ctrl-char :mcp) "o")
+(check "palette hint" (key-hint :palette) "⌃K")
 
 ;; override via config :keys
 (set! *config* {:keys {:mcp "ctrl-p"}})
-(check "rebound key"        (key-for :mcp) "ctrl-p")
-(check "rebound hint"       (key-hint :mcp) "⌃P")
-(check "rebound lookup"     (keymap-action "ctrl-p") :mcp)
-(check "old binding gone"   (keymap-action "ctrl-o") #f)
-(check "others unaffected"  (key-hint :quit) "⌃D")
+(check "rebound key" (key-for :mcp) "ctrl-p")
+(check "rebound hint" (key-hint :mcp) "⌃P")
+(check "rebound lookup" (keymap-action "ctrl-p") :mcp)
+(check "old binding gone" (keymap-action "ctrl-o") #f)
+(check "others unaffected" (key-hint :quit) "⌃D")
 
 ;; a key bound to a non-built-in action runs the like-named custom command
-(register-command! "ping" "test ping" (lambda (state args) (emit :info "pong") state))
+(register-command! "ping"
+  "test ping"
+  (lambda (state args)
+    (emit :info "pong")
+    state))
 (set! *config* {:keys {:ping "ctrl-t"}})
 (clear-transcript!)
 (handle-ctrl "t")
 (check-true "keybind runs custom command"
-  (any (lambda (b) (and (equal? (:kind b) :info) (string/contains? (get b :text "") "pong")))
-       (transcript-blocks)))
+  (any
+    (lambda (b)
+      (and (equal? (:kind b) :info) (string/contains? (get b :text "") "pong")))
+    (transcript-blocks)))
 ;; a key whose action names no command is a no-op
 (set! *config* {:keys {:nope "ctrl-t"}})
 (clear-transcript!)
@@ -33,33 +39,35 @@
 (set! *config* {})
 
 ;; ── :key on a command record binds it (reconciled; removal unbinds) ──
-(reconcile-commands! (list (command "test" {:desc "t" :run ["true"] :key "ctrl-t"})))
-(check "command :key bound"    (keymap-action "ctrl-t") :test)
+(reconcile-commands!
+  (list (command "test" {:desc "t" :run ["true"] :key "ctrl-t"})))
+(check "command :key bound" (keymap-action "ctrl-t") :test)
 (reconcile-commands! (list (command "test" {:desc "t" :run ["true"]})))
-(check "removed :key unbinds"  (keymap-action "ctrl-t") #f)
+(check "removed :key unbinds" (keymap-action "ctrl-t") #f)
 (reconcile-commands! '())
 
 ;; ── runtime bind-key! / unbind-key! (strongest layer) ──
 (bind-key! "ctrl-t" "ping")
-(check "bind-key! by name"     (keymap-action "ctrl-t") :ping)
-(check "bind-key! key-for"     (key-for :ping) "ctrl-t")
+(check "bind-key! by name" (keymap-action "ctrl-t") :ping)
+(check "bind-key! key-for" (key-for :ping) "ctrl-t")
 (bind-key! "ctrl-p" :ping)
-(check "rebinding moves it"    (key-for :ping) "ctrl-p")
+(check "rebinding moves it" (key-for :ping) "ctrl-p")
 (unbind-key! :ping)
-(check "unbind-key! clears"    (keymap-action "ctrl-p") #f)
+(check "unbind-key! clears" (keymap-action "ctrl-p") #f)
 
 ;; ── layering: runtime > config :keys > command :key ──
-(reconcile-commands! (list (command "test" {:desc "t" :run ["true"] :key "ctrl-t"})))
+(reconcile-commands!
+  (list (command "test" {:desc "t" :run ["true"] :key "ctrl-t"})))
 (set! *config* {:keys {:test "ctrl-p"}})
 (check "config :keys beats command :key" (key-for :test) "ctrl-p")
 (bind-key! "ctrl-b" :test)
-(check "bind-key! beats config"          (key-for :test) "ctrl-b")
+(check "bind-key! beats config" (key-for :test) "ctrl-b")
 (unbind-key! :test)
 (reconcile-commands! '())
 (set! *config* {})
 
 ;; ── conflicts: two actions on one key are reported ──
-(set! *config* {:keys {:foo "ctrl-o"}})   ;; collides with default :mcp
+(set! *config* {:keys {:foo "ctrl-o"}}) ;; collides with default :mcp
 (check "conflict detected" (keymap-conflicts) (list "ctrl-o"))
 (set! *config* {})
 (check "no conflicts by default" (keymap-conflicts) '())

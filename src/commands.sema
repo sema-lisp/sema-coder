@@ -18,14 +18,14 @@
 (load "config.sema")
 (load "agent.sema")
 (load "session.sema")
-(load "keymap.sema")   ;; command records may declare a :key
-(load "plugins.sema")  ;; load-plugins! — boot-time extension loading
+(load "keymap.sema") ;; command records may declare a :key
+(load "plugins.sema") ;; load-plugins! — boot-time extension loading
 
 ;; ── Registry ─────────────────────────────────────────────────────
 
-(define *commands* {})        ;; name(string) → {:desc :handler :keep-input?}
-(define *command-order* '())  ;; registration order, for /help
-(define *tui-active* #f)      ;; set by tui-run; gates modal-vs-print behaviour
+(define *commands* {}) ;; name(string) → {:desc :handler :keep-input?}
+(define *command-order* '()) ;; registration order, for /help
+(define *tui-active* #f) ;; set by tui-run; gates modal-vs-print behaviour
 
 (defun register-command! (name desc handler . opts)
   "Register a slash command: NAME (string), DESC (help text), HANDLER
@@ -34,7 +34,8 @@
    command runs from the palette, so the handler can read/transform *input*
    itself (key-bound invocations never clear regardless)."
   (let ((flags (if (null? opts) {} (car opts))))
-    (set! *commands* (assoc *commands* name (merge flags {:desc desc :handler handler}))))
+    (set! *commands*
+      (assoc *commands* name (merge flags {:desc desc :handler handler}))))
   (unless (member name *command-order*)
     (set! *command-order* (append *command-order* (list name)))))
 
@@ -47,7 +48,7 @@
 ;; fuzzy-filters these once the input reads "/cmd <partial>"; commands without
 ;; a source keep the plain prompt.
 
-(define *command-completions* {})  ;; name(string) → (fn state → ({:value :label [:active]} …))
+(define *command-completions* {}) ;; name(string) → (fn state → ({:value :label [:active]} …))
 
 (defun register-completions! (name f)
   (set! *command-completions* (assoc *command-completions* name f)))
@@ -72,7 +73,7 @@
 (defun parse-command (input)
   "\"/model gpt-x\" → {:name \"model\" :args \"gpt-x\"}"
   (let* ((trimmed (string/trim input))
-         (sp      (string/index-of trimmed " ")))
+         (sp (string/index-of trimmed " ")))
     (if sp
       {:name (string/slice trimmed 1 sp)
        :args (string/trim (string/slice trimmed sp (string/length trimmed)))}
@@ -89,10 +90,10 @@
 
 (defun run-user-command (template args)
   "Run a config-defined command: substitute $ARGS, run in the workspace."
-  (let* ((cmd    (string/replace template "$ARGS" args))
+  (let* ((cmd (string/replace template "$ARGS" args))
          (result (run-in-workspace cmd))
-         (out    (string/trim (:stdout result)))
-         (err    (string/trim (:stderr result))))
+         (out (string/trim (:stdout result)))
+         (err (string/trim (:stderr result))))
     (emit :info (string/append "$ " cmd))
     (unless (= out "") (emit :raw out))
     (unless (= err "") (emit :error err))))
@@ -112,16 +113,19 @@
   (let ((lst (if (vector? argv) (vector->list argv) argv)))
     (if (member :args lst)
       (apply append
-        (map (lambda (x) (cond ((equal? x :args) (if (= args "") '() (list args)))
-                               (else (list x))))
-             lst))
+        (map
+          (lambda (x)
+            (cond
+              ((equal? x :args) (if (= args "") '() (list args)))
+              (else (list x))))
+          lst))
       (if (= args "") lst (append lst (list args))))))
 
 (defun run-argv-command (argv args)
   (let* ((full (argv-for argv args))
-         (res  (run-argv-in-workspace full))
-         (out  (string/trim (:stdout res)))
-         (err  (string/trim (:stderr res))))
+         (res (run-argv-in-workspace full))
+         (out (string/trim (:stdout res)))
+         (err (string/trim (:stderr res))))
     (emit :info (string/append "$ " (string/join full " ")))
     (unless (= out "") (emit :raw out))
     (unless (= err "") (emit :error err))))
@@ -130,11 +134,12 @@
   "Turn a command record into a (state args) → state handler."
   (lambda (state args)
     (cond
-      ((:do spec)    ((:do spec) state args))
-      ((:run spec)   (run-argv-command (:run spec) args) state)
+      ((:do spec) ((:do spec) state args))
+      ((:run spec) (run-argv-command (:run spec) args) state)
       ((:shell spec) (run-user-command (:shell spec) args) state)
-      (else (emit :error f"command /${(:name spec)} has no :run, :do, or :shell")
-            state))))
+      (else
+        (emit :error f"command /${(:name spec)} has no :run, :do, or :shell")
+        state))))
 
 (defun unregister-command! (name)
   (set! *commands* (dissoc *commands* name))
@@ -144,23 +149,29 @@
   "Replace the config-owned command set with CMDS (list of command records).
    A record's :key becomes a keybinding for the like-named action, replaced
    wholesale each reconcile so a removed :key unbinds."
-  (for-each unregister-command! *config-command-names*)
+  (for-each
+    unregister-command!
+    *config-command-names*)
   (set! *config-command-names* (map :name cmds))
   (for-each
     (lambda (spec)
-      (register-command! (:name spec) (get spec :desc "") (config-command-handler spec)
-                         {:keep-input (get spec :keep-input #f)}))
+      (register-command! (:name spec)
+        (get spec :desc "")
+        (config-command-handler spec)
+        {:keep-input (get spec :keep-input #f)}))
     cmds)
   (set-command-keys!
-    (foldl (lambda (m spec)
-             (let ((k (get spec :key #f)))
-               (if k (assoc m (string->keyword (:name spec)) k) m)))
-           {} cmds)))
+    (foldl
+      (lambda (m spec)
+        (let ((k (get spec :key #f)))
+          (if k (assoc m (string->keyword (:name spec)) k) m)))
+      {}
+      cmds)))
 
 (defun config-key-warnings (cfg)
   "One human-readable warning per unrecognized top-level key in CFG."
   (map (lambda (k) f"unknown config key ${k} — ignored (typo?)")
-       (unknown-config-keys cfg)))
+    (unknown-config-keys cfg)))
 
 (defun apply-config! (path fallback-cfg)
   "The single load+reconcile path shared by boot / /reload / the TUI file-watch.
@@ -174,7 +185,7 @@
    rerouted. The caller also owns whether to rebuild the agent."
   (let ((r (load-config path)))
     (if (:ok r)
-      (let ((cfg       (:ok r))
+      (let ((cfg (:ok r))
             (tool-errs (autoload-tools! (tools-dir))))
         (reconcile-commands! (:commands cfg))
         (reconcile-servers! (:mcp-servers cfg))
@@ -185,7 +196,9 @@
 
 (defun emit-config-warnings! (warnings)
   "Surface apply-config! WARNINGS through the emit sink (REPL / command dispatch)."
-  (for-each (lambda (w) (emit :info f"config: ${w}")) warnings))
+  (for-each
+    (lambda (w) (emit :info f"config: ${w}"))
+    warnings))
 
 (defun boot-config! ()
   "Ensure init.sema exists, apply it, return the config value (defaults + an
@@ -193,18 +206,22 @@
   (ensure-config!)
   (let ((r (apply-config! (config-path) default-config)))
     (if (:ok r)
-      (begin (emit-config-warnings! (:warnings r)) (:ok r))
-      (begin (emit :error f"config: ${(:error r)} — using defaults")
-             (:cfg r)))))
+      (begin
+        (emit-config-warnings! (:warnings r))
+        (:ok r))
+      (begin
+        (emit :error f"config: ${(:error r)} — using defaults")
+        (:cfg r)))))
 
 (defun editor-command ()
   "The user's preferred editor: $VISUAL, then $EDITOR (may carry flags), or nil."
   ;; nil (not #f) when unset: open-config! uses when-let, which treats #f as
   ;; truthy on current sema and would run a shell command literally named "#f".
   (let ((v (env "VISUAL")) (e (env "EDITOR")))
-    (cond ((and v (not (= v ""))) v)
-          ((and e (not (= e ""))) e)
-          (else nil))))
+    (cond
+      ((and v (not (= v ""))) v)
+      ((and e (not (= e ""))) e)
+      (else nil))))
 
 (defun opened-ok? (res) (= (get res :exit-code 1) 0))
 
@@ -218,14 +235,15 @@
     (or
       (when-let (ed (editor-command))
         (opened-ok?
-          (try (shell "sh" "-c" f"${ed} ${(shell/quote path)} </dev/null")
+          (try
+            (shell "sh" "-c" f"${ed} ${(shell/quote path)} </dev/null")
             (catch e {:exit-code 1}))))
       (opened-ok?
         (try
           (match (sys/platform)
-            ("macos"   (shell "open" "-t" path))
+            ("macos" (shell "open" "-t" path))
             ("windows" (shell "cmd" "/c" "start" "" path))
-            (_         (shell "xdg-open" path)))
+            (_ (shell "xdg-open" path)))
           (catch e {:exit-code 1}))))))
 
 ;; ── Built-in commands ────────────────────────────────────────────
@@ -235,7 +253,8 @@
     (accent (string/pad-right (string/append "/" name) 16))
     (muted desc)))
 
-(register-command! "help" "Show this help"
+(register-command! "help"
+  "Show this help"
   (lambda (state args)
     (emit :line "")
     (emit :line (heading "  Commands"))
@@ -260,30 +279,40 @@
   (let ((k (provider-env-key name)))
     (if k (let ((v (env k))) (if (or (nil? v) (= v "")) #t #f)) #f)))
 
-(register-command! "model" "Show or switch the model: /model [name]"
+(register-command! "model"
+  "Show or switch the model: /model [name]"
   (lambda (state args)
-    (let* ((cfg     (get state :config {}))
+    (let* ((cfg (get state :config {}))
            (current (choose-model (get state :model "") cfg)))
       (if (= args "")
         (begin
           (emit :info f"model: ${(if (= current "") "auto" current)}")
           (for-each
-            (lambda (m) (emit :line (format "    ~a  ~a~a"
-                                      (accent (string/pad-right (:id m) 22))
-                                      (muted f"${(:provider m)}: ${(:label m)}")
-                                      (string/append
-                                        (if (= (:id m) current) (ok " ●") "")
-                                        (if (provider-key-missing? (:provider m)) (muted " · no key") "")))))
+            (lambda (m)
+              (emit :line
+                (format "    ~a  ~a~a"
+                  (accent (string/pad-right (:id m) 22))
+                  (muted f"${(:provider m)}: ${(:label m)}")
+                  (string/append (if (= (:id m) current) (ok " ●") "")
+                    (if (provider-key-missing? (:provider m))
+                      (muted " · no key")
+                      "")))))
             (model-entries cfg))
           state)
         (let ((entry (model-entry cfg args)))
-          (emit :ok (if entry
-                      f"switched to ${args} (${(:provider entry)})"
-                      f"switched to ${args}"))
+          (emit :ok
+            (if entry
+              f"switched to ${args} (${(:provider entry)})"
+              f"switched to ${args}"))
           (when (and entry (provider-key-missing? (:provider entry)))
-            (emit :info f"note: ${(provider-env-key (:provider entry))} is not set — requests to this model will fail"))
-          (when (and entry (not (= (get entry :effort "") "")) (= (get state :effort "") ""))
-            (emit :info f"effort → ${(get entry :effort "")} (model default; /effort overrides)"))
+            (emit :info
+              f"note: ${(provider-env-key (:provider entry))} is not set — requests to this model will fail"))
+          (when
+            (and entry
+              (not (= (get entry :effort "") ""))
+              (= (get state :effort "") ""))
+            (emit :info
+              f"effort → ${(get entry :effort "")} (model default; /effort overrides)"))
           (assoc state
             :model args
             :agent (create-agent (:cwd state) args cfg)))))))
@@ -293,94 +322,114 @@
 ;; active model marked and providers whose API key is missing annotated.
 (register-completions! "model"
   (lambda (state)
-    (let* ((cfg     (get state :config {}))
+    (let* ((cfg (get state :config {}))
            (current (choose-model (get state :model "") cfg)))
-      (map (lambda (m)
-             {:value  (:id m)
-              :label  (string/append f"${(:provider m)}: ${(:label m)}"
-                                     (if (provider-key-missing? (:provider m)) " · no key" ""))
-              :active (= (:id m) current)})
-           (model-entries cfg)))))
+      (map
+        (lambda (m)
+          {:value (:id m)
+           :label (string/append f"${(:provider m)}: ${(:label m)}"
+             (if (provider-key-missing? (:provider m)) " · no key" ""))
+           :active (= (:id m) current)})
+        (model-entries cfg)))))
 
 ;; Sema's portable :reasoning-effort levels (llm docs); models without
 ;; reasoning support ignore the option, so no per-model gating is needed.
 (define effort-levels (list "none" "minimal" "low" "medium" "high" "xhigh"))
 
-(register-command! "effort" "Show or set reasoning effort: /effort [level|default]"
+(register-command! "effort"
+  "Show or set reasoning effort: /effort [level|default]"
   (lambda (state args)
     ;; Accept ":high" as well as "high" — the docs write levels as keywords.
-    (let ((v (let ((a (string/trim args)))
-               (if (string/starts-with? a ":") (string/slice a 1 (string/length a)) a))))
+    (let ((v
+            (let ((a (string/trim args)))
+              (if (string/starts-with? a ":")
+                (string/slice a 1 (string/length a))
+                a))))
       (cond
         ((= v "")
           (let* ((cfg (get state :config {}))
-                 (cur (pick-effort (get state :effort "") (choose-model (get state :model "") cfg) cfg)))
-            (emit :info f"effort: ${(if (= cur "") "default" cur)} · levels: ${(string/join effort-levels ", ")} · /effort default resets"))
+                 (cur
+                   (pick-effort (get state :effort "")
+                     (choose-model (get state :model "") cfg)
+                     cfg)))
+            (emit :info
+              f"effort: ${(if (= cur "") "default" cur)} · levels: ${(string/join effort-levels ", ")} · /effort default resets"))
           state)
-        ((= v "default")
-          (emit :ok "reasoning effort → provider default")
+        ((= v "default") (emit :ok "reasoning effort → provider default")
           (assoc state :effort ""))
-        ((member v effort-levels)
-          (emit :ok f"reasoning effort → ${v}")
+        ((member v effort-levels) (emit :ok f"reasoning effort → ${v}")
           ;; Honest heads-up: on chat/completions, some OpenAI models reject a
           ;; non-none effort together with tools (gpt-5.6+). The runtime degrades
           ;; gracefully (auto-retries at default) rather than failing the turn —
           ;; but say so, since the effort you set may not actually apply there.
           (let* ((cfg (get state :config {}))
                  (mid (choose-model (get state :model "") cfg)))
-            (when (and (not (= v "none")) (= (model-provider-name cfg mid) "openai"))
-              (emit :info "note: some OpenAI models apply effort at their default when tools are used — the runtime auto-handles this (no turn fails)")))
+            (when
+              (and (not (= v "none"))
+                (= (model-provider-name cfg mid) "openai"))
+              (emit :info
+                "note: some OpenAI models apply effort at their default when tools are used — the runtime auto-handles this (no turn fails)")))
           (assoc state :effort v))
         (else
-          (emit :error f"unknown effort “${v}” (try ${(string/join effort-levels ", ")}, or default)")
+          (emit :error
+            f"unknown effort “${v}” (try ${(string/join effort-levels ", ")}, or default)")
           state)))))
 
 (register-completions! "effort"
   (lambda (state)
     (let* ((cfg (get state :config {}))
-           (cur (pick-effort (get state :effort "") (choose-model (get state :model "") cfg) cfg))
+           (cur
+             (pick-effort (get state :effort "")
+               (choose-model (get state :model "") cfg)
+               cfg))
            (mark (if (= cur "") "default" cur)))
       (map (lambda (e) (assoc e :active (= (:value e) mark)))
-        (list {:value "none"    :label "thinking disabled"}
-              {:value "minimal" :label "barely deliberates"}
-              {:value "low"     :label "quick and cheap"}
-              {:value "medium"  :label "balanced"}
-              {:value "high"    :label "thorough"}
-              {:value "xhigh"   :label "maximum deliberation"}
-              {:value "default" :label "back to the provider default"})))))
+        (list {:value "none" :label "thinking disabled"}
+          {:value "minimal" :label "barely deliberates"}
+          {:value "low" :label "quick and cheap"}
+          {:value "medium" :label "balanced"}
+          {:value "high" :label "thorough"}
+          {:value "xhigh" :label "maximum deliberation"}
+          {:value "default" :label "back to the provider default"})))))
 
-(register-command! "clear" "Clear the conversation history"
+(register-command! "clear"
+  "Clear the conversation history"
   (lambda (state args)
     (emit :clear "")
     (emit :info "conversation cleared")
     (assoc state :messages '())))
 
-(register-command! "tools" "List the agent's tools"
+(register-command! "tools"
+  "List the agent's tools"
   (lambda (state args)
     (let ((origins (mcp-tool-origins)))
       (for-each
         (lambda (t)
           (let ((srv (get origins (tool/name t) #f)))
-            (emit :line (string/append "    " (accent (string/pad-right (tool/name t) 14))
-                                       (if srv (muted f"· mcp:${srv}") "")))))
+            (emit :line
+              (string/append "    "
+                (accent (string/pad-right (tool/name t) 14))
+                (if srv (muted f"· mcp:${srv}") "")))))
         (agent-tools))
       (unless (null? *tool-name-collisions*)
-        (emit :warn (string/append "dropped duplicate tool names (first definition wins): "
-                                   (string/join ", " *tool-name-collisions*)))))
+        (emit :warn
+          (string/append
+            "dropped duplicate tool names (first definition wins): "
+            (string/join ", " *tool-name-collisions*)))))
     state))
 
-(register-command! "queue" "Inspect or manage follow-ups: /queue [resume|clear|drop ID|edit ID TEXT]"
+(register-command! "queue"
+  "Inspect or manage follow-ups: /queue [resume|clear|drop ID|edit ID TEXT]"
   (lambda (state args)
     (if (not *tui-active*)
       (emit :info "the input queue is available in the TUI")
-      (let* ((parts (filter #(not (= % "")) (string/split (string/trim args) " ")))
+      (let* ((parts
+               (filter #(not (= % "")) (string/split (string/trim args) " ")))
              (action (if (null? parts) "" (car parts))))
         (cond
-          ((= action "resume")
-            (request-queue-resume!)
+          ((= action "resume") (request-queue-resume!)
             (emit :ok "input queue resumed"))
-          ((= action "clear")
-            (clear-input-queue!)
+          ((= action "clear") (clear-input-queue!)
             (emit :ok "input queue cleared"))
           ((= action "drop")
             (if (< (length parts) 2)
@@ -418,17 +467,21 @@
     (let ((items (if *tui-active* (queued-messages) '())))
       (append
         (if (and *tui-active* *queue-paused*)
-          (list {:value "resume" :label "resume paused queued work"}) '())
-        (if (null? items) '()
+          (list {:value "resume" :label "resume paused queued work"})
+          '())
+        (if (null? items)
+          '()
           (list {:value "clear" :label "remove every queued message"}))
-        (map (lambda (entry)
-               {:value f"drop ${(:id entry)}"
-                :label f"remove: ${(truncate-str (sanitize-terminal-text (:text entry)) 44)}"})
-             items)
-        (map (lambda (entry)
-               {:value f"edit ${(:id entry)} "
-                :label f"edit: ${(truncate-str (sanitize-terminal-text (:text entry)) 44)}"})
-             items)))))
+        (map
+          (lambda (entry)
+            {:value f"drop ${(:id entry)}"
+             :label f"remove: ${(truncate-str (sanitize-terminal-text (:text entry)) 44)}"})
+          items)
+        (map
+          (lambda (entry)
+            {:value f"edit ${(:id entry)} "
+             :label f"edit: ${(truncate-str (sanitize-terminal-text (:text entry)) 44)}"})
+          items)))))
 
 (defun debug-session-state (state)
   "A JSON-safe snapshot of the exact conversational state used by the next turn."
@@ -447,11 +500,15 @@
      :queue-paused (if *tui-active* *queue-paused* #f)}))
 
 (defun doctor-sema-version ()
-  (let* ((result (try (shell "sema" "--version")
-                   (catch e {:exit-code 1 :stdout "" :stderr (str e)})))
-         (text (string/trim
-                 (string-append (get result :stdout "") " "
-                                (get result :stderr ""))))
+  (let* ((result
+           (try
+             (shell "sema" "--version")
+             (catch e {:exit-code 1 :stdout "" :stderr (str e)})))
+         (text
+           (string/trim
+             (string-append (get result :stdout "")
+               " "
+               (get result :stderr ""))))
          (match (regex/match #"([0-9]+)[.]([0-9]+)([.]([0-9]+))?" text))
          (major (if match (string->number (nth (:groups match) 0)) 0))
          (minor (if match (string->number (nth (:groups match) 1)) 0)))
@@ -459,242 +516,3 @@
      :minimum "1.37"
      :compatible
        (if (and match (or (> major 1) (and (= major 1) (>= minor 37)))) #t #f)}))
-
-(defun doctor-env-present? (name)
-  (let ((value (env name))) (if (and value (not (= value ""))) #t #f)))
-
-(defun doctor-provider-keys ()
-  (foldl (lambda (result key) (assoc result key (doctor-env-present? key)))
-         {} (provider-env-keys)))
-
-(defun doctor-session-storage ()
-  (let* ((dir (sessions-dir))
-         (probe (path/join dir f".doctor-${(sys/pid)}-${(time-ms)}")))
-    (try
-      (begin
-        (file/mkdir dir)
-        (file/write probe "ok")
-        (file/delete probe)
-        {:dir dir :writable #t :error ""})
-      (catch e
-        (try
-          (when (file/exists? probe) (file/delete probe))
-          (catch cleanup-error nil))
-        {:dir dir :writable #f :error (get e :message (str e))}))))
-
-(defun doctor-ripgrep ()
-  (let ((result (try (shell "rg" "--version") (catch e #f))))
-    (if (and result (= (get result :exit-code 1) 0))
-      {:available #t
-       :version (car (string/split (string/trim (get result :stdout "")) "\n"))}
-      {:available #f :version ""})))
-
-(defun doctor-mcp-state ()
-  {:declared (length (mcp-records))
-   :servers
-     (map (lambda (server)
-            {:name (get server :name "")
-             :transport (get server :transport "")
-             :status (get server :status :idle)})
-          (mcp-records))})
-
-(defun doctor-report (state)
-  "Secret-safe environment and runtime readiness report."
-  (let* ((cfg (get state :config {}))
-         (config-error (or (config-validation-error cfg)
-                           (if *tui-active* *config-error* #f)))
-         (model (choose-model (get state :model "") cfg))
-         (sema-info (doctor-sema-version))
-         (storage (doctor-session-storage)))
-    {:ok (and (:compatible sema-info) (not config-error) (:writable storage))
-     :sema sema-info
-     :providers (doctor-provider-keys)
-     :config {:path (config-path) :valid (not config-error)
-              :error (if config-error (str config-error) "")}
-     :sessions storage
-     :ripgrep (doctor-ripgrep)
-     :mcp (doctor-mcp-state)
-     :model {:effective model :provider (or (model-provider-name cfg model) "unknown")}}))
-
-(register-command! "debug" "Developer diagnostics: /debug [status|session|transcript|tasks|doctor]"
-  (lambda (state args)
-    (match (string/trim args)
-      ("status"
-        (poll-background-tasks!)
-        (if *tui-active*
-          (emit :raw (json/encode-pretty (turn-controller-state)))
-          (emit :raw (json/encode-pretty
-                       {:status :idle
-                        :background-tasks (background-task-summaries)
-                        :message-count (length (get state :messages '()))}))))
-      ("session"
-        (emit :raw (json/encode-pretty (debug-session-state state))))
-      ("transcript"
-        (if *tui-active*
-          (emit :raw (json/encode-pretty (transcript-debug-state)))
-          (emit :error "/debug transcript is available in the TUI")))
-      ("tasks"
-        (emit :raw (json/encode-pretty (background-task-debug-state))))
-      ("doctor"
-        (emit :raw (json/encode-pretty (doctor-report state))))
-      ("" (emit :info "available diagnostics: /debug status, /debug session, /debug transcript, /debug tasks, /debug doctor"))
-      (_ (emit :error f"unknown diagnostic: ${args} (try /debug)")))
-    state))
-
-(register-completions! "debug"
-  (lambda (state)
-    (list {:value "status" :label "show turn-controller state and events"}
-          {:value "session" :label "show exact messages and queued input"}
-          {:value "transcript" :label "show TUI blocks and render-cache state"}
-          {:value "tasks" :label "show background tasks and retained output"}
-          {:value "doctor" :label "check runtime, providers, storage, and MCP readiness"})))
-
-(register-command! "mcp" "Manage MCP servers (opens the modal; ⌃O in the TUI)"
-  (lambda (state args)
-    (if *tui-active*
-      (open-mcp-modal!)
-      (let ((servers (mcp-records)))
-        (if (= (length servers) 0)
-          (emit :info "no MCP servers declared (add one in init.sema)")
-          (for-each
-            (lambda (r) (emit :line (format "    ~a  ~a  ~a"
-                                     (string/pad-right (:name r) 14)
-                                     (string/pad-right (:transport r) 6)
-                                     (:status r))))
-            servers))))
-    state))
-
-(defun session-restore-fields (id cwd config)
-  "Load session ID and compute the conversational state it restores to —
-   {:messages :model :effort :agent :meta}, with a fresh agent on the restored
-   model. The ONE place both the REPL /resume path and the TUI restore-session!
-   build this, so the two frontends can't drift."
-  (let* ((r    (load-session id))
-         (meta (:meta r))
-         (m    (get meta :model "")))
-    {:messages (:messages r)
-     :model    m
-     :effort   (get meta :effort "")
-     :agent    (create-agent cwd m config)
-     :meta     meta}))
-
-(defun resume-command-parts (args)
-  (filter #(not (= % "")) (string/split (string/trim args) " ")))
-
-(defun rename-session-command! (parts)
-  (if (< (length parts) 3)
-    (emit :error "usage: /resume rename ID TITLE")
-    (let ((id (nth parts 1))
-          (title (string/join (drop 2 parts) " ")))
-      (try
-        (let ((meta (rename-session! id title)))
-          (when (and *tui-active* (= id *session-id*))
-            (set! *session-custom-title* (:custom-title meta)))
-          (emit :ok f"renamed ${id} → “${(:title meta)}”"))
-        (catch e
-          (emit :error f"couldn't rename ${id}: ${(get e :message (str e))}"))))))
-
-(defun delete-session-command! (parts)
-  (if (not (= (length parts) 2))
-    (emit :error "usage: /resume delete ID")
-    (let ((id (nth parts 1)))
-      (cond
-        ((and *tui-active* (= id *session-id*))
-          (emit :error "cannot delete the active session; clear it first"))
-        ((try (delete-session! id) (catch e #f))
-          (emit :ok f"deleted session ${id}"))
-        (else (emit :error f"no session ${id}"))))))
-
-(register-command! "resume" "Resume or manage sessions: /resume [ID|rename ID TITLE|delete ID]"
-  (lambda (state args)
-    (let* ((parts (resume-command-parts args))
-           (action (if (null? parts) "" (car parts))))
-      (cond
-        ((= action "rename") (rename-session-command! parts) state)
-        ((= action "delete") (delete-session-command! parts) state)
-        ;; /resume <id> — restore directly, no modal.
-        ((not (= args ""))
-          (if *tui-active*
-            (begin
-              (try (restore-session! args)
-                (catch e (emit :error f"couldn't restore “${args}”: ${(get e :message (str e))}")))
-              ;; restore-session! updates the TUI globals; hand them back as state.
-              (tui-state))
-            (let ((f (try (session-restore-fields args (:cwd state) (get state :config {}))
-                       (catch e #f))))
-              (if (not f)
-                (begin (emit :error f"no session “${args}” (try /resume for the list)") state)
-                (let ((title (flatten-terminal-row
-                               (sanitize-terminal-text (get (:meta f) :title args)))))
-                  (emit :ok f"resumed “${title}” · ${(length (:messages f))} messages")
-                  (assoc state
-                    :messages (:messages f)
-                    :model  (:model f)
-                    :effort (:effort f)
-                    :agent  (:agent f)))))))
-        (*tui-active* (open-resume-modal!) state)
-        (else
-          (let ((ss (list-sessions)))
-            (if (= (length ss) 0)
-              (emit :info "no saved sessions yet")
-              (for-each
-                (lambda (m)
-                  (let ((title (flatten-terminal-row
-                                 (sanitize-terminal-text (:title m)))))
-                    (emit :line (format "    ~a  ~a msgs  ~a"
-                                 (string/pad-right title 40) (:count m) (:id m)))))
-                ss)))
-          state)))))
-
-;; The /resume argument completes from the saved sessions, newest first.
-(register-completions! "resume"
-  (lambda (state)
-    (let ((sessions (list-sessions)))
-      (append
-        (map (lambda (m) {:value (:id m)
-                          :label f"restore: ${(:title m)} · ${(:count m)} msgs"})
-             sessions)
-        (map (lambda (m) {:value f"rename ${(:id m)} "
-                          :label f"rename: ${(:title m)}"})
-             sessions)
-        (map (lambda (m) {:value f"delete ${(:id m)}"
-                          :label f"delete: ${(:title m)}"})
-             sessions)))))
-
-(register-command! "cwd" "Show the working directory"
-  (lambda (state args) (emit :info (:cwd state)) state))
-
-(register-completions! "config"
-  (lambda (state)
-    (list {:value "edit" :label "open init.sema in your editor"})))
-
-(register-command! "config" "Show the config path (/config edit opens it)"
-  (lambda (state args)
-    (if (= args "edit")
-      (if (open-config!)
-        (emit :info f"opening ${(config-path)}")
-        (emit :error f"couldn't open an editor — edit ${(config-path)} manually"))
-      (begin
-        (emit :info f"config: ${(config-path)}")
-        (emit :info "edit it in any pane — changes hot-reload on save")))
-    state))
-
-(register-command! "reload" "Reload config from disk and rebuild the agent"
-  (lambda (state args)
-    ;; On a broken init.sema, apply-config! keeps the running config (it
-    ;; reconciles nothing) — a typo must not wipe the user's live commands,
-    ;; keybindings, and MCP servers.
-    (let ((r (apply-config! (config-path) (get state :config {}))))
-      (if (:ok r)
-        (let ((cfg (:ok r)))
-          (emit :ok "config reloaded")
-          (emit-config-warnings! (:warnings r))
-          (assoc state
-            :config cfg
-            :agent (create-agent (:cwd state) (:model state) cfg)))
-        (begin
-          (emit :error f"config: ${(:error r)} — keeping current config")
-          state)))))
-
-(register-command! "quit" "Exit Sema Coder" (lambda (state args) 'quit))
-(register-command! "exit" "Exit Sema Coder" (lambda (state args) 'quit))

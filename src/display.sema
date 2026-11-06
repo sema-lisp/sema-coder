@@ -23,11 +23,11 @@
   (make-parameter
     (lambda (kind text)
       (match kind
-        (:info  (show-info text))
-        (:ok    (show-ok text))
+        (:info (show-info text))
+        (:ok (show-ok text))
         (:error (show-error text))
-        (:line  (io/println-error text))
-        (:raw   (println text))
+        (:line (io/println-error text))
+        (:raw (println text))
         (_ nil)))))
 
 (defun emit (kind text) ((current-emit) kind text))
@@ -35,7 +35,8 @@
 ;; ── Prompt ───────────────────────────────────────────────────────
 
 (defun show-prompt ()
-  (io/print-error (accent (term/style (string/append " " prompt-glyph " ") :bold))))
+  (io/print-error
+    (accent (term/style (string/append " " prompt-glyph " ") :bold))))
 
 ;; ── Messages ─────────────────────────────────────────────────────
 
@@ -44,9 +45,9 @@
   (println text)
   (println ""))
 
-(defun show-info (text)  (io/println-error (muted  f"  ${text}")))
-(defun show-error (text) (io/println-error (bad    f"  error: ${text}")))
-(defun show-ok (text)    (io/println-error (ok     f"  ${text}")))
+(defun show-info (text) (io/println-error (muted f"  ${text}")))
+(defun show-error (text) (io/println-error (bad f"  error: ${text}")))
+(defun show-ok (text) (io/println-error (ok f"  ${text}")))
 
 ;; ── Tool-call rendering (agent/run :on-tool-call hook) ───────────
 
@@ -58,18 +59,22 @@
 
 (defun first-scalar-arg (args)
   "First string/number value in ARGS — a generic inline arg for MCP/unknown tools."
-  (if (not (map? args)) ""
+  (if (not (map? args))
+    ""
     (let loop ((ks (keys args)))
-      (if (null? ks) ""
+      (if (null? ks)
+        ""
         (let ((v (get args (car ks))))
-          (if (or (string? v) (number? v)) (truncate-str (str v) 60) (loop (cdr ks))))))))
+          (if (or (string? v) (number? v))
+            (truncate-str (str v) 60)
+            (loop (cdr ks))))))))
 
 (defun tool-arg (tool args)
   "Pick the most useful single arg to show inline for a tool call."
   (cond
     ((member tool (list "read-file" "write-file" "edit-file" "list-dir"))
       (get args :path ""))
-    ((equal? tool "bash")        (truncate-str (get args :command "") 60))
+    ((equal? tool "bash") (truncate-str (get args :command "") 60))
     ((member tool (list "grep" "find-files")) (get args :pattern ""))
     (else (first-scalar-arg args))))
 
@@ -84,8 +89,7 @@
 (defun on-tool-call (event)
   (let (({:event evt :tool tool :args args} event))
     (cond
-      ((= evt "start")
-        (set! active-tool tool)
+      ((= evt "start") (set! active-tool tool)
         (set! active-arg (tool-arg tool (if (map? args) args {})))
         (set! active-spinner
           (term/spinner-start (muted f"${tool} ${active-arg}"))))

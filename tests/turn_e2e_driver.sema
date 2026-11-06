@@ -21,19 +21,21 @@
         (on-text "I started")
         (on-tool {:event "start" :tool "bash" :args {:command "sleep 10"}})
         (on-partial
-          {:messages
-           (append messages
+          {:messages (append messages
              (list {:role "user" :content input}
-                   {:role "assistant" :content "I started"
-                    :tool-calls (list {:id "tool-1" :name "bash"
-                                       :arguments {:command "sleep 10"}})}))})
+               {:role "assistant"
+                :content "I started"
+                :tool-calls (list
+                  {:id "tool-1"
+                   :name "bash"
+                   :arguments {:command "sleep 10"}})}))})
         (prompt-set! "inspect current state")
         (on-steer-enter)
         (async/sleep 5000))
       {:response "state inspected"
        :messages (append messages
-                   (list {:role "user" :content input}
-                         {:role "assistant" :content "state inspected"}))})))
+         (list {:role "user" :content input}
+           {:role "assistant" :content "state inspected"}))})))
 
 (parameterize ((current-turn-runner runner)
                (current-turn-pump (lambda (turn) nil))
@@ -45,8 +47,9 @@
     {:calls calls
      :state (turn-controller-state)
      :messages *messages*
-     :blocks (map (lambda (b)
-                    {:kind (get b :kind :none)
-                     :state (get b :state :none)
-                     :text (get b :text "")})
-                  (transcript-blocks))}))
+     :blocks (map
+       (lambda (b)
+         {:kind (get b :kind :none)
+          :state (get b :state :none)
+          :text (get b :text "")})
+       (transcript-blocks))}))

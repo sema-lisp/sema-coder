@@ -4,16 +4,17 @@
 ;; A malformed or unknown option prints an error and exits — a typo'd flag
 ;; must not quietly start an interactive session.
 
-(load "config.sema")   ;; provider-env-keys — the usage footer lists the API keys
+(load "config.sema") ;; provider-env-keys — the usage footer lists the API keys
 
 (defun cli-args ()
   "User arguments: everything after the first \"--\" in the raw argv
    (`sema coder.sema -- <args…>`). No \"--\" means no user args — the raw
    argv also carries the interpreter and script path, which are not ours."
   (let loop ((rem (sys/args)))
-    (cond ((null? rem) '())
-          ((= (car rem) "--") (cdr rem))
-          (else (loop (cdr rem))))))
+    (cond
+      ((null? rem) '())
+      ((= (car rem) "--") (cdr rem))
+      (else (loop (cdr rem))))))
 
 (defun parse-args (args)
   "Parse the user's ARGS list → an options map. Split from parse-cli so it's
@@ -23,33 +24,45 @@
       (if (null? rem)
         (let ((validation-error (cli-options-validation-error result)))
           (if validation-error
-            (begin (io/println-error f"Error: ${validation-error}") (exit 2))
+            (begin
+              (io/println-error f"Error: ${validation-error}")
+              (exit 2))
             result))
         (let ((arg (car rem)) (rest (cdr rem)))
           (cond
             ((member arg (list "-h" "--help"))
-              (set! result (assoc result :help #t)) (loop rest))
+              (set! result (assoc result :help #t))
+              (loop rest))
             ((member arg (list "-V" "--version"))
-              (set! result (assoc result :version #t)) (loop rest))
+              (set! result (assoc result :version #t))
+              (loop rest))
             ((member arg (list "-m" "--model"))
               (if (null? rest)
-                (begin (io/println-error "Error: --model requires a value") (exit 1))
-                (begin (set! result (assoc result :model (car rest))) (loop (cdr rest)))))
+                (begin
+                  (io/println-error "Error: --model requires a value")
+                  (exit 1))
+                (begin
+                  (set! result (assoc result :model (car rest)))
+                  (loop (cdr rest)))))
             ((member arg (list "-p" "--print"))
               (if (null? rest)
-                (begin (io/println-error "Error: --print requires a value") (exit 1))
-                (begin (set! result (assoc result :prompt (car rest))) (loop (cdr rest)))))
-            ((= arg "--json")
-              (set! result (assoc result :json #t)) (loop rest))
+                (begin
+                  (io/println-error "Error: --print requires a value")
+                  (exit 1))
+                (begin
+                  (set! result (assoc result :prompt (car rest)))
+                  (loop (cdr rest)))))
+            ((= arg "--json") (set! result (assoc result :json #t))
+              (loop rest))
             (else
               (io/println-error f"Error: unknown option: ${arg} (try --help)")
               (exit 1))))))))
 
 (defun cli-options-validation-error (options)
   (if (and (get options :json #f)
-           (not (get options :prompt #f))
-           (not (get options :help #f))
-           (not (get options :version #f)))
+      (not (get options :prompt #f))
+      (not (get options :help #f))
+      (not (get options :version #f)))
     "--json requires --print"
     #f))
 
@@ -57,8 +70,11 @@
   "Build the stable machine-readable one-shot result."
   (let ((value (if (null? rest) "" (car rest))))
     (merge
-      {:status status :model model :effort effort
-       :usage usage :elapsed-ms elapsed-ms}
+      {:status status
+       :model model
+       :effort effort
+       :usage usage
+       :elapsed-ms elapsed-ms}
       (if (= status "completed") {:response value} {:error value}))))
 
 (defun parse-cli () (parse-args (cli-args)))

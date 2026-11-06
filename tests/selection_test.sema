@@ -13,8 +13,12 @@
 (define fam "👨‍👩‍👧")
 (define fam-line (string/append " " fam "x"))
 (define acute-line (string/append " e" "\u0301" "b"))
-(check "click in emoji cluster resolves to its start" (display-col->offset fam-line 2) 1)
-(check "column after emoji cluster maps onward" (display-col->offset fam-line 3) 6)
+(check "click in emoji cluster resolves to its start"
+  (display-col->offset fam-line 2)
+  1)
+(check "column after emoji cluster maps onward"
+  (display-col->offset fam-line 3)
+  6)
 (check "cluster end covers ZWJ sequence" (cluster-end fam-line 2) 6)
 (check "cluster start rewinds into ZWJ sequence" (cluster-start fam-line 4) 1)
 (check "selection cannot split an emoji cluster"
@@ -26,43 +30,56 @@
     (inclusive-selection {:line 0 :offset 1} {:line 0 :offset 1}))
   (string/append "e" "\u0301"))
 (check-true "highlight wraps the whole emoji cluster"
-  (string/contains? (highlight-selection-line fam-line 0
-                      {:start {:line 0 :offset 1} :end {:line 0 :offset 2}})
-                    (string/append fam SELECT-OFF)))
+  (string/contains?
+    (highlight-selection-line fam-line
+      0
+      {:start {:line 0 :offset 1} :end {:line 0 :offset 2}})
+    (string/append fam SELECT-OFF)))
 
 ;; ── Ordering, extraction, and reverse-video rendering ────────────────────────
 
 (define sample-lines (list " alpha" " beta" " gamma"))
-(let ((sel (inclusive-selection
-             {:line 0 :offset 1} {:line 1 :offset 4})))
+(let ((sel
+        (inclusive-selection {:line 0 :offset 1}
+          {:line 1 :offset 4})))
   (check "forward drag includes both endpoint cells"
-    (selection-text sample-lines sel) "alpha\n beta")
+    (selection-text sample-lines sel)
+    "alpha\n beta")
   (check "selection starts at anchor" (:start sel) {:line 0 :offset 1})
   (check "selection end is exclusive" (:end sel) {:line 1 :offset 5}))
 
-(let ((sel (inclusive-selection
-             {:line 1 :offset 4} {:line 0 :offset 1})))
+(let ((sel
+        (inclusive-selection {:line 1 :offset 4}
+          {:line 0 :offset 1})))
   (check "reverse drag orders the range"
-    (selection-text sample-lines sel) "alpha\n beta"))
+    (selection-text sample-lines sel)
+    "alpha\n beta"))
 
 (let ((calls 0)
       (sel {:start {:line 100 :offset 1} :end {:line 102 :offset 2}}))
   (selection-text-with
-    (lambda (line) (set! calls (+ calls 1)) "abcdef")
+    (lambda (line)
+      (set! calls (+ calls 1))
+      "abcdef")
     sel)
   (check "copy extraction visits selected rows only" calls 3))
 
 (let* ((styled (string/append " " (term/style "alpha" :bold)))
        (highlighted (highlight-styled-range styled 1 4)))
   (check "highlight preserves visible text" (term/strip highlighted) " alpha")
-  (check-contains "highlight uses brand-gold background" highlighted "48;2;200;168;85")
-  (check-contains "highlight uses warm dark foreground" highlighted "38;2;28;24;16")
+  (check-contains "highlight uses brand-gold background"
+    highlighted
+    "48;2;200;168;85")
+  (check-contains "highlight uses warm dark foreground"
+    highlighted
+    "38;2;28;24;16")
   (check-contains "highlight resets its colors" highlighted SELECT-OFF))
 
 (let* ((styled (accent "alpha"))
        (highlighted (highlight-styled-range styled 1 4)))
   (check "highlight restores surrounding styled text"
-    (term/strip highlighted) "alpha")
+    (term/strip highlighted)
+    "alpha")
   (check-true "highlight replays underlying accent after selection"
     (> (length (string/split highlighted "\x1b;[38;2;200;168;85m")) 2)))
 
@@ -87,13 +104,16 @@
   (osc52-sequence "hi" #f)
   (string/append "\x1b;]52;c;aGk=" "\x1b;\\"))
 (let ((wrapped (osc52-sequence "hi" #t)))
-  (check-true "tmux OSC52 has passthrough prefix" (string/starts-with? wrapped "\x1b;Ptmux;"))
+  (check-true "tmux OSC52 has passthrough prefix"
+    (string/starts-with? wrapped "\x1b;Ptmux;"))
   (check-true "tmux OSC52 doubles inner escape"
     (string/contains? wrapped (string/append "\x1b;\x1b;]52"))))
 (check "oversized OSC52 is refused"
-  (osc52-sequence (string/repeat "x" (+ OSC52-MAX-BYTES 1)) #f) #f)
+  (osc52-sequence (string/repeat "x" (+ OSC52-MAX-BYTES 1)) #f)
+  #f)
 (check "oversized OSC52 copy is refused without raising"
-  (copy-with-osc52 (string/repeat "x" (+ OSC52-MAX-BYTES 1))) #f)
+  (copy-with-osc52 (string/repeat "x" (+ OSC52-MAX-BYTES 1)))
+  #f)
 
 ;; ── Mouse integration: drag copies and release clears gesture feedback ────────
 
@@ -109,12 +129,11 @@
 
 (define copied-text "")
 (define copy-count 0)
-(parameterize
-  ((current-clipboard-copy
-     (lambda (text)
-       (set! copied-text text)
-       (set! copy-count (+ copy-count 1))
-       #t)))
+(parameterize ((current-clipboard-copy
+                 (lambda (text)
+                   (set! copied-text text)
+                   (set! copy-count (+ copy-count 1))
+                   #t)))
   ;; transcript-height=3 and this block renders exactly 3 rows, so y=2 is
   ;; " alpha"; x=2..6 selects alpha.
   (handle-mouse {:kind :mouse :action :press :button 0 :x 2 :y 2})
@@ -153,13 +172,13 @@
 ;; An always-ready input source used to recurse forever and starve render!.
 ;; The bounded drain must return after exactly INPUT-DRAIN-LIMIT events.
 (define polled-events 0)
-(parameterize
-  ((current-key-poll
-     (lambda (timeout)
-       (set! polled-events (+ polled-events 1))
-       {:kind :key :name :noop})))
+(parameterize ((current-key-poll
+                 (lambda (timeout)
+                   (set! polled-events (+ polled-events 1))
+                   {:kind :key :name :noop})))
   (check "input burst drain is bounded"
-    (drain-input-burst!) INPUT-DRAIN-LIMIT))
+    (drain-input-burst!)
+    INPUT-DRAIN-LIMIT))
 (check "bounded drain performs no extra poll" polled-events INPUT-DRAIN-LIMIT)
 
 ;; Frame scheduling prevents per-event terminal flushes while guaranteeing that
@@ -167,8 +186,7 @@
 (define fake-ui-now 110)
 (define saved-last-render *last-render-at*)
 (define saved-frame-pending *frame-pending*)
-(parameterize
-  ((current-ui-clock (lambda () fake-ui-now)))
+(parameterize ((current-ui-clock (lambda () fake-ui-now)))
   (set! *last-render-at* 100)
   (set! *frame-pending* #f)
   (check "idle frame wait keeps caller timeout" (frame-wait-ms 250) 250)

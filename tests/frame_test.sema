@@ -6,33 +6,42 @@
 ;; over-wide row or embedded newline/tab moves the real terminal cursor and
 ;; paints over another row even though the logical frame still looks valid.
 
-(set! *rows* 24) (set! *cols* 80) (set! *cwd* "/tmp")
+(set! *rows* 24)
+(set! *cols* 80)
+(set! *cwd* "/tmp")
 (set! *config* {})
 
 (defun overwide () (filter #(> (string/width %) *cols*) (build-frame)))
 (defun layout-moving? (row)
   (or (string/contains? row "\n")
-      (string/contains? row "\r")
-      (string/contains? row "\t")))
+    (string/contains? row "\r")
+    (string/contains? row "\t")))
 (defun unsafe-layout () (filter layout-moving? (build-frame)))
 (defun check-frame (label)
   (check label (list (length (overwide)) (length (unsafe-layout))) (list 0 0)))
 
 ;; Nasty content: a heading wider than the terminal, then a running tool call
 ;; with a long MCP-style name and a long argument.
-(add-block! {:kind :assistant :text "## Summary of the deep investigation into the terminal renderer and all of the changes required to fix it"})
+(add-block!
+  {:kind :assistant
+   :text "## Summary of the deep investigation into the terminal renderer and all of the changes required to fix it"})
 (check-frame "long heading")
 
-(add-block! {:kind :tool :tool "mcp__chrome-devtools__performance_start_trace"
-             :arg (string/repeat "x" 70) :state :running :ms 0})
+(add-block!
+  {:kind :tool
+   :tool "mcp__chrome-devtools__performance_start_trace"
+   :arg (string/repeat "x" 70)
+   :state :running
+   :ms 0})
 (check-frame "running tool with long name")
 
 (set-last-tool-done! 120000 "trace started ok" #f)
 (check-frame "done tool line with duration suffix")
 
 ;; Scrolled: the over-wide line must fit wherever the window puts it.
-(for-each (lambda (i) (add-block! {:kind :info :text f"filler line ${i}"}))
-          (range 0 30))
+(for-each
+  (lambda (i) (add-block! {:kind :info :text f"filler line ${i}"}))
+  (range 0 30))
 (set! *scroll* 4)
 (check-frame "scrolled mid-transcript")
 (set! *scroll* 0)
@@ -41,7 +50,8 @@
 (set! *model* "anthropic:claude-fable-5-extremely-long-model-identifier")
 (set! *cols* 60)
 (check-frame "long model in header at 60 cols")
-(set! *model* "") (set! *cols* 80)
+(set! *model* "")
+(set! *cols* 80)
 
 ;; Palette open over the transcript.
 (prompt-set! "/mo")
@@ -54,22 +64,26 @@
 (register-command! "unsafe" "unsafe completion" (lambda (state args) state))
 (register-completions! "unsafe"
   (lambda (state)
-    (list {:value (string-append "safe" "\x1b;[2J" "value")
-           :label "line one\nline two\tend"})))
+    (list
+      {:value (string-append "safe" "\x1b;[2J" "value")
+       :label "line one\nline two\tend"})))
 (check-frame "dynamic completion terminal controls")
 (handle-named {:kind :key :name :tab})
-(check "completed dynamic value is terminal-safe" (prompt-text) "/unsafe safevalue")
+(check "completed dynamic value is terminal-safe"
+  (prompt-text)
+  "/unsafe safevalue")
 (prompt-clear!)
 
 ;; A queued multi-line paste used to embed its newline and tab directly in the
 ;; frame write. The terminal then painted the tail over the prompt/status rows.
 (set! *input-queue*
-  (list {:id "queue-layout" :mode "follow-up"
-         :text "likely not sema web\n# Try the regular app\tnext"}))
+  (list
+    {:id "queue-layout"
+     :mode "follow-up"
+     :text "likely not sema web\n# Try the regular app\tnext"}))
 (check-frame "queued multiline input")
 (check-true "queued multiline preview keeps its prefix and flattened text"
-  (string/starts-with?
-    (term/strip (nth (build-frame) (- *rows* 3)))
+  (string/starts-with? (term/strip (nth (build-frame) (- *rows* 3)))
     " 1 queued likely not sema web # Try the regular app next"))
 
 (done)

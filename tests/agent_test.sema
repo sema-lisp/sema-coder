@@ -1,39 +1,46 @@
 (load "harness.sema")
-(load "../src/agent.sema")   ;; loads util, tools
+(load "../src/agent.sema") ;; loads util, tools
 
 ;; create-agent builds a real agent value (no network), with the base tools
 (let ((a (create-agent "/tmp" "" {})))
   (check "agent has 10 tools" (length (agent/tools a)) 10)
   (check-contains "system prompt explains background bash"
-    (agent/system a) "background=true")
+    (agent/system a)
+    "background=true")
   (check-contains "system prompt requires terminal task inspection"
-    (agent/system a) "terminal status"))
+    (agent/system a)
+    "terminal status"))
 
 ;; model precedence (explicit arg) + max-turns from config; rebuilding is fine
 (let ((b (create-agent "/tmp" "claude-haiku-4-5-20251001" {:max-turns 5})))
   (check "explicit model wins" (agent/model b) "claude-haiku-4-5-20251001")
-  (check "max-turns from cfg"  (agent/max-turns b) 5))
+  (check "max-turns from cfg" (agent/max-turns b) 5))
 
 ;; model + effort precedence (pure helpers; unsupported models no-op the option)
-(check "choose-model explicit wins"   (choose-model "x" {:model "y"}) "x")
+(check "choose-model explicit wins" (choose-model "x" {:model "y"}) "x")
 (check "choose-model config fallback" (choose-model "" {:model "y"}) "y")
-(check "choose-model auto"            (choose-model "" {}) "")
+(check "choose-model auto" (choose-model "" {}) "")
 
 (define cfg-with-model-effort
   {:effort "low"
-   :models (list (provider "P" (list (model "m1" "M1" {:effort "xhigh"})
-                                     (model "m2" "M2"))))})
-(check "override wins"            (pick-effort "high" "m1" cfg-with-model-effort) "high")
-(check "model default beats cfg"  (pick-effort "" "m1" cfg-with-model-effort) "xhigh")
-(check "config fallback"          (pick-effort "" "m2" cfg-with-model-effort) "low")
-(check "default is empty"         (pick-effort "" "" {}) "")
-(check "effort merged into opts"  (turn-opts {:messages '()} "high")
-       {:messages '() :reasoning-effort "high"})
-(check "no effort, no key"        (turn-opts {:messages '()} "") {:messages '()})
+   :models (list
+     (provider "P"
+       (list (model "m1" "M1" {:effort "xhigh"})
+         (model "m2" "M2"))))})
+(check "override wins" (pick-effort "high" "m1" cfg-with-model-effort) "high")
+(check "model default beats cfg"
+  (pick-effort "" "m1" cfg-with-model-effort)
+  "xhigh")
+(check "config fallback" (pick-effort "" "m2" cfg-with-model-effort) "low")
+(check "default is empty" (pick-effort "" "" {}) "")
+(check "effort merged into opts"
+  (turn-opts {:messages '()} "high")
+  {:messages '() :reasoning-effort "high"})
+(check "no effort, no key" (turn-opts {:messages '()} "") {:messages '()})
 
 ;; tool names are derived from the tools themselves, not a hand-synced list
 (check "tool-names derived" (tool-names) (map tool/name (all-tools)))
-(check "ten tool names"     (length (tool-names)) 10)
+(check "ten tool names" (length (tool-names)) 10)
 (check-true "read-file present" (member "read-file" (tool-names)))
 (check-true "task-output present" (member "task-output" (tool-names)))
 
@@ -41,9 +48,15 @@
 (mutable-array/push! *mcp*
   {:name "dup" :status :connected :tools (list (car (all-tools))) :handle #f})
 (check "duplicate tool name is dropped" (length (agent-tools)) 10)
-(check "dropped name is reported" *tool-name-collisions* (list (tool/name (car (all-tools)))))
+(check "dropped name is reported"
+  *tool-name-collisions*
+  (list (tool/name (car (all-tools)))))
 (mcp-reset!)
-(check "no collisions once the server is gone" (begin (agent-tools) *tool-name-collisions*) '())
+(check "no collisions once the server is gone"
+  (begin
+    (agent-tools)
+    *tool-name-collisions*)
+  '())
 
 ;; project instruction files are folded into the system prompt
 (define instr-dir (test-temp-path "instructions"))
@@ -55,11 +68,16 @@
   (project-instructions instr-dir)
   "<project_instructions source=\"AGENTS.md\">\nUse tabs.\n</project_instructions>")
 (file/write (path/join instr-dir "CLAUDE.md") "@AGENTS.md\n")
-(check-contains "different files both appear" (project-instructions instr-dir) "source=\"CLAUDE.md\"")
+(check-contains "different files both appear"
+  (project-instructions instr-dir)
+  "source=\"CLAUDE.md\"")
 (file/write (path/join instr-dir "CLAUDE.md") (string/repeat "x" 40000))
-(check-contains "long file is truncated" (project-instructions instr-dir) "[truncated: CLAUDE.md")
+(check-contains "long file is truncated"
+  (project-instructions instr-dir)
+  "[truncated: CLAUDE.md")
 (check-contains "instructions reach the system prompt"
-  (agent/system (create-agent instr-dir "" {})) "Use tabs.")
+  (agent/system (create-agent instr-dir "" {}))
+  "Use tabs.")
 
 ;; Per-turn accounting must use the result, not the process-wide session tally.
 (define saved-agent-run agent/run)

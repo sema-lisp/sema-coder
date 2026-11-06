@@ -20,10 +20,11 @@
              ;; regex offsets are bytes; locate the one-codepoint match using
              ;; the codepoint-aware string API before slicing.
              (at (string/index-of text matched)))
-        (loop (string/append
-                (string/slice text 0 at)
-                (string/slice text (+ at (string/length matched))
-                                   (string/length text)))))
+        (loop
+          (string/append (string/slice text 0 at)
+            (string/slice text
+              (+ at (string/length matched))
+              (string/length text)))))
       text)))
 
 (defun sanitize-terminal-text (s)
@@ -37,9 +38,9 @@
    stays intact, but newline, carriage return, and tab cannot move the cursor
    outside the row owned by the fixed-frame renderer."
   (-> s
-      (string/replace "\n" " ")
-      (string/replace "\r" " ")
-      (string/replace "\t" " ")))
+    (string/replace "\n" " ")
+    (string/replace "\r" " ")
+    (string/replace "\t" " ")))
 
 ;; ── Clipping ─────────────────────────────────────────────────────
 
@@ -54,19 +55,25 @@
 (defun ansi-escape-end (s i)
   "Index just past the ANSI escape (ESC [ … letter) starting at S[i]."
   (let loop ((j (+ i 2)))
-    (if (>= j (string/length s)) j
-      (if (regex/match #"[A-Za-z]" (string/slice s j (+ j 1))) (+ j 1) (loop (+ j 1))))))
+    (if (>= j (string/length s))
+      j
+      (if (regex/match #"[A-Za-z]" (string/slice s j (+ j 1)))
+        (+ j 1)
+        (loop (+ j 1))))))
 
 (defun clip-styled (s w)
   "Clip a possibly-styled S to display width W without ever cutting an ANSI
    escape, closing any open style at the cut (safe under terminal resize)."
-  (if (<= (string/width s) w) s
+  (if (<= (string/width s) w)
+    s
     (let loop ((i 0) (col 0))
-      (if (>= i (string/length s)) s
+      (if (>= i (string/length s))
+        s
         (if (= (string/slice s i (+ i 1)) TEXT-ESC)
           (loop (ansi-escape-end s i) col)
           (let ((cw (string/width (string/slice s i (+ i 1)))))
-            (if (> (+ col cw) w) (string/append (string/slice s 0 i) TEXT-RESET-SGR)
+            (if (> (+ col cw) w)
+              (string/append (string/slice s 0 i) TEXT-RESET-SGR)
               (loop (+ i 1) (+ col cw)))))))))
 
 ;; ── Padding ──────────────────────────────────────────────────────
@@ -101,8 +108,7 @@
   (let ((lines (string/split text "\n")))
     (if (<= (length lines) n)
       text
-      (string/append
-        (string/join (take n lines) "\n")
+      (string/append (string/join (take n lines) "\n")
         f"\n\n[truncated — showing first ${n} of ${(length lines)} lines]"))))
 
 (defun truncate-chars (text max-chars)
@@ -112,8 +118,7 @@
   (let ((n (string/length text)))
     (if (<= n max-chars)
       text
-      (string/append
-        (string/slice text 0 max-chars)
+      (string/append (string/slice text 0 max-chars)
         f"\n\n[truncated — output exceeded ${max-chars} characters]"))))
 
 (defun lines->numbered (text . opts)
@@ -123,7 +128,9 @@
   (let ((start (if (null? opts) 1 (car opts)))
         (lines (string/split text "\n")))
     (string/join
-      (map-indexed (lambda (i l) (string/append (number->string (+ start i)) "\t" l)) lines)
+      (map-indexed
+        (lambda (i l) (string/append (number->string (+ start i)) "\t" l))
+        lines)
       "\n")))
 
 (defun numbered-window (text offset limit max-lines)
@@ -135,16 +142,19 @@
   (let* ((lines (string/split text "\n"))
          (total (length lines))
          (start (max 1 (if (and (number? offset) (> offset 0)) offset 1)))
-         (cap   (min max-lines (if (and (number? limit) (> limit 0)) limit max-lines)))
+         (cap
+           (min max-lines
+             (if (and (number? limit) (> limit 0)) limit max-lines)))
          (from0 (- start 1)))
     (if (>= from0 total)
       f"[offset ${start} is past end of file (${total} line${(if (= total 1) "" "s")})]"
-      (let* ((n     (min cap (- total from0)))
+      (let* ((n (min cap (- total from0)))
              (window (take n (drop from0 lines)))
              (endln (+ start n -1))
-             (body  (lines->numbered (string/join window "\n") start)))
+             (body (lines->numbered (string/join window "\n") start)))
         (if (or (> start 1) (< endln total))
-          (string/append body f"\n\n[showing lines ${start}-${endln} of ${total}]")
+          (string/append body
+            f"\n\n[showing lines ${start}-${endln} of ${total}]")
           body)))))
 
 ;; ── Word boundaries (for prompt-input word motion / delete-word) ──
@@ -154,18 +164,30 @@
 (defun word-left-index (s i)
   "Codepoint index of the previous word boundary before I in S: skip whitespace,
    then word chars, leftward. (i → start of the word to its left.)"
-  (let* ((skip-ws (let loop ((j i))
-                    (if (and (> j 0) (not (word-char? (string/slice s (- j 1) j)))) (loop (- j 1)) j)))
-         (skip-wd (let loop ((j skip-ws))
-                    (if (and (> j 0) (word-char? (string/slice s (- j 1) j))) (loop (- j 1)) j))))
+  (let* ((skip-ws
+           (let loop ((j i))
+             (if (and (> j 0) (not (word-char? (string/slice s (- j 1) j))))
+               (loop (- j 1))
+               j)))
+         (skip-wd
+           (let loop ((j skip-ws))
+             (if (and (> j 0) (word-char? (string/slice s (- j 1) j)))
+               (loop (- j 1))
+               j))))
     skip-wd))
 
 (defun word-right-index (s i)
   "Codepoint index of the next word boundary after I in S: skip whitespace, then
    word chars, rightward. (i → end of the word to its right.)"
   (let* ((n (string/length s))
-         (skip-ws (let loop ((j i))
-                    (if (and (< j n) (not (word-char? (string/slice s j (+ j 1))))) (loop (+ j 1)) j)))
-         (skip-wd (let loop ((j skip-ws))
-                    (if (and (< j n) (word-char? (string/slice s j (+ j 1)))) (loop (+ j 1)) j))))
+         (skip-ws
+           (let loop ((j i))
+             (if (and (< j n) (not (word-char? (string/slice s j (+ j 1)))))
+               (loop (+ j 1))
+               j)))
+         (skip-wd
+           (let loop ((j skip-ws))
+             (if (and (< j n) (word-char? (string/slice s j (+ j 1))))
+               (loop (+ j 1))
+               j))))
     skip-wd))

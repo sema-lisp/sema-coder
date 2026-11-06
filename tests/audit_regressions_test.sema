@@ -18,26 +18,34 @@
 ;; instead of overwriting the just-cleared conversation's saved session. ──
 (set! *messages* (list {:role "user" :content "hi"}))
 (set! *session-id* "old-id")
-(apply-tui-state! {:messages '() :model "" :effort "" :cwd "." :agent #f :config {}})
+(apply-tui-state!
+  {:messages '() :model "" :effort "" :cwd "." :agent #f :config {}})
 (check-true "clear starts a new session id" (not (= *session-id* "old-id")))
-(check-true "new session id is set"         (if *session-id* #t #f))
+(check-true "new session id is set" (if *session-id* #t #f))
 ;; a command that leaves messages non-empty must NOT rotate the session
 (set! *session-id* "keep-id")
-(apply-tui-state! {:messages (list {:role "user" :content "x"}) :model "" :effort ""
-                   :cwd "." :agent #f :config {}})
+(apply-tui-state!
+  {:messages (list {:role "user" :content "x"})
+   :model ""
+   :effort ""
+   :cwd "."
+   :agent #f
+   :config {}})
 (check "non-clearing command keeps session id" *session-id* "keep-id")
 
 ;; ── provider-key-missing? on an unknown provider returns #f without crashing
 ;; (the if-let/#f-truthiness guard), and the env-key map is correct. ──
 (check "unknown provider → not missing" (provider-key-missing? "Nonesuch") #f)
-(check "provider-env-key anthropic"     (provider-env-key "Anthropic") "ANTHROPIC_API_KEY")
-(check "provider-env-key openai"        (provider-env-key "OpenAI") "OPENAI_API_KEY")
-(check "provider-env-key unknown"       (provider-env-key "Nonesuch") #f)
+(check "provider-env-key anthropic"
+  (provider-env-key "Anthropic")
+  "ANTHROPIC_API_KEY")
+(check "provider-env-key openai" (provider-env-key "OpenAI") "OPENAI_API_KEY")
+(check "provider-env-key unknown" (provider-env-key "Nonesuch") #f)
 
 ;; ── provider-env-key reads the descriptor table, so adding a provider is a
 ;; one-place change (no second match arm to keep in sync). ──
 (check "env-key derives from descriptors"
-       (map (lambda (d) (provider-env-key (:display-name d))) provider-descriptors)
-       (map :env-key provider-descriptors))
+  (map (lambda (d) (provider-env-key (:display-name d))) provider-descriptors)
+  (map :env-key provider-descriptors))
 
 (done)

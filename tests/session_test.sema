@@ -1,12 +1,14 @@
 (load "harness.sema")
 (load "../src/session.sema")
 
-(define tmp (path/join (sys/temp-dir) (string/append "sema-coder-sess-" (number->string (sys/pid)))))
+(define tmp
+  (path/join (sys/temp-dir)
+    (string/append "sema-coder-sess-" (number->string (sys/pid)))))
 
 (define msgs
-  (list
-    {:role "user" :content "add 21 and 21"}
-    {:role "assistant" :content ""
+  (list {:role "user" :content "add 21 and 21"}
+    {:role "assistant"
+     :content ""
      :tool-calls (list {:id "c1" :name "calc" :arguments {:a 21 :b 21}})}
     {:role "tool" :content "42" :tool-call-id "c1" :tool-name "calc"}
     {:role "assistant" :content "21 plus 21 is 42."}))
@@ -18,22 +20,23 @@
     (check "one session listed" (length rows) 1)
     (let ((m (car rows)))
       (check "title from first user msg" (:title m) "add 21 and 21")
-      (check "model preserved"           (:model m) "claude-opus-4-8")
-      (check "effort preserved"          (:effort m) "high")
-      (check "created preserved"         (:created m) 1700000000)
-      (check "message count"             (:count m) 4)
+      (check "model preserved" (:model m) "claude-opus-4-8")
+      (check "effort preserved" (:effort m) "high")
+      (check "created preserved" (:created m) 1700000000)
+      (check "message count" (:count m) 4)
       (check "cwd defaults to the process cwd" (:cwd m) (sys/cwd))))
   (save-session! "elsewhere" 1600000000 "m" "" msgs {:cwd "/other/project"})
   (check "explicit cwd is recorded"
-    (:cwd (:meta (load-session "elsewhere"))) "/other/project")
+    (:cwd (:meta (load-session "elsewhere")))
+    "/other/project")
   (file/delete (session-path "elsewhere"))
 
   (let ((loaded (load-session "sess1")))
     (check "loaded message count" (length (:messages loaded)) 4)
     (let ((a (nth (:messages loaded) 1)))
-      (check "assistant role"     (:role a) "assistant")
-      (check "tool-call name"     (:name (car (:tool-calls a))) "calc")
-      (check "tool-call arg a"    (:a (:arguments (car (:tool-calls a)))) 21))
+      (check "assistant role" (:role a) "assistant")
+      (check "tool-call name" (:name (car (:tool-calls a))) "calc")
+      (check "tool-call arg a" (:a (:arguments (car (:tool-calls a)))) 21))
     (let ((tm (nth (:messages loaded) 2)))
       (check "tool result content" (:content tm) "42")
       (check "tool-call-id linked" (:tool-call-id tm) "c1")))
@@ -41,18 +44,28 @@
   (let ((renamed (rename-session! "sess1" "  Custom\nname  ")))
     (check "rename returns normalized title" (:title renamed) "Custom name")
     (check "rename records an explicit title"
-      (:custom-title (:meta (load-session "sess1"))) "Custom name"))
-  (save-session! "sess1" 1700000000 "claude-opus-4-8" "high" msgs
+      (:custom-title (:meta (load-session "sess1")))
+      "Custom name"))
+  (save-session! "sess1"
+    1700000000
+    "claude-opus-4-8"
+    "high"
+    msgs
     {:custom-title "Custom name"})
   (check "later saves preserve a custom title"
-    (:title (:meta (load-session "sess1"))) "Custom name")
+    (:title (:meta (load-session "sess1")))
+    "Custom name")
 
   ;; Queue metadata persists even without conversation messages, so a crash or
   ;; resume cannot silently discard future work.
   (define queued (list {:id "q-1" :text "next" :mode "follow-up"}))
   (define events (list {:seq 1 :event "message-queued"}))
-  (save-session! "queued" 1700000002 "m" "" '()
-                 {:queue queued :queue-paused #t :events events})
+  (save-session! "queued"
+    1700000002
+    "m"
+    ""
+    '()
+    {:queue queued :queue-paused #t :events events})
   (let ((loaded (load-session "queued")))
     (check "queued input persists" (get (:meta loaded) :queue '()) queued)
     (check-true "paused queue persists" (get (:meta loaded) :queue-paused #f))
@@ -68,18 +81,22 @@
          (forged (assoc (:meta (load-session "sess1")) :id "sess1")))
     (write-session! "filename-id" forged msgs)
     (check "session listing derives id from the filename"
-      (:id (session-meta-of dest)) "filename-id")
+      (:id (session-meta-of dest))
+      "filename-id")
     (file/delete dest))
 
   ;; A typed /resume id cannot escape the sessions directory.
   (check-true "plain session id accepted" (valid-session-id? "1700-42_test.v1"))
   (check "slash in session id rejected" (valid-session-id? "../outside") #f)
-  (check "backslash in session id rejected" (valid-session-id? "..\\outside") #f)
+  (check "backslash in session id rejected"
+    (valid-session-id? "..\\outside")
+    #f)
   (check-true "session path traversal throws"
     (try (begin (session-path "../outside") #f) (catch e #t)))
 
   (save-session! "delete-me" 1700000003 "m" "" msgs)
-  (check-true "delete removes an existing session" (delete-session! "delete-me"))
+  (check-true "delete removes an existing session"
+    (delete-session! "delete-me"))
   (check-false "delete reports a missing session" (delete-session! "delete-me"))
   (check-throws "rename rejects an empty title"
     (lambda () (rename-session! "sess1" "  ")))
@@ -91,13 +108,16 @@
   (let loop ((i 0))
     (when (< i (+ MAX-SESSIONS 3))
       (write-session! (string/append "p" (number->string i))
-                      {:kind "meta" :created i :title "x"} msgs)
+        {:kind "meta" :created i :title "x"}
+        msgs)
       (loop (+ i 1))))
   (save-session! "p-newest" 999999 "m" "" msgs)
   (let ((ids (map :id (list-sessions))))
     (check "prune keeps the cap" (length ids) MAX-SESSIONS)
     (check-true "prune keeps the newest" (if (member "p-newest" ids) #t #f))
     (check-false "prune drops the oldest" (if (member "p0" ids) #t #f)))
-  (for-each #(delete-session! (:id %)) (list-sessions)))
+  (for-each
+    #(delete-session! (:id %))
+    (list-sessions)))
 
 (done)

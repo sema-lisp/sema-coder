@@ -5,8 +5,8 @@
 ;; with tool-calls and tool results — so a restored session resumes verbatim).
 
 (load "config.sema")
-(load "text.sema")      ;; truncate-str for session titles
-(load "display.sema")   ;; tool-arg for rebuilding tool blocks
+(load "text.sema") ;; truncate-str for session titles
+(load "display.sema") ;; tool-arg for rebuilding tool blocks
 
 (defun sessions-dir () (path/join (config-dir) "sessions"))
 
@@ -21,15 +21,18 @@
 (defun session-title (messages)
   "First user message, one line, truncated — the human-readable label."
   (let ((u (filter #(= (get % :role "") "user") messages)))
-    (if (null? u) "(no messages)"
-      (truncate-str (string/replace (string/trim (get (car u) :content "")) "\n" " ") 56))))
+    (if (null? u)
+      "(no messages)"
+      (truncate-str
+        (string/replace (string/trim (get (car u) :content "")) "\n" " ")
+        56))))
 
 (defun normalized-session-title (title)
   "A one-line, terminal-safe custom session title, or an error when empty."
-  (let ((clean (truncate-str
-                 (string/trim
-                   (flatten-terminal-row (sanitize-terminal-text title)))
-                 80)))
+  (let ((clean
+          (truncate-str
+            (string/trim (flatten-terminal-row (sanitize-terminal-text title)))
+            80)))
     (when (= clean "") (error "session title must not be empty"))
     clean))
 
@@ -55,30 +58,41 @@
          (events (get opts :events '()))
          (cwd (get opts :cwd (sys/cwd)))
          (custom-title (get opts :custom-title "")))
-  (when (or (> (length messages) 0) (> (length queue) 0))
-    (let* ((explicit (if (= custom-title "") ""
-                       (normalized-session-title custom-title)))
-           (meta (merge
-                   {:kind "meta" :id id :created created :model model :effort effort
-                    :title (if (= explicit "") (session-title messages) explicit)
-                    :cwd cwd
-                    :queue queue :queue-paused paused? :events events}
-                   (if (= explicit "") {} {:custom-title explicit}))))
-      (write-session! id meta messages)
-      (prune-sessions!)))))
+    (when (or (> (length messages) 0) (> (length queue) 0))
+      (let* ((explicit
+               (if (= custom-title "")
+                 ""
+                 (normalized-session-title custom-title)))
+             (meta
+               (merge
+                 {:kind "meta"
+                  :id id
+                  :created created
+                  :model model
+                  :effort effort
+                  :title (if (= explicit "") (session-title messages) explicit)
+                  :cwd cwd
+                  :queue queue
+                  :queue-paused paused?
+                  :events events}
+                 (if (= explicit "") {} {:custom-title explicit}))))
+        (write-session! id meta messages)
+        (prune-sessions!)))))
 
-(define MAX-SESSIONS 200)   ;; newest kept; older files are deleted on save
+(define MAX-SESSIONS 200) ;; newest kept; older files are deleted on save
 
 (defun prune-sessions! ()
   "Delete the oldest session files beyond MAX-SESSIONS. Only reads metadata
    once the directory holds more files than the cap, so a normal save costs
    one directory listing."
   (let ((dir (sessions-dir)))
-    (when (and (file/exists? dir)
-               (> (length (filter #(string/ends-with? % ".jsonl") (file/list dir)))
-                  MAX-SESSIONS))
-      (for-each #(delete-session! (:id %))
-                (drop MAX-SESSIONS (list-sessions))))))
+    (when
+      (and (file/exists? dir)
+        (> (length (filter #(string/ends-with? % ".jsonl") (file/list dir)))
+          MAX-SESSIONS))
+      (for-each
+        #(delete-session! (:id %))
+        (drop MAX-SESSIONS (list-sessions))))))
 
 (defun read-lines (path)
   (filter #(not (= (string/trim %) "")) (string/split (file/read path) "\n")))
@@ -99,12 +113,14 @@
   "All saved sessions as meta maps ({:id :title :model :created :cwd :count …}),
    newest first. :cwd is absent in files written before it was recorded."
   (let ((dir (sessions-dir)))
-    (if (not (file/exists? dir)) '()
+    (if (not (file/exists? dir))
+      '()
       (->> (file/list dir)
-           (filter #(string/ends-with? % ".jsonl"))
-           (map #(session-meta-of (if (string/contains? % "/") % (path/join dir %))))
-           (filter (lambda (m) m))
-           (sort-by #(- (get % :created 0)))))))
+        (filter #(string/ends-with? % ".jsonl"))
+        (map
+          #(session-meta-of (if (string/contains? % "/") % (path/join dir %))))
+        (filter (lambda (m) m))
+        (sort-by #(- (get % :created 0)))))))
 
 (defun load-session (id)
   "Read a session → {:meta … :messages (…)}."
@@ -124,58 +140,75 @@
   "Delete ID after validating that it is a session file name."
   (let ((dest (session-path id)))
     (if (file/exists? dest)
-      (begin (file/delete dest) #t)
+      (begin
+        (file/delete dest)
+        #t)
       #f)))
 
 ;; ── Stored messages → transcript blocks (pure; the TUI renders them) ─────────
 
 (defun tool-results-index (messages)
   "tool-call-id → result content, gathered from the tool-role messages."
-  (foldl (lambda (idx m)
-           (if (= (get m :role "") "tool")
-             (assoc idx (get m :tool-call-id "") (get m :content ""))
-             idx))
-         {} messages))
+  (foldl
+    (lambda (idx m)
+      (if (= (get m :role "") "tool")
+        (assoc idx (get m :tool-call-id "") (get m :content ""))
+        idx))
+    {}
+    messages))
 
 (defun tool-messages-index (messages)
   "tool-call-id → complete tool message, including terminal status."
-  (foldl (lambda (idx m)
-           (if (= (get m :role "") "tool")
-             (assoc idx (get m :tool-call-id "") m)
-             idx))
-         {} messages))
+  (foldl
+    (lambda (idx m)
+      (if (= (get m :role "") "tool")
+        (assoc idx (get m :tool-call-id "") m)
+        idx))
+    {}
+    messages))
 
 (defun message->blocks (m idx)
   "One stored message → transcript blocks. Tool-role messages are folded into
    the assistant tool-call blocks (via IDX), so they emit nothing themselves."
   (if (= (get m :kind "") "agent-control")
-    (list {:kind :warn
-           :text (match (get m :event "")
-                   ("turn-interrupted" "turn interrupted by user; tool side effects may be partial")
-                   ("turn-failed" "turn failed before completion; tool side effects may be partial")
-                   (_ (get m :content "agent control event")))})
-  (match (get m :role "")
-    ("user" (list {:kind :user :text (get m :content "")}))
-    ("assistant"
-      (append
-        (if (= (string/trim (get m :content "")) "") '()
-          (list {:kind :assistant :text (get m :content "")}))
-        (map (lambda (tc)
-               (let* ((a (get tc :arguments {}))
-                      (result-message (get idx (get tc :id "") #f))
-                      (result (if (map? result-message)
-                                (get result-message :content "")
-                                (or result-message "")))
-                      (status (if (map? result-message)
-                                (get result-message :status "") ""))
-                      (interrupted? (= status "interrupted"))
-                      (failed? (= status "failed")))
-                 {:kind :tool :tool (get tc :name "")
-                  :arg (tool-arg (get tc :name "") (if (map? a) a {}))
-                  :state (cond (interrupted? :cancelled) (failed? :failed) (else :done))
-                  :ms 0 :result result :error (or interrupted? failed?)}))
-             (get m :tool-calls '()))))
-    (_ '()))))
+    (list
+      {:kind :warn
+       :text (match (get m :event "")
+         ("turn-interrupted"
+           "turn interrupted by user; tool side effects may be partial")
+         ("turn-failed"
+           "turn failed before completion; tool side effects may be partial")
+         (_ (get m :content "agent control event")))})
+    (match (get m :role "")
+      ("user" (list {:kind :user :text (get m :content "")}))
+      ("assistant"
+        (append
+          (if (= (string/trim (get m :content "")) "")
+            '()
+            (list {:kind :assistant :text (get m :content "")}))
+          (map
+            (lambda (tc)
+              (let* ((a (get tc :arguments {}))
+                     (result-message (get idx (get tc :id "") #f))
+                     (result
+                       (if (map? result-message)
+                         (get result-message :content "")
+                         (or result-message "")))
+                     (status
+                       (if (map? result-message)
+                         (get result-message :status "")
+                         ""))
+                     (interrupted? (= status "interrupted"))
+                     (failed? (= status "failed")))
+                {:kind :tool
+                 :tool (get tc :name "")
+                 :arg (tool-arg (get tc :name "") (if (map? a) a {}))
+                 :state (cond (interrupted? :cancelled) (failed? :failed) (else :done))
+                 :ms 0
+                 :result result
+                 :error (or interrupted? failed?)}))
+            (get m :tool-calls '()))))
+      (_ '()))))
 
 (defun messages->blocks (messages)
   "Rebuild the transcript from stored MESSAGES for a resumed session."

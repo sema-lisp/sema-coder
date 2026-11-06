@@ -3,61 +3,93 @@
 
 ;; ── constructors return values ──
 (check "mcp-server record"
-       (mcp-server "sema" {:command "sema" :args ["mcp"] :autostart #t})
-       {:name "sema" :opts {:command "sema" :args ["mcp"]} :autostart #t :transport "stdio"})
-(check "mcp-server http transport" (:transport (mcp-server "a" {:url "http://x"})) "http")
+  (mcp-server "sema" {:command "sema" :args ["mcp"] :autostart #t})
+  {:name "sema"
+   :opts {:command "sema" :args ["mcp"]}
+   :autostart #t
+   :transport "stdio"})
+(check "mcp-server http transport"
+  (:transport (mcp-server "a" {:url "http://x"}))
+  "http")
 (check "command argv"
-       (command "test" {:desc "t" :run ["make" "test"]})
-       {:name "test" :desc "t" :run ["make" "test"]})
+  (command "test" {:desc "t" :run ["make" "test"]})
+  {:name "test" :desc "t" :run ["make" "test"]})
 (check "default model" (:model (coder-config {})) "claude-opus-5")
-(check "coder-config fills defaults" (:max-turns (coder-config {:model "m"})) 50)
+(check "coder-config fills defaults"
+  (:max-turns (coder-config {:model "m"}))
+  50)
 (check "effort defaults to provider default" (:effort (coder-config {})) "")
 
 ;; ── models: constructors + flattening for the /model autocomplete ──
-(check "model record" (model "gpt-5.5" "GPT-5.5") {:id "gpt-5.5" :label "GPT-5.5"})
-(check "model opts merged" (model "m" "M" {:effort "high"}) {:id "m" :label "M" :effort "high"})
+(check "model record"
+  (model "gpt-5.5" "GPT-5.5")
+  {:id "gpt-5.5" :label "GPT-5.5"})
+(check "model opts merged"
+  (model "m" "M" {:effort "high"})
+  {:id "m" :label "M" :effort "high"})
 (check "opts can't clobber id" (:id (model "m" "M" {:id "evil"})) "m")
 (check "provider record"
-       (provider "OpenAI" (list (model "gpt-5.5" "GPT-5.5")))
-       {:name "OpenAI" :models (list {:id "gpt-5.5" :label "GPT-5.5"})})
+  (provider "OpenAI" (list (model "gpt-5.5" "GPT-5.5")))
+  {:name "OpenAI" :models (list {:id "gpt-5.5" :label "GPT-5.5"})})
 (check "defaults carry the model list"
-       (length (model-entries (coder-config {}))) (length (model-entries default-config)))
-(check "entries carry :provider" (:provider (car (model-entries (coder-config {})))) "Anthropic")
+  (length (model-entries (coder-config {})))
+  (length (model-entries default-config)))
+(check "entries carry :provider"
+  (:provider (car (model-entries (coder-config {}))))
+  "Anthropic")
 (check "declaration order preserved"
-       (map :id (model-entries {:models (list (provider "P" (list (model "b" "B") (model "a" "A"))))}))
-       (list "b" "a"))
+  (map :id
+    (model-entries
+      {:models (list (provider "P" (list (model "b" "B") (model "a" "A"))))}))
+  (list "b" "a"))
 (check "no :models → no entries" (model-entries {}) '())
-(define cfg-me {:models (list (provider "P" (list (model "m1" "M1" {:effort "xhigh"}) (model "m2" "M2"))))})
-(check "model-entry by id"     (:label (model-entry cfg-me "m2")) "M2")
-(check "model-entry missing"   (model-entry cfg-me "nope") #f)
+(define cfg-me
+  {:models (list
+     (provider "P" (list (model "m1" "M1" {:effort "xhigh"}) (model "m2" "M2"))))})
+(check "model-entry by id" (:label (model-entry cfg-me "m2")) "M2")
+(check "model-entry missing" (model-entry cfg-me "nope") #f)
 (check "model-effort declared" (model-effort cfg-me "m1") "xhigh")
-(check "model-effort absent"   (model-effort cfg-me "m2") "")
-(check "model-effort unknown"  (model-effort (coder-config {}) "claude-opus-4-8") "")
+(check "model-effort absent" (model-effort cfg-me "m2") "")
+(check "model-effort unknown"
+  (model-effort (coder-config {}) "claude-opus-4-8")
+  "")
 
 ;; model→provider routing: the picker's display name, lowercased to the llm id
 (check "provider-name lowercased" (model-provider-name cfg-me "m1") "p")
 (check "provider-name unknown id" (model-provider-name cfg-me "nope") #f)
-(check "provider-name openai"     (model-provider-name (coder-config {}) "gpt-5.6-luna") "openai")
+(check "provider-name openai"
+  (model-provider-name (coder-config {}) "gpt-5.6-luna")
+  "openai")
 (check "provider-name anthropic"
-       (model-provider-name (coder-config {}) (:id (car (:models (car default-models)))))
-       "anthropic")
+  (model-provider-name (coder-config {})
+    (:id (car (:models (car default-models)))))
+  "anthropic")
 
 ;; ── provider descriptors: one table drives the whole provider/model catalog ──
 (check "descriptors carry env keys"
-       (map :env-key provider-descriptors)
-       (list "ANTHROPIC_API_KEY" "OPENAI_API_KEY"))
+  (map :env-key provider-descriptors)
+  (list "ANTHROPIC_API_KEY" "OPENAI_API_KEY"))
 (check "default-models derives from the descriptor table"
-       default-models
-       (map (lambda (d) (provider (:display-name d) (:models d))) provider-descriptors))
+  default-models
+  (map (lambda (d) (provider (:display-name d) (:models d)))
+    provider-descriptors))
 (check "descriptor lookup by display name, any case"
-       (:env-key (provider-descriptor-by-name "anthropic")) "ANTHROPIC_API_KEY")
-(check "descriptor lookup misses unknown names" (provider-descriptor-by-name "Nonesuch") #f)
+  (:env-key (provider-descriptor-by-name "anthropic"))
+  "ANTHROPIC_API_KEY")
+(check "descriptor lookup misses unknown names"
+  (provider-descriptor-by-name "Nonesuch")
+  #f)
 (check "env keys for boot/usage messages"
-       (provider-env-keys) (list "ANTHROPIC_API_KEY" "OPENAI_API_KEY"))
+  (provider-env-keys)
+  (list "ANTHROPIC_API_KEY" "OPENAI_API_KEY"))
 
 ;; ── unknown / typo'd keys are recovered for a warning, not swallowed ──
-(check "known keys pass clean" (unknown-config-keys (coder-config {:model "m"})) '())
-(check "typo'd key flagged"    (unknown-config-keys (coder-config {:max-turn 9})) (list :max-turn))
+(check "known keys pass clean"
+  (unknown-config-keys (coder-config {:model "m"}))
+  '())
+(check "typo'd key flagged"
+  (unknown-config-keys (coder-config {:max-turn 9}))
+  (list :max-turn))
 
 ;; ── load-config on a good file → {:ok cfg} ──
 (define config-fixture-dir (test-temp-path "config"))
@@ -67,8 +99,10 @@
 (define init-bad (path/join config-fixture-dir "init-bad.sema"))
 (define init-not-map (path/join config-fixture-dir "init-not-map.sema"))
 (define init-bad-turns (path/join config-fixture-dir "init-bad-turns.sema"))
-(define init-bad-commands (path/join config-fixture-dir "init-bad-commands.sema"))
-(define init-bad-command-record (path/join config-fixture-dir "init-bad-command-record.sema"))
+(define init-bad-commands
+  (path/join config-fixture-dir "init-bad-commands.sema"))
+(define init-bad-command-record
+  (path/join config-fixture-dir "init-bad-command-record.sema"))
 
 (file/write init-ok
   "(configure! (coder-config {:model \"m\" :max-turns 9 :commands (list (command \"t\" {:run [\"echo\"]}))}))")
@@ -86,19 +120,23 @@
 ;; commands, hooks, tools, or MCP state.
 (file/write init-not-map "(configure! 42)")
 (check-contains "config must be a map"
-                (:error (load-config init-not-map)) "config map")
+  (:error (load-config init-not-map))
+  "config map")
 (file/write init-bad-turns
   "(configure! (coder-config {:max-turns 0}))")
 (check-contains "max-turns must be positive"
-                (:error (load-config init-bad-turns)) "positive integer")
+  (:error (load-config init-bad-turns))
+  "positive integer")
 (file/write init-bad-commands
   "(configure! (coder-config {:commands {}}))")
 (check-contains "commands must be a sequence"
-                (:error (load-config init-bad-commands)) ":commands")
+  (:error (load-config init-bad-commands))
+  ":commands")
 (file/write init-bad-command-record
   "(configure! (coder-config {:commands (list {})}))")
 (check-contains "command records require a name and implementation"
-                (:error (load-config init-bad-command-record)) ":name")
+  (:error (load-config init-bad-command-record))
+  ":name")
 
 ;; Nested records are validated before any runtime registry sees them.
 (check-contains "provider requires a name"
@@ -110,13 +148,13 @@
   ":id")
 (check-contains "MCP stdio server requires a command"
   (config-validation-error
-    (coder-config {:mcp-servers
-                    (list {:name "x" :opts {} :autostart #f :transport "stdio"})}))
+    (coder-config
+      {:mcp-servers (list {:name "x" :opts {} :autostart #f :transport "stdio"})}))
   ":command")
 (check-contains "MCP environment values must be strings"
   (config-validation-error
-    (coder-config {:mcp-servers
-                    (list (mcp-server "x" {:command "x" :env {"TOKEN" 42}}))}))
+    (coder-config
+      {:mcp-servers (list (mcp-server "x" {:command "x" :env {"TOKEN" 42}}))}))
   ":env")
 (check-contains "command run argv rejects non-strings"
   (config-validation-error

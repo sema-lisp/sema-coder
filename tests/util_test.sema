@@ -8,17 +8,21 @@
 (file/mkdir root)
 
 (check "relative path resolves under root"
-       (resolve-path root "a.txt") (path/join root "a.txt"))
+  (resolve-path root "a.txt")
+  (path/join root "a.txt"))
 (check "absolute path inside root is accepted"
-       (resolve-path root (path/join root "b.txt")) (path/join root "b.txt"))
+  (resolve-path root (path/join root "b.txt"))
+  (path/join root "b.txt"))
 (check-true "../ escape throws"
   (try (begin (resolve-path root "../escape.txt") #f) (catch e #t)))
 (check-true "absolute path outside root throws"
   (try (begin (resolve-path root "/etc/passwd") #f) (catch e #t)))
 
-(check "resolve-dir: empty means root"  (resolve-dir root "") root)
-(check "resolve-dir: nil means root"    (resolve-dir root nil) root)
-(check "resolve-dir: subdir resolves"   (resolve-dir root "sub") (path/join root "sub"))
+(check "resolve-dir: empty means root" (resolve-dir root "") root)
+(check "resolve-dir: nil means root" (resolve-dir root nil) root)
+(check "resolve-dir: subdir resolves"
+  (resolve-dir root "sub")
+  (path/join root "sub"))
 
 (shell "rm" "-rf" root)
 (done)

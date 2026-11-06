@@ -1,17 +1,22 @@
 (load "harness.sema")
-(load "../src/commands.sema")   ;; brings in display, config, agent, tools, util
+(load "../src/commands.sema") ;; brings in display, config, agent, tools, util
 
 ;; ── argv splicing is injection-safe (a typed arg is ONE token, never shell) ──
-(check "splice single arg"    (argv-for ["echo" :args] "hi; rm") (list "echo" "hi; rm"))
-(check "splice empty drops"   (argv-for ["echo" :args] "")       (list "echo"))
-(check "append when no :args" (argv-for ["git" "log"] "5")       (list "git" "log" "5"))
+(check "splice single arg"
+  (argv-for ["echo" :args] "hi; rm")
+  (list "echo" "hi; rm"))
+(check "splice empty drops" (argv-for ["echo" :args] "") (list "echo"))
+(check "append when no :args"
+  (argv-for ["git" "log"] "5")
+  (list "git" "log" "5"))
 (check "shell-safe stdout"
-       (string/trim (:stdout (apply shell (argv-for ["echo" :args] "a; b"))))
-       "a; b")
+  (string/trim (:stdout (apply shell (argv-for ["echo" :args] "a; b"))))
+  "a; b")
 
 ;; ── reconcile REPLACES the config command set (never accumulates) ──
-(reconcile-commands! (list (command "a" {:desc "A" :run ["true"]})
-                           (command "b" {:desc "B" :run ["true"]})))
+(reconcile-commands!
+  (list (command "a" {:desc "A" :run ["true"]})
+    (command "b" {:desc "B" :run ["true"]})))
 (check "two config commands" (sort (config-command-names)) (list "a" "b"))
 (reconcile-commands! (list (command "a" {:desc "A" :run ["true"]})))
 (check "reload drops b" (config-command-names) (list "a"))
@@ -19,19 +24,21 @@
 
 ;; ── :keep-input flag: stored on register, defaults off, reconciled from config ──
 (register-command! "kmd" "keeps" (lambda (s a) s) {:keep-input #t})
-(check-true "keep-input flag stored"   (command-keeps-input? "kmd"))
+(check-true "keep-input flag stored" (command-keeps-input? "kmd"))
 (register-command! "nmd" "normal" (lambda (s a) s))
-(check "no flag by default"            (command-keeps-input? "nmd") #f)
-(check "unknown command → no flag"     (command-keeps-input? "nope") #f)
-(reconcile-commands! (list (command "snip" {:desc "s" :do (lambda (s a) s) :keep-input #t})
-                           (command "plain" {:desc "p" :do (lambda (s a) s)})))
+(check "no flag by default" (command-keeps-input? "nmd") #f)
+(check "unknown command → no flag" (command-keeps-input? "nope") #f)
+(reconcile-commands!
+  (list (command "snip" {:desc "s" :do (lambda (s a) s) :keep-input #t})
+    (command "plain" {:desc "p" :do (lambda (s a) s)})))
 (check-true "config :keep-input reconciled" (command-keeps-input? "snip"))
-(check "config default keeps clearing"      (command-keeps-input? "plain") #f)
+(check "config default keeps clearing" (command-keeps-input? "plain") #f)
 
 ;; ── apply-config! is the one load+reconcile path (boot / /reload / TUI) ──
 ;; Pin config-dir to an empty temp so the tools/ autoload is deterministic.
 (define apply-dir (test-temp-path "apply-config"))
-(shell "rm" "-rf" apply-dir) (file/mkdir apply-dir)
+(shell "rm" "-rf" apply-dir)
+(file/mkdir apply-dir)
 (define apply-ok (path/join apply-dir "ok.sema"))
 (define apply-warn (path/join apply-dir "warn.sema"))
 (define apply-bad (path/join apply-dir "bad.sema"))
@@ -42,35 +49,41 @@
   (file/write apply-ok
     "(configure! (coder-config {:model \"z\" :commands (list (command \"solo\" {:run [\"true\"]}))}))")
   (let ((r (apply-config! apply-ok default-config)))
-    (check-true "apply ok"              (:ok r))
-    (check "apply reconciles commands"  (config-command-names) (list "solo"))
+    (check-true "apply ok" (:ok r))
+    (check "apply reconciles commands" (config-command-names) (list "solo"))
     (check "clean config → no warnings" (:warnings r) '()))
 
   (file/write apply-warn
     "(configure! (coder-config {:model \"z\" :max-turn 9}))")
   (check "apply flags one typo'd key"
-         (length (:warnings (apply-config! apply-warn default-config))) 1)
+    (length (:warnings (apply-config! apply-warn default-config)))
+    1)
 
   ;; Restore a known live command set before exercising last-good fallback.
   (apply-config! apply-ok default-config)
   (file/write apply-bad "(broken")
   (let ((r (apply-config! apply-bad default-config)))
-    (check-true "apply error"           (:error r))
+    (check-true "apply error" (:error r))
     (check "broken file keeps fallback" (:cfg r) default-config)
-    (check "broken file keeps runtime commands" (config-command-names) (list "solo")))
+    (check "broken file keeps runtime commands"
+      (config-command-names)
+      (list "solo")))
 
   (file/write apply-wrong-shape
     "(configure! (coder-config {:commands 42}))")
   (let ((r (apply-config! apply-wrong-shape default-config)))
     (check-true "wrong shape is rejected" (:error r))
-    (check "wrong shape keeps runtime commands" (config-command-names) (list "solo")))
+    (check "wrong shape keeps runtime commands"
+      (config-command-names)
+      (list "solo")))
 
   (file/write apply-bad-record
     "(configure! (coder-config {:commands (list {})}))")
   (let ((r (apply-config! apply-bad-record default-config)))
     (check-true "malformed nested record is rejected" (:error r))
     (check "malformed nested record keeps runtime commands"
-      (config-command-names) (list "solo")))
+      (config-command-names)
+      (list "solo")))
 
   ;; apply-config! autoloads (tools-dir) on the ok path
   (file/mkdir (tools-dir))
@@ -83,24 +96,33 @@
   (file/write apply-hooks
     "(configure! (coder-config {:hooks (list (hook :pre-turn (lambda (ctx) #t)))}))")
   (apply-config! apply-hooks default-config)
-  (check "apply reconciles declared hooks" (length (get *config-hooks* :pre-turn '())) 1)
+  (check "apply reconciles declared hooks"
+    (length (get *config-hooks* :pre-turn '()))
+    1)
 
   ;; ── unified restore: session-restore-fields is the one builder both /resume
   ;;    front-ends use, so the REPL path and the TUI restore can't drift ──
   (file/mkdir (path/join (config-dir) "sessions"))
-  (define rmsgs (list {:role "user" :content "hi"} {:role "assistant" :content "yo"}))
+  (define rmsgs
+    (list {:role "user" :content "hi"} {:role "assistant" :content "yo"}))
   (save-session! "sess1" 111 "claude-sonnet-5" "high" rmsgs)
   (let ((f (session-restore-fields "sess1" "/tmp" {})))
-    (check "restore fields: messages"  (:messages f) rmsgs)
-    (check "restore fields: model"     (:model f) "claude-sonnet-5")
-    (check "restore fields: effort"    (:effort f) "high")
+    (check "restore fields: messages" (:messages f) rmsgs)
+    (check "restore fields: model" (:model f) "claude-sonnet-5")
+    (check "restore fields: effort" (:effort f) "high")
     (check-true "restore fields: agent built" (:agent f)))
   ;; the REPL /resume handler builds the SAME conversational fields
   (set! *tui-active* #f)
-  (let ((next (dispatch-command (parse-command "/resume sess1")
-                                {:messages '() :model "" :effort "" :cwd "/tmp" :agent #f :config {}})))
+  (let ((next
+          (dispatch-command (parse-command "/resume sess1")
+            {:messages '()
+             :model ""
+             :effort ""
+             :cwd "/tmp"
+             :agent #f
+             :config {}})))
     (check "repl /resume messages match" (:messages next) rmsgs)
-    (check "repl /resume model matches"  (:model next) "claude-sonnet-5")
+    (check "repl /resume model matches" (:model next) "claude-sonnet-5")
     (check "repl /resume effort matches" (:effort next) "high")))
 
 (shell "rm" "-rf" apply-dir)

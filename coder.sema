@@ -17,15 +17,22 @@
 (define structured-one-shot #f)
 (define structured-started-at (time-ms))
 
-(defun emit-structured-failure (message . context)
+(defun emit-structured-failure
+  (message
+    .
+    context)
   (let* ((ctx (if (null? context) {} (car context)))
          (model (get ctx :model ""))
          (effort (get ctx :effort ""))
          (started-at (get ctx :started-at structured-started-at)))
     (println
       (json/encode
-        (one-shot-json-payload "failed" model effort
-          (get ctx :usage {}) (- (time-ms) started-at) message)))))
+        (one-shot-json-payload "failed"
+          model
+          effort
+          (get ctx :usage {})
+          (- (time-ms) started-at)
+          message)))))
 
 (try
   (begin
@@ -42,7 +49,8 @@
     ;; init.sema calls on every load/hot-reload (same trap as `agent` below).
     (define llm-provider (llm/auto-configure))
     (when (nil? llm-provider)
-      (let ((message f"No API key found. Set ${(string/join (provider-env-keys) " or ")}."))
+      (let ((message
+              f"No API key found. Set ${(string/join (provider-env-keys) " or ")}."))
         (if structured-one-shot
           (emit-structured-failure message {:model (:model cli)})
           (io/println-error f"Error: ${message}")))
@@ -52,7 +60,9 @@
     (define cwd (sys/cwd))
     ;; Load plugins after the config is applied, before the agent is built, so a
     ;; plugin's commands / overlays / hooks / keys are live for the session.
-    (for-each (lambda (e) (io/println-error f"plugin error: ${e}")) (load-plugins! cwd))
+    (for-each
+      (lambda (e) (io/println-error f"plugin error: ${e}"))
+      (load-plugins! cwd))
     (define cli-model (:model cli))
     (mcp-autostart!) ;; connect :autostart servers before the agent is built
     ;; not `agent` — that name would shadow the (agent {…}) builtin constructor.
@@ -71,11 +81,12 @@
           ;; JSON document and nothing else.
           (let ((attempt
                   (try
-                    {:result
-                      (agent/run sema-coder-agent prompt
-                        (turn-opts {:on-tool-call (lambda (event) nil)
-                                    :messages '()}
-                                   effort))}
+                    {:result (agent/run sema-coder-agent
+                       prompt
+                       (turn-opts
+                         {:on-tool-call (lambda (event) nil)
+                          :messages '()}
+                         effort))}
                     (catch e {:error e}))))
             (if-let (result (get attempt :result nil))
               (begin
@@ -83,89 +94,3 @@
                   (json/encode
                     (one-shot-json-payload "completed" model effort
                       (:usage result) (- (time-ms) started-at)
-                      (:response result))))
-                (exit 0))
-              (begin
-                (emit-structured-failure
-                  (get (:error attempt) :message (str (:error attempt)))
-                  {:model model :effort effort :usage (llm/session-usage)
-                   :started-at started-at})
-                (exit 1))))
-          (begin
-            (run-hooks :session-start {:cwd cwd})
-            (let ((result
-                    (run-turn sema-coder-agent
-                      prompt '() on-tool-call effort)))
-              (println (:response result))
-              (exit 0))))))
-
-    ;; Interactive, on a TTY → the full-screen TUI.
-    (when (sys/tty)
-      (tui-run cwd cli-model cfg sema-coder-agent)
-      (exit 0))
-
-    ;; Not a TTY (piped/dumb terminal) → the plain line-based REPL below.
-    (show-banner VERSION)
-    (show-welcome cwd cli-model)
-    (let ((na (mcp-needs-auth)))
-      (unless (null? na)
-        (show-info
-          f"${(length na)} MCP server(s) need auth: ${(string/join na ", ")}")))
-
-    (run-hooks :session-start {:cwd cwd})
-
-    (define state
-      {:messages '()
-       :model cli-model
-       :effort ""
-       :cwd cwd
-       :agent sema-coder-agent
-       :config cfg})
-
-    (defun handle-input (input)
-      (cond
-        ((nil? input) ;; EOF — stdin closed
-          (io/println-error "")
-          (show-info goodbye-line)
-          (exit 0))
-        ((= (string/trim input) "") nil) ;; blank line — ignore
-        ((slash-command? input)
-          (let ((next
-                  (try
-                    (dispatch-command (parse-command input) state)
-                    (catch e
-                      (show-error f"command failed: ${(get e :message (str e))}")
-                      state))))
-            (if (equal? next 'quit)
-              (begin
-                (show-info goodbye-line)
-                (exit 0))
-              (set! state next))))
-        (else
-          (let ((result
-                  (try
-                    (run-turn (:agent state)
-                      (string/trim input)
-                      (:messages state)
-                      on-tool-call
-                      (let ((c (get state :config {})))
-                        (pick-effort (get state :effort "")
-                          (choose-model (get state :model "") c)
-                          c)))
-                    (catch e
-                      (show-error f"agent error: ${(get e :message (str e))}")
-                      #f))))
-            (when result
-              (show-response (:response result))
-              (set! state (assoc state :messages (:messages result))))))))
-
-    (let loop ()
-      (show-prompt)
-      (handle-input (io/read-line))
-      (loop)))
-
-  (catch e
-    (if structured-one-shot
-      (emit-structured-failure (get e :message (str e)))
-      (io/println-error f"Fatal error: ${(get e :message (str e))}"))
-    (exit 1)))

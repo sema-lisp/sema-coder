@@ -6,13 +6,19 @@
 (check-true "read-file registered" (member "read-file" (tool-names)))
 
 ;; ── register-tool! adds to the autoloaded layer ──
-(deftool t-alpha "alpha" {:x {:type :string :description "d"}} (lambda (x) x))
+(deftool t-alpha
+  "alpha"
+  {:x {:type :string :description "d"}}
+  (lambda (x) x))
 (register-tool! t-alpha)
-(check "one autoloaded added"   (length (all-tools)) 11)
-(check-true "alpha in names"    (member "t-alpha" (tool-names)))
+(check "one autoloaded added" (length (all-tools)) 11)
+(check-true "alpha in names" (member "t-alpha" (tool-names)))
 
 ;; ── upsert: re-registering the same name replaces, never duplicates ──
-(deftool t-alpha "alpha v2" {} (lambda () "v2"))   ;; same tool/name "t-alpha"
+(deftool t-alpha
+  "alpha v2"
+  {}
+  (lambda () "v2")) ;; same tool/name "t-alpha"
 (register-tool! t-alpha)
 (check "upsert replaces, no dup" (length (all-tools)) 11)
 
@@ -23,7 +29,8 @@
 
 ;; ── autoload-tools!: load a dir of tool files, reconcile on re-run ──
 (define td (test-temp-path "tools-autoload"))
-(shell "rm" "-rf" td) (file/mkdir td)
+(shell "rm" "-rf" td)
+(file/mkdir td)
 (file/write (path/join td "echo-tool.sema")
   "(deftool echo-tool \"echo\" {:x {:type :string :description \"d\"}} (lambda (x) x))\n(register-tool! echo-tool)")
 (let ((errs (autoload-tools! td)))

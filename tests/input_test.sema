@@ -4,7 +4,9 @@
 ;; Prompt-input editing: forward-delete, delete-word-back, and word motion.
 ;; Handlers are driven directly on the *input*/*cursor* globals.
 
-(defun set-input! (s c) (set! *input* s) (set! *cursor* c))
+(defun set-input! (s c)
+  (set! *input* s)
+  (set! *cursor* c))
 
 ;; ── forward-delete (the Delete key): removes the char AT the cursor ──
 (set-input! "abcd" 1)
@@ -48,29 +50,31 @@
 
 ;; ── Prompt input API (the extension surface: read + edit the prompt) ──
 (set-input! "hello world" 5)
-(check "prompt-text reads the input"   (prompt-text) "hello world")
+(check "prompt-text reads the input" (prompt-text) "hello world")
 (check "prompt-cursor reads the caret" (prompt-cursor) 5)
 
 ;; prompt-insert! splices at the caret and advances past it (multi-char)
 (prompt-insert! " there")
 (check "prompt-insert! splices at caret" *input* "hello there world")
-(check "prompt-insert! advances caret"   *cursor* 11)
+(check "prompt-insert! advances caret" *cursor* 11)
 
 ;; prompt-set! replaces the whole prompt, caret to end
 (prompt-set! "/todos")
-(check "prompt-set! replaces text"  *input* "/todos")
-(check "prompt-set! caret to end"   *cursor* 6)
+(check "prompt-set! replaces text" *input* "/todos")
+(check "prompt-set! caret to end" *cursor* 6)
 
 ;; prompt-clear! empties it
 (prompt-clear!)
-(check "prompt-clear! empties"      *input* "")
-(check "prompt-clear! caret to 0"   *cursor* 0)
+(check "prompt-clear! empties" *input* "")
+(check "prompt-clear! caret to 0" *cursor* 0)
 
 ;; Bracketed paste inserts one event into the prompt. Newlines stay data and
 ;; terminal controls are removed instead of being executed or dispatched.
 (set-input! "before after" 6)
 (handle-key {:kind :paste :text " one\ntwo "})
-(check "paste inserts multiline text at the caret" *input* "before one\ntwo  after")
+(check "paste inserts multiline text at the caret"
+  *input*
+  "before one\ntwo  after")
 (check "paste advances the caret by all inserted codepoints" *cursor* 15)
 (set-input! "" 0)
 (handle-key {:kind :paste :text (string-append "safe" "\x1b;[2J" "owned")})

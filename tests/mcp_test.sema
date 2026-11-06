@@ -3,14 +3,15 @@
 
 ;; ── reconcile records against config server declarations ──
 (mcp-reset!)
-(reconcile-servers! (list (mcp-server "a" {:command "x"})
-                          (mcp-server "b" {:url "http://y"})))
-(check "two records"   (map :name (mcp-records)) (list "a" "b"))
-(check "a idle"        (:status (mcp-get "a")) :idle)
-(check "b http"        (:transport (mcp-get "b")) "http")
+(reconcile-servers!
+  (list (mcp-server "a" {:command "x"})
+    (mcp-server "b" {:url "http://y"})))
+(check "two records" (map :name (mcp-records)) (list "a" "b"))
+(check "a idle" (:status (mcp-get "a")) :idle)
+(check "b http" (:transport (mcp-get "b")) "http")
 (reconcile-servers! (list (mcp-server "a" {:command "x"})))
-(check "b dropped"     (mcp-get "b") #f)
-(check "a kept idle"   (:status (mcp-get "a")) :idle)
+(check "b dropped" (mcp-get "b") #f)
+(check "a kept idle" (:status (mcp-get "a")) :idle)
 
 ;; Changing a declaration must not preserve a connection and tools from the old
 ;; endpoint under the new label.
@@ -22,56 +23,69 @@
 
 ;; ── connect / disconnect + tool-merge (keyless — real `sema mcp`) ──
 (mcp-reset!)
-(reconcile-servers! (list (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))
-(check "connect →connected"  (mcp-connect! "sema") :connected)
-(check "status connected"    (:status (mcp-get "sema")) :connected)
-(check "2 tools on record"   (length (:tools (mcp-get "sema"))) 2)
-(check "all-mcp-tools = 2"    (length (all-mcp-tools)) 2)
-(check "tool names"           (sort (map tool/name (all-mcp-tools))) (list "docs" "eval"))
+(reconcile-servers!
+  (list
+    (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))
+(check "connect →connected" (mcp-connect! "sema") :connected)
+(check "status connected" (:status (mcp-get "sema")) :connected)
+(check "2 tools on record" (length (:tools (mcp-get "sema"))) 2)
+(check "all-mcp-tools = 2" (length (all-mcp-tools)) 2)
+(check "tool names" (sort (map tool/name (all-mcp-tools))) (list "docs" "eval"))
 (define connected-handle (:handle (mcp-get "sema")))
 (check "reconnecting an already connected server is a no-op"
-  (mcp-connect! "sema") :connected)
+  (mcp-connect! "sema")
+  :connected)
 (check "no-op reconnect preserves the live handle"
-  (:handle (mcp-get "sema")) connected-handle)
+  (:handle (mcp-get "sema"))
+  connected-handle)
 (check "connecting an unknown server returns no-such"
-  (mcp-connect! "missing") :no-such)
+  (mcp-connect! "missing")
+  :no-such)
 (mcp-disconnect! "sema")
-(check "disconnected idle"    (:status (mcp-get "sema")) :idle)
-(check "no tools after"       (length (all-mcp-tools)) 0)
+(check "disconnected idle" (:status (mcp-get "sema")) :idle)
+(check "no tools after" (length (all-mcp-tools)) 0)
 
 ;; ── reconcile preserves a LIVE connection (a hot-reload must keep the tools) ──
 (mcp-reset!)
-(reconcile-servers! (list (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))
-(check "connected before reconcile"  (mcp-connect! "sema") :connected)
-(reconcile-servers! (list (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))
-(check "reconcile keeps connected"   (:status (mcp-get "sema")) :connected)
-(check "reconcile keeps its tools"   (length (all-mcp-tools)) 2)
-(check "tool origin maps to server"  (get (mcp-tool-origins) "eval") "sema")
+(reconcile-servers!
+  (list
+    (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))
+(check "connected before reconcile" (mcp-connect! "sema") :connected)
+(reconcile-servers!
+  (list
+    (mcp-server "sema" {:command "sema" :args ["mcp" "--include" "eval,docs"]})))
+(check "reconcile keeps connected" (:status (mcp-get "sema")) :connected)
+(check "reconcile keeps its tools" (length (all-mcp-tools)) 2)
+(check "tool origin maps to server" (get (mcp-tool-origins) "eval") "sema")
 (mcp-disconnect! "sema")
 (check "no origins once disconnected" (mcp-tool-origins) {})
 
 ;; ── autostart connects only :autostart servers ──
 (mcp-reset!)
-(reconcile-servers! (list (mcp-server "auto"   {:command "sema" :args ["mcp" "--include" "eval"] :autostart #t})
-                          (mcp-server "manual" {:command "sema" :args ["mcp"]})))
+(reconcile-servers!
+  (list
+    (mcp-server "auto"
+      {:command "sema" :args ["mcp" "--include" "eval"] :autostart #t})
+    (mcp-server "manual" {:command "sema" :args ["mcp"]})))
 (check "autostart connects 1" (mcp-autostart!) 1)
-(check "auto connected"       (:status (mcp-get "auto")) :connected)
-(check "manual stays idle"    (:status (mcp-get "manual")) :idle)
+(check "auto connected" (:status (mcp-get "auto")) :connected)
+(check "manual stays idle" (:status (mcp-get "manual")) :idle)
 (mcp-disconnect! "auto")
 
 ;; ── auth-failure classification → :needs-auth, and the needs-auth list ──
-(check "auth-error 401"       (auth-error? "HTTP 401 Unauthorized") #t)
-(check "auth-error word"      (auth-error? "OAuth authorization required") #t)
-(check "non-auth error"       (auth-error? "connection refused") #f)
+(check "auth-error 401" (auth-error? "HTTP 401 Unauthorized") #t)
+(check "auth-error word" (auth-error? "OAuth authorization required") #t)
+(check "non-auth error" (auth-error? "connection refused") #f)
 (mcp-reset!)
 (reconcile-servers! (list (mcp-server "x" {:url "http://y"})))
 (mcp-set! "x" (lambda (r) (assoc r :status :needs-auth)))
-(check "needs-auth lists x"   (mcp-needs-auth) (list "x"))
+(check "needs-auth lists x" (mcp-needs-auth) (list "x"))
 
 ;; Registry reset owns connection cleanup; it must not leave native handles
 ;; reachable after the records are discarded.
 (mcp-reset!)
-(reconcile-servers! (list (mcp-server "reset" {:command "sema" :args ["mcp" "--include" "eval"]})))
+(reconcile-servers!
+  (list (mcp-server "reset" {:command "sema" :args ["mcp" "--include" "eval"]})))
 (mcp-connect! "reset")
 (define reset-handle (:handle (mcp-get "reset")))
 (mcp-reset!)
@@ -80,12 +94,19 @@
 
 ;; ── a server that never completes the handshake fails under the deadline ──
 (mcp-reset!)
-(reconcile-servers! (list (mcp-server "hung" {:command "sh" :args ["-c" "sleep 4"]
-                                              :connect-timeout-ms 300})))
+(reconcile-servers!
+  (list
+    (mcp-server "hung"
+      {:command "sh"
+       :args ["-c" "sleep 4"]
+       :connect-timeout-ms 300})))
 (define hung-t0 (time-ms))
-(check "hung connect reports error"  (mcp-connect! "hung") :error)
-(check-true "hung connect returns before the child exits" (< (- (time-ms) hung-t0) 3000))
-(check-contains "hung connect message" (:error (mcp-get "hung")) "timed out after 300 ms")
+(check "hung connect reports error" (mcp-connect! "hung") :error)
+(check-true "hung connect returns before the child exits"
+  (< (- (time-ms) hung-t0) 3000))
+(check-contains "hung connect message"
+  (:error (mcp-get "hung"))
+  "timed out after 300 ms")
 (check "hung connect leaves no handle" (:handle (mcp-get "hung")) #f)
 
 (done)

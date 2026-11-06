@@ -10,7 +10,7 @@
 ;; Brand-gold background (#c8a855) with warm near-black text. Unlike inverse
 ;; video, this is stable across terminal themes and reads as Sema rather than a
 ;; generic white selection.
-(define SELECT-ON  "\x1b;[48;2;200;168;85;38;2;28;24;16m")
+(define SELECT-ON "\x1b;[48;2;200;168;85;38;2;28;24;16m")
 (define SELECT-OFF "\x1b;[0m")
 (define OSC52-MAX-BYTES (* 74 1024))
 (define SELECTION-PUNCTUATION "/:,.-(){}[];\"'<>+=*&|!@#$%^~`\\?")
@@ -18,11 +18,12 @@
 ;; ── Coordinates + extraction ────────────────────────────────────────────────
 
 (defun position-compare (a b)
-  (cond ((< (:line a) (:line b)) -1)
-        ((> (:line a) (:line b)) 1)
-        ((< (:offset a) (:offset b)) -1)
-        ((> (:offset a) (:offset b)) 1)
-        (else 0)))
+  (cond
+    ((< (:line a) (:line b)) -1)
+    ((> (:line a) (:line b)) 1)
+    ((< (:offset a) (:offset b)) -1)
+    ((> (:offset a) (:offset b)) 1)
+    (else 0)))
 
 (define ZWJ "\u200d")
 
@@ -33,13 +34,14 @@
 (defun cluster-joiner? (plain j)
   "Is codepoint J glued to the codepoint before it?"
   (or (= (string/width (string/slice plain j (+ j 1))) 0)
-      (= (string/slice plain (- j 1) j) ZWJ)))
+    (= (string/slice plain (- j 1) j) ZWJ)))
 
 (defun cluster-start (plain i)
   "Offset of the first codepoint of the cluster containing I."
   (let loop ((i (max 0 (min i (string/length plain)))))
     (if (and (> i 0) (< i (string/length plain)) (cluster-joiner? plain i))
-      (loop (- i 1)) i)))
+      (loop (- i 1))
+      i)))
 
 (defun cluster-end (plain i)
   "Exclusive end of the cluster containing I (I itself when at a boundary)."
@@ -52,13 +54,15 @@
    A click anywhere in a wide character or emoji cluster resolves to its start."
   (let ((target (max 0 target)) (n (string/length plain)))
     (let loop ((i 0) (col 0))
-      (if (>= i n) n
+      (if (>= i n)
+        n
         (let* ((j (cluster-end plain (+ i 1)))
                (cw (string/width (string/slice plain i j))))
           (if (< target (+ col cw)) i (loop j (+ col cw))))))))
 
 (defun offset->display-col (plain offset)
-  (string/width (string/slice plain 0 (max 0 (min offset (string/length plain))))))
+  (string/width
+    (string/slice plain 0 (max 0 (min offset (string/length plain))))))
 
 (defun advance-position (p)
   "Turn a pointed-at position into an exclusive end. Mouse resolution records
@@ -77,19 +81,23 @@
 
 (defun selection-text-with (line-at sel)
   "Extract SEL using LINE-AT, joining crossed rendered rows with newlines."
-  (if (selection-empty? sel) ""
+  (if (selection-empty? sel)
+    ""
     (let* ((start (:start sel))
            (end (:end sel))
            (a (:line start))
            (b (:line end)))
       (string/trim-right
         (string/join
-          (map (lambda (line)
-                 (let* ((plain (line-at line))
-                        (from (if (= line a) (:offset start) 0))
-                        (to (if (= line b) (:offset end) (string/length plain))))
-                   (string/slice plain (cluster-start plain from) (cluster-end plain to))))
-               (range a (+ b 1)))
+          (map
+            (lambda (line)
+              (let* ((plain (line-at line))
+                     (from (if (= line a) (:offset start) 0))
+                     (to (if (= line b) (:offset end) (string/length plain))))
+                (string/slice plain
+                  (cluster-start plain from)
+                  (cluster-end plain to))))
+            (range a (+ b 1)))
           "\n")))))
 
 (defun selection-text (plain-lines sel)
@@ -102,7 +110,8 @@
   "Brand-highlight the end-exclusive plain-text range FROM..TO in STYLED.
    Reapply selection colors after embedded SGR and restore the underlying line
    style afterward so a partial selection cannot recolor the remaining text."
-  (if (>= from to) styled
+  (if (>= from to)
+    styled
     (let ((n (string/length styled)))
       (let loop ((i 0) (plain-i 0) (active #f) (restore "") (out ""))
         (if (>= i n)
@@ -114,17 +123,26 @@
                      ;; All app-generated style closures use SGR 0. Reset the
                      ;; replay history there; otherwise replay SGR in order
                      ;; (the last foreground/background command wins).
-                     (restore2 (if (= esc TEXT-RESET-SGR) ""
-                                 (string/append restore esc))))
-                (loop j plain-i active restore2
+                     (restore2
+                       (if (= esc TEXT-RESET-SGR)
+                         ""
+                         (string/append restore esc))))
+                (loop j
+                  plain-i
+                  active
+                  restore2
                   (string/append out esc (if active SELECT-ON ""))))
               (let* ((turn-on (and (not active) (= plain-i from)))
                      (turn-off (and active (= plain-i to)))
                      (active2 (if turn-off #f (if turn-on #t active)))
-                     (prefix (string/append
-                               (if turn-off (string/append SELECT-OFF restore) "")
-                               (if turn-on SELECT-ON ""))))
-                (loop (+ i 1) (+ plain-i 1) active2 restore
+                     (prefix
+                       (string/append
+                         (if turn-off (string/append SELECT-OFF restore) "")
+                         (if turn-on SELECT-ON ""))))
+                (loop (+ i 1)
+                  (+ plain-i 1)
+                  active2
+                  restore
                   (string/append out prefix ch))))))))))
 
 (defun highlight-selection-line (styled absolute-line sel)
@@ -135,41 +153,58 @@
       styled
       (let* ((plain (term/strip styled))
              (from (if (= absolute-line (:line start)) (:offset start) 0))
-             (to (if (= absolute-line (:line end)) (:offset end) (string/length plain))))
-        (highlight-styled-range styled (cluster-start plain from) (cluster-end plain to))))))
+             (to
+               (if (= absolute-line (:line end))
+                 (:offset end)
+                 (string/length plain))))
+        (highlight-styled-range styled
+          (cluster-start plain from)
+          (cluster-end plain to))))))
 
 ;; ── Double-click word/token ranges ───────────────────────────────────────────
 
 (defun selection-char-class (ch)
-  (cond ((string/contains? " \t\n\r " ch) :space)
-        ((string/contains? SELECTION-PUNCTUATION ch) :punct)
-        (else :word)))
+  (cond
+    ((string/contains? " \t\n\r " ch) :space)
+    ((string/contains? SELECTION-PUNCTUATION ch) :punct)
+    (else :word)))
 
 (defun class-range (plain offset)
   "End-exclusive same-class run containing OFFSET."
   (let ((n (string/length plain)))
-    (if (= n 0) {:start 0 :end 0}
+    (if (= n 0)
+      {:start 0 :end 0}
       (let* ((pivot (min (max 0 offset) (- n 1)))
-             (klass (selection-char-class (string/slice plain pivot (+ pivot 1))))
-             (start (let loop ((i pivot))
-                      (if (and (> i 0)
-                               (equal? (selection-char-class (string/slice plain (- i 1) i)) klass))
-                        (loop (- i 1)) i)))
-             (end (let loop ((i (+ pivot 1)))
-                    (if (and (< i n)
-                             (equal? (selection-char-class (string/slice plain i (+ i 1))) klass))
-                      (loop (+ i 1)) i))))
+             (klass
+               (selection-char-class (string/slice plain pivot (+ pivot 1))))
+             (start
+               (let loop ((i pivot))
+                 (if (and (> i 0)
+                     (equal?
+                       (selection-char-class (string/slice plain (- i 1) i))
+                       klass))
+                   (loop (- i 1))
+                   i)))
+             (end
+               (let loop ((i (+ pivot 1)))
+                 (if (and (< i n)
+                     (equal?
+                       (selection-char-class (string/slice plain i (+ i 1)))
+                       klass))
+                   (loop (+ i 1))
+                   i))))
         {:start start :end end}))))
 
 ;; ── Clipboard ─────────────────────────────────────────────────────────────────
 
 (defun clipboard-command-candidates ()
   (match (sys/platform)
-    ("macos"   (list (list "pbcopy")))
+    ("macos" (list (list "pbcopy")))
     ("windows" (list (list "clip")))
-    ("linux"   (list (list "wl-copy")
-                     (list "xclip" "-selection" "clipboard")
-                     (list "xsel" "--clipboard" "--input")))
+    ("linux"
+      (list (list "wl-copy")
+        (list "xclip" "-selection" "clipboard")
+        (list "xsel" "--clipboard" "--input")))
     (_ '())))
 
 (defun copy-with-command (argv text)
@@ -191,9 +226,10 @@
 
 (defun copy-with-host-command (text)
   (let loop ((commands (clipboard-command-candidates)))
-    (cond ((null? commands) #f)
-          ((copy-with-command (car commands) text) #t)
-          (else (loop (cdr commands))))))
+    (cond
+      ((null? commands) #f)
+      ((copy-with-command (car commands) text) #t)
+      (else (loop (cdr commands))))))
 
 (defun env-present? (name)
   (let ((value (env name)))
@@ -201,15 +237,18 @@
 
 (defun remote-terminal? ()
   (or (env-present? "TMUX")
-      (env-present? "SSH_CONNECTION")
-      (env-present? "SSH_TTY")))
+    (env-present? "SSH_CONNECTION")
+    (env-present? "SSH_TTY")))
 
 (defun osc52-sequence (text tmux?)
   "OSC52 clipboard payload, or #f when TEXT exceeds the conservative limit."
-  (if (> (string/byte-length text) OSC52-MAX-BYTES) #f
+  (if (> (string/byte-length text) OSC52-MAX-BYTES)
+    #f
     (let ((raw (string/append "\x1b;]52;c;" (base64/encode text) "\x1b;\\")))
       (if tmux?
-        (string/append "\x1b;Ptmux;" (string/replace raw "\x1b;" "\x1b;\x1b;") "\x1b;\\")
+        (string/append "\x1b;Ptmux;"
+          (string/replace raw "\x1b;" "\x1b;\x1b;")
+          "\x1b;\\")
         raw))))
 
 (defun copy-with-osc52 (text)

@@ -15,12 +15,12 @@
 ;; duplicate. Register commands/overlays/hooks/keys here; put persistent TOOLS
 ;; in the tools/ dir, which is reconciled at boot and on each config apply.
 
-(load "config.sema")   ;; config-dir
+(load "config.sema") ;; config-dir
 
 (defun plugin-dirs (cwd)
   "The plugin dirs to scan, global first then project-local."
   (list (path/join (config-dir) "plugins")
-        (path/join cwd ".sema-coder" "plugins")))
+    (path/join cwd ".sema-coder" "plugins")))
 
 (defun load-plugins-from! (dir)
   "Load every DIR/*.sema (sorted), running its registrations. Returns a list of
@@ -30,11 +30,16 @@
     (foldl
       (lambda (errs name)
         (if (string/ends-with? name ".sema")
-          (let ((err (try (begin (load (path/join dir name)) #f)
-                          (catch e f"${name}: ${(get e :message (str e))}"))))
+          (let ((err
+                  (try
+                    (begin
+                      (load (path/join dir name))
+                      #f)
+                    (catch e f"${name}: ${(get e :message (str e))}"))))
             (if err (append errs (list err)) errs))
           errs))
-      '() (sort (file/list dir)))
+      '()
+      (sort (file/list dir)))
     '()))
 
 (defun load-plugins! (cwd)

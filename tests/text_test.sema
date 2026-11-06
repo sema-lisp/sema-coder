@@ -2,14 +2,14 @@
 (load "../src/text.sema")
 
 ;; ── clipping ──
-(check "clip-width fits"      (clip-width "abc" 5) "abc")
-(check "clip-width cuts"      (clip-width "abcdef" 4) "abc…")
-(check "clip-width zero"      (clip-width "abcdef" 0) "")
-(check "clip-plain fits"      (clip-plain "abc" 5) "abc")
-(check "clip-plain cuts"      (clip-plain "abcdef" 4) "abcd")
-(check "clip-plain negative"  (clip-plain "abcdef" -1) "")
+(check "clip-width fits" (clip-width "abc" 5) "abc")
+(check "clip-width cuts" (clip-width "abcdef" 4) "abc…")
+(check "clip-width zero" (clip-width "abcdef" 0) "")
+(check "clip-plain fits" (clip-plain "abc" 5) "abc")
+(check "clip-plain cuts" (clip-plain "abcdef" 4) "abcd")
+(check "clip-plain negative" (clip-plain "abcdef" -1) "")
 ;; wide chars: 你=2 cols — width-aware, not codepoint-count
-(check "clip-plain CJK"       (clip-plain "你你你" 4) "你你")
+(check "clip-plain CJK" (clip-plain "你你你" 4) "你你")
 (check-true "clip-width CJK ≤w" (<= (string/width (clip-width "你你你你" 5)) 5))
 
 ;; A frame row may retain styling, but raw layout controls must become inert.
@@ -17,55 +17,75 @@
   (string/append "\x1b;[31m" "first\nsecond\rthird\tfourth" "\x1b;[0m"))
 (define flat-row (flatten-terminal-row styled-row))
 (check "flatten-terminal-row keeps text on one row"
-  (term/strip flat-row) "first second third fourth")
-(check-contains "flatten-terminal-row retains ANSI styling" flat-row "\x1b;[31m")
+  (term/strip flat-row)
+  "first second third fourth")
+(check-contains "flatten-terminal-row retains ANSI styling"
+  flat-row
+  "\x1b;[31m")
 
 ;; styled clip never cuts an escape, closes the open style
 (define styled (string/append "\x1b;[31m" "abcdef" "\x1b;[0m"))
-(check-true "clip-styled ≤w"  (<= (string/width (clip-styled styled 4)) 4))
-(check-true "clip-styled closes" (string/ends-with? (clip-styled styled 4) "\x1b;[0m"))
+(check-true "clip-styled ≤w" (<= (string/width (clip-styled styled 4)) 4))
+(check-true "clip-styled closes"
+  (string/ends-with? (clip-styled styled 4) "\x1b;[0m"))
 
 ;; ── padding ──
-(check "pad-width pads"       (pad-width "ab" 4) "ab  ")
-(check "pad-width long"       (pad-width "abcdef" 4) "abcdef")
-(check "fit-plain pads"       (fit-plain "ab" 4) "ab  ")
-(check "fit-plain cuts"       (fit-plain "abcdef" 4) "abc…")
-(check-contains "pad-to resets"   (pad-to "ab" 4) "\x1b;[0m")
-(check "pad-to width"         (string/width (pad-to "ab" 6)) 6)
+(check "pad-width pads" (pad-width "ab" 4) "ab  ")
+(check "pad-width long" (pad-width "abcdef" 4) "abcdef")
+(check "fit-plain pads" (fit-plain "ab" 4) "ab  ")
+(check "fit-plain cuts" (fit-plain "abcdef" 4) "abc…")
+(check-contains "pad-to resets" (pad-to "ab" 4) "\x1b;[0m")
+(check "pad-to width" (string/width (pad-to "ab" 6)) 6)
 
 ;; ── truncation ──
-(check "truncate-str short"   (truncate-str "abc" 5) "abc")
-(check "truncate-str long"    (truncate-str "abcdef" 3) "abc…")
+(check "truncate-str short" (truncate-str "abc" 5) "abc")
+(check "truncate-str long" (truncate-str "abcdef" 3) "abc…")
 (check "truncate-lines keeps" (truncate-lines "a\nb" 5) "a\nb")
-(check-contains "truncate-lines notes cut" (truncate-lines "a\nb\nc\nd" 2) "truncated")
-(check "numbered"             (lines->numbered "a\nb") "1\ta\n2\tb")
+(check-contains "truncate-lines notes cut"
+  (truncate-lines "a\nb\nc\nd" 2)
+  "truncated")
+(check "numbered" (lines->numbered "a\nb") "1\ta\n2\tb")
 (check "truncate-chars short" (truncate-chars "abc" 10) "abc")
-(check-contains "truncate-chars notes cut" (truncate-chars "abcdef" 3) "truncated")
-(check-true "truncate-chars slices to max" (string/starts-with? (truncate-chars "abcdefgh" 3) "abc"))
+(check-contains "truncate-chars notes cut"
+  (truncate-chars "abcdef" 3)
+  "truncated")
+(check-true "truncate-chars slices to max"
+  (string/starts-with? (truncate-chars "abcdefgh" 3) "abc"))
 ;; codepoint-based, not byte: 3 CJK chars capped at 2 keep 2 codepoints
-(check-true "truncate-chars counts codepoints" (string/starts-with? (truncate-chars "你你你" 2) "你你"))
+(check-true "truncate-chars counts codepoints"
+  (string/starts-with? (truncate-chars "你你你" 2) "你你"))
 
 ;; ── numbered-window: paged, line-numbered reads ──
-(check "lines->numbered from start"      (lines->numbered "x\ny" 5) "5\tx\n6\ty")
-(check "window whole small file"         (numbered-window "a\nb\nc" nil nil 2000) "1\ta\n2\tb\n3\tc")
-(check "window offset keeps true numbers" (numbered-window "a\nb\nc\nd" 2 2 2000)
-                                          "2\tb\n3\tc\n\n[showing lines 2-3 of 4]")
-(check-contains "window caps at max-lines" (numbered-window "1\n2\n3\n4\n5" nil nil 2) "[showing lines 1-2 of 5]")
-(check-contains "window honors limit"      (numbered-window "1\n2\n3\n4\n5" 1 2 2000) "[showing lines 1-2 of 5]")
-(check-contains "window offset past end"   (numbered-window "a\nb" 9 nil 2000) "past end")
+(check "lines->numbered from start" (lines->numbered "x\ny" 5) "5\tx\n6\ty")
+(check "window whole small file"
+  (numbered-window "a\nb\nc" nil nil 2000)
+  "1\ta\n2\tb\n3\tc")
+(check "window offset keeps true numbers"
+  (numbered-window "a\nb\nc\nd" 2 2 2000)
+  "2\tb\n3\tc\n\n[showing lines 2-3 of 4]")
+(check-contains "window caps at max-lines"
+  (numbered-window "1\n2\n3\n4\n5" nil nil 2)
+  "[showing lines 1-2 of 5]")
+(check-contains "window honors limit"
+  (numbered-window "1\n2\n3\n4\n5" 1 2 2000)
+  "[showing lines 1-2 of 5]")
+(check-contains "window offset past end"
+  (numbered-window "a\nb" 9 nil 2000)
+  "past end")
 
 ;; ── word boundaries (prompt-input word motion / delete-word) ──
-(check "word-left from end"     (word-left-index "foo  bar baz" 12) 9)
-(check "word-left mid word"     (word-left-index "foo  bar baz" 8) 5)
-(check "word-left to start"     (word-left-index "foo  bar baz" 3) 0)
-(check "word-left at 0"         (word-left-index "foo  bar baz" 0) 0)
-(check "word-right from 0"      (word-right-index "foo  bar baz" 0) 3)
+(check "word-left from end" (word-left-index "foo  bar baz" 12) 9)
+(check "word-left mid word" (word-left-index "foo  bar baz" 8) 5)
+(check "word-left to start" (word-left-index "foo  bar baz" 3) 0)
+(check "word-left at 0" (word-left-index "foo  bar baz" 0) 0)
+(check "word-right from 0" (word-right-index "foo  bar baz" 0) 3)
 (check "word-right over spaces" (word-right-index "foo  bar baz" 3) 8)
-(check "word-right at end"      (word-right-index "foo  bar baz" 12) 12)
+(check "word-right at end" (word-right-index "foo  bar baz" 12) 12)
 
 ;; ── indexed iteration ──
-(check "map-indexed" (map-indexed (lambda (i x) (list i x)) (list "a" "b"))
-                     (list (list 0 "a") (list 1 "b")))
+(check "map-indexed"
+  (map-indexed (lambda (i x) (list i x)) (list "a" "b"))
+  (list (list 0 "a") (list 1 "b")))
 (check "enumerate len" (length (enumerate (list "a" "b" "c"))) 3)
 
 (done)

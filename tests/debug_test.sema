@@ -12,12 +12,15 @@
 (define emitted '())
 (parameterize ((current-emit
                  (lambda (kind text)
-                   (set! emitted (append emitted (list {:kind kind :text text}))))))
-  (dispatch-command (parse-command "/debug status") {:messages (list {:role "user"})}))
+                   (set! emitted
+                     (append emitted (list {:kind kind :text text}))))))
+  (dispatch-command (parse-command "/debug status")
+    {:messages (list {:role "user"})}))
 
 (check "debug status emits raw JSON" (:kind (car emitted)) :raw)
 (check-contains "debug status JSON is pretty printed"
-  (:text (car emitted)) "\n  \"message-count\"")
+  (:text (car emitted))
+  "\n  \"message-count\"")
 (let ((status (json/decode (:text (car emitted)))))
   (check "headless debug status is idle" (:status status) "idle")
   (check "headless debug status counts messages" (:message-count status) 1))
@@ -31,27 +34,33 @@
    :config {}})
 (parameterize ((current-emit
                  (lambda (kind text)
-                   (set! emitted (append emitted (list {:kind kind :text text}))))))
+                   (set! emitted
+                     (append emitted (list {:kind kind :text text}))))))
   (dispatch-command (parse-command "/debug session") headless-state))
 
 (let ((session (json/decode (:text (car emitted)))))
   (check "debug session emits raw JSON" (:kind (car emitted)) :raw)
-  (check "debug session includes exact messages" (:messages session) (:messages headless-state))
+  (check "debug session includes exact messages"
+    (:messages session)
+    (:messages headless-state))
   (check "debug session includes cwd" (:cwd session) "/tmp/workspace")
   (check "headless debug session has no queue" (:queue session) '()))
 
 (set! emitted '())
 (parameterize ((current-emit
                  (lambda (kind text)
-                   (set! emitted (append emitted (list {:kind kind :text text}))))))
+                   (set! emitted
+                     (append emitted (list {:kind kind :text text}))))))
   (dispatch-command (parse-command "/debug transcript") headless-state))
 (check "headless transcript diagnostic explains TUI requirement"
-  (:kind (car emitted)) :error)
+  (:kind (car emitted))
+  :error)
 
 (set! emitted '())
 (parameterize ((current-emit
                  (lambda (kind text)
-                   (set! emitted (append emitted (list {:kind kind :text text}))))))
+                   (set! emitted
+                     (append emitted (list {:kind kind :text text}))))))
   (dispatch-command (parse-command "/debug tasks") headless-state))
 (let ((tasks (json/decode (:text (car emitted)))))
   (check "headless debug tasks emits raw JSON" (:kind (car emitted)) :raw)
@@ -62,20 +71,25 @@
 (parameterize ((config-dir-override doctor-dir)
                (current-emit
                  (lambda (kind text)
-                   (set! emitted (append emitted (list {:kind kind :text text}))))))
+                   (set! emitted
+                     (append emitted (list {:kind kind :text text}))))))
   (dispatch-command (parse-command "/debug doctor")
     (assoc headless-state :config default-config)))
 (let* ((text (:text (car emitted)))
        (doctor (json/decode text)))
   (check "debug doctor emits raw JSON" (:kind (car emitted)) :raw)
-  (check-true "debug doctor reports a compatible Sema" (:compatible (:sema doctor)))
-  (check-true "debug doctor proves session storage writable" (:writable (:sessions doctor)))
+  (check-true "debug doctor reports a compatible Sema"
+    (:compatible (:sema doctor)))
+  (check-true "debug doctor proves session storage writable"
+    (:writable (:sessions doctor)))
   (check-false "debug doctor removes its write probe"
     (any #(string/starts-with? (path/filename %) ".doctor-")
-         (file/list (:dir (:sessions doctor)))))
+      (file/list (:dir (:sessions doctor)))))
   (check-true "debug doctor reports provider presence as booleans"
     (every boolean?
       (map #(get (:providers doctor) %) (keys (:providers doctor)))))
-  (check-not-contains "debug doctor never serializes authorization values" text "Bearer "))
+  (check-not-contains "debug doctor never serializes authorization values"
+    text
+    "Bearer "))
 
 (done)

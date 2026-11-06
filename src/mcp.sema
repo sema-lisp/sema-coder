@@ -16,7 +16,9 @@
 
 (defun mcp-reset! ()
   "Close all live connections, then clear the runtime registry."
-  (for-each mcp-close-record! (mcp-records))
+  (for-each
+    mcp-close-record!
+    (mcp-records))
   (set! *mcp* (mutable-array/new 8)))
 
 (defun mcp-records () *mcp*)
@@ -25,9 +27,10 @@
   "Index of the record named NAME, or #f."
   (let ((n (mutable-array/length *mcp*)))
     (let loop ((i 0))
-      (cond ((>= i n) #f)
-            ((= (:name (mutable-array/get *mcp* i)) name) i)
-            (else (loop (+ i 1)))))))
+      (cond
+        ((>= i n) #f)
+        ((= (:name (mutable-array/get *mcp* i)) name) i)
+        (else (loop (+ i 1)))))))
 
 (defun mcp-get (name)
   (let ((i (mcp-find name))) (if i (mutable-array/get *mcp* i) #f)))
@@ -38,14 +41,14 @@
     (when i (mutable-array/set! *mcp* i (f (mutable-array/get *mcp* i))))))
 
 (defun server->record (srv)
-  {:name      (:name srv)
-   :opts      (:opts srv)
+  {:name (:name srv)
+   :opts (:opts srv)
    :autostart (:autostart srv)
    :transport (:transport srv)
-   :status    :idle
-   :handle    #f
-   :tools     '()
-   :error     #f})
+   :status :idle
+   :handle #f
+   :tools '()
+   :error #f})
 
 (defun mcp-close-record! (rec)
   (when (:handle rec)
@@ -53,7 +56,7 @@
 
 (defun mcp-same-endpoint? (rec srv)
   (and (equal? (:opts rec) (:opts srv))
-       (= (:transport rec) (:transport srv))))
+    (= (:transport rec) (:transport srv))))
 
 (defun reconcile-servers! (servers)
   "Reconcile records against the config's server list: keep existing (preserving
@@ -74,8 +77,7 @@
                 ((not existing) (server->record srv))
                 ((mcp-same-endpoint? existing srv)
                   (assoc existing :autostart (:autostart srv)))
-                (else
-                  (mcp-close-record! existing)
+                (else (mcp-close-record! existing)
                   (server->record srv))))))
         servers)
       (set! *mcp* next))))
@@ -85,14 +87,15 @@
 (defun auth-error? (msg)
   "Heuristic: does a failed-connect message indicate authentication is needed?"
   (let ((m (string/lower msg)))
-    (or (string/contains? m "401") (string/contains? m "unauthorized")
-        (string/contains? m "auth"))))
+    (or (string/contains? m "401")
+      (string/contains? m "unauthorized")
+      (string/contains? m "auth"))))
 
 (defun mcp-connect-timed (opts)
   "mcp/connect OPTS under a deadline. Returns the handle, or raises the timeout
    condition. A connect that outlives the deadline is cancelled, and a handle it
    still returns is closed."
-  (let* ((ms   (get opts :connect-timeout-ms MCP-CONNECT-TIMEOUT-MS))
+  (let* ((ms (get opts :connect-timeout-ms MCP-CONNECT-TIMEOUT-MS))
          (task (async (mcp/connect (dissoc opts :connect-timeout-ms)))))
     (try
       (async/timeout ms task)
@@ -114,26 +117,30 @@
         ;; A failed or interrupted attempt may still have left a handle on the
         ;; record. Close it before replacement so reconnect cannot orphan it.
         (mcp-close-record! rec)
-        (mcp-set! name #(assoc % :status :connecting :handle #f :tools '() :error #f))
+        (mcp-set! name
+          #(assoc % :status :connecting :handle #f :tools '() :error #f))
         (let* ((h #f)
                (result
-                (try
-                  (begin
-                    (set! h (mcp-connect-timed (:opts rec)))
-                    {:ok h :tools (mcp/tools->sema h)})
-                  (catch e
-                    (when h (try (mcp/close h) (catch close-error nil)))
-                    {:err e}))))
+                 (try
+                   (begin
+                     (set! h (mcp-connect-timed (:opts rec)))
+                     {:ok h :tools (mcp/tools->sema h)})
+                   (catch e
+                     (when h (try (mcp/close h) (catch close-error nil)))
+                     {:err e}))))
           (if (get result :ok #f)
             (begin
-              (mcp-set! name #(assoc % :status :connected
-                                     :handle (:ok result)
-                                     :tools (:tools result)
-                                     :error #f))
+              (mcp-set! name
+                #(assoc %
+                  :status :connected
+                  :handle (:ok result)
+                  :tools (:tools result)
+                  :error #f))
               :connected)
             (let* ((errmsg (str (:err result)))
                    (status (if (auth-error? errmsg) :needs-auth :error)))
-              (mcp-set! name #(assoc % :status status :handle #f :tools '() :error errmsg))
+              (mcp-set! name
+                #(assoc % :status status :handle #f :tools '() :error errmsg))
               status)))))))
 
 (defun mcp-disconnect! (name)
@@ -147,17 +154,21 @@
   "Every tool from currently-connected servers, flattened."
   (apply append
     (map #(if (equal? (:status %) :connected) (:tools %) '())
-         (mcp-records))))
+      (mcp-records))))
 
 (defun mcp-tool-origins ()
   "Map of tool-name → server-name for every tool on a connected server. Tool
    values carry no back-reference to their server, so origin is recovered from
    the records that pair a server's :name with its :tools."
-  (foldl (lambda (m rec)
-           (if (equal? (:status rec) :connected)
-             (foldl (lambda (m2 t) (assoc m2 (tool/name t) (:name rec))) m (:tools rec))
-             m))
-         {} (mcp-records)))
+  (foldl
+    (lambda (m rec)
+      (if (equal? (:status rec) :connected)
+        (foldl (lambda (m2 t) (assoc m2 (tool/name t) (:name rec)))
+          m
+          (:tools rec))
+        m))
+    {}
+    (mcp-records)))
 
 (defun mcp-autostart! ()
   "Connect every idle :autostart server. Call before entering the alt-screen so

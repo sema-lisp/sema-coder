@@ -4,7 +4,13 @@
 (set! *config* {})
 
 (defun tool-block (result)
-  {:kind :tool :tool "read-file" :arg "x" :state :done :ms 1 :result result :error #f})
+  {:kind :tool
+   :tool "read-file"
+   :arg "x"
+   :state :done
+   :ms 1
+   :result result
+   :error #f})
 
 (defun preview-lines (result)
   ;; block-lines row 0 is the ✔ header; the rest is the result preview.
@@ -12,7 +18,7 @@
 
 ;; default: up to 5 result lines, no counter when it all fits
 (check "short result shows all lines" (length (preview-lines "a\nb\nc")) 3)
-(check "five lines fit exactly"       (length (preview-lines "1\n2\n3\n4\n5")) 5)
+(check "five lines fit exactly" (length (preview-lines "1\n2\n3\n4\n5")) 5)
 
 ;; longer than the limit: limit lines + one "… +N lines" row
 (let ((rows (preview-lines "1\n2\n3\n4\n5\n6\n7")))
@@ -23,7 +29,9 @@
 (set! *config* {:tool-preview-lines 1})
 (let ((rows (preview-lines "1\n2\n3")))
   (check "limit 1 shows one line + counter" (length rows) 2)
-  (check-contains "counter counts the rest" (term/strip (nth rows 1)) "+2 lines"))
+  (check-contains "counter counts the rest"
+    (term/strip (nth rows 1))
+    "+2 lines"))
 (set! *config* {})
 
 ;; empty results render nothing
@@ -39,30 +47,57 @@
 (define renders-before-tail (transcript-render-count))
 (append-assistant! " grows")
 (define after-lines (transcript-lines 60))
-(check "stream update preserves rendered prefix" (take 2 after-lines) (take 2 before-lines))
-(check-contains "stream update rerenders tail" (term/strip (apply string/append after-lines)) "tail grows")
+(check "stream update preserves rendered prefix"
+  (take 2 after-lines)
+  (take 2 before-lines))
+(check-contains "stream update rerenders tail"
+  (term/strip (apply string/append after-lines))
+  "tail grows")
 (check "stream update renders only the dirty tail block"
-  (- (transcript-render-count) renders-before-tail) 1)
+  (- (transcript-render-count) renders-before-tail)
+  1)
 
 (clear-transcript!)
 (add-block! (tool-block "1\n2\n3"))
 (set! *config* {:tool-preview-lines 1})
-(check "config preview limit invalidates transcript cache" (length (transcript-lines 60)) 3)
+(check "config preview limit invalidates transcript cache"
+  (length (transcript-lines 60))
+  3)
 (set! *config* {})
 
-(let ((rows (block-lines {:kind :tool :tool "bash" :arg "sleep 10"
-                          :state :cancelled :ms 0
-                          :result "interrupted; partial side effects are possible"
-                          :error #t}
-                         60)))
-  (check-contains "cancelled tool has terminal state" (term/strip (car rows)) "interrupted")
-  (check-not-contains "cancelled tool is not shown as success" (term/strip (car rows)) "✔"))
+(let ((rows
+        (block-lines
+          {:kind :tool
+           :tool "bash"
+           :arg "sleep 10"
+           :state :cancelled
+           :ms 0
+           :result "interrupted; partial side effects are possible"
+           :error #t}
+          60)))
+  (check-contains "cancelled tool has terminal state"
+    (term/strip (car rows))
+    "interrupted")
+  (check-not-contains "cancelled tool is not shown as success"
+    (term/strip (car rows))
+    "✔"))
 
-(let ((rows (block-lines {:kind :tool :tool "bash" :arg "sleep 10"
-                          :state :failed :ms 0 :result "turn failed" :error #t}
-                         60)))
-  (check-contains "failed tool has failed terminal state" (term/strip (car rows)) "failed")
-  (check-not-contains "failed tool is not shown as success" (term/strip (car rows)) "✔"))
+(let ((rows
+        (block-lines
+          {:kind :tool
+           :tool "bash"
+           :arg "sleep 10"
+           :state :failed
+           :ms 0
+           :result "turn failed"
+           :error #t}
+          60)))
+  (check-contains "failed tool has failed terminal state"
+    (term/strip (car rows))
+    "failed")
+  (check-not-contains "failed tool is not shown as success"
+    (term/strip (car rows))
+    "✔"))
 
 (clear-transcript!)
 (add-block! {:kind :tool :tool "bash" :arg "false" :state :running})
@@ -74,67 +109,115 @@
 ;; line soft-wraps in the terminal and paints over the row below it.
 (let* ((w 60)
        (long-tool "mcp__chrome-devtools__performance_start_trace")
-       (running {:kind :tool :tool long-tool :arg (string/repeat "x" 70) :state :running :ms 0})
+       (running
+         {:kind :tool
+          :tool long-tool
+          :arg (string/repeat "x" 70)
+          :state :running
+          :ms 0})
        (rows (block-lines running w)))
-  (check "running tool line fits" (length (filter #(> (string/width %) (+ w 1)) rows)) 0)
-  (check-contains "tool name still shown (clipped)" (term/strip (car rows)) "mcp__"))
+  (check "running tool line fits"
+    (length (filter #(> (string/width %) (+ w 1)) rows))
+    0)
+  (check-contains "tool name still shown (clipped)"
+    (term/strip (car rows))
+    "mcp__"))
 (let* ((w 60)
        (long-tool "mcp__chrome-devtools__performance_start_trace")
-       (done-b {:kind :tool :tool long-tool :arg (string/repeat "x" 70) :state :done :ms 120000 :result "" :error #f})
+       (done-b
+         {:kind :tool
+          :tool long-tool
+          :arg (string/repeat "x" 70)
+          :state :done
+          :ms 120000
+          :result ""
+          :error #f})
        (rows (block-lines done-b w)))
-  (check "done tool line fits" (length (filter #(> (string/width %) (+ w 1)) rows)) 0)
+  (check "done tool line fits"
+    (length (filter #(> (string/width %) (+ w 1)) rows))
+    0)
   (check-contains "duration stays visible" (term/strip (car rows)) "120000ms"))
 
 ;; ── :raw blocks preserve internal whitespace, clipped not wrapped ──
 (check-contains ":raw keeps space runs"
-  (car (block-lines {:kind :raw :text "col1     col2"} 40)) "col1     col2")
+  (car (block-lines {:kind :raw :text "col1     col2"} 40))
+  "col1     col2")
 ;; a too-wide :raw line stays a single row (clipped), never soft-wrapped into more
 (check ":raw wide line stays one row + blank"
-  (length (block-lines {:kind :raw :text (string/repeat "x" 200)} 20)) 2)
+  (length (block-lines {:kind :raw :text (string/repeat "x" 200)} 20))
+  2)
 
 ;; ── Untrusted terminal sequences are stripped before styling ──
-(define osc52-attack (string/append "safe" "\x1b;]52;c;ZXZpbA==" "\x07;" " text"))
+(define osc52-attack
+  (string/append "safe" "\x1b;]52;c;ZXZpbA==" "\x07;" " text"))
 (define clear-attack (string/append "before" "\x1b;[2J" "after"))
 
-(let ((rendered (apply string/append
-                  (block-lines {:kind :assistant :text osc52-attack} 60))))
+(let ((rendered
+        (apply string/append
+          (block-lines {:kind :assistant :text osc52-attack} 60))))
   (check "assistant output cannot emit OSC52"
-    (string/contains? rendered "]52;c;") #f)
+    (string/contains? rendered "]52;c;")
+    #f)
   (check-contains "assistant visible text survives sanitizing"
-    (term/strip rendered) "safe text"))
+    (term/strip rendered)
+    "safe text"))
 
-(let ((rendered (apply string/append
-                  (block-lines {:kind :raw :text clear-attack} 60))))
+(let ((rendered
+        (apply string/append
+          (block-lines {:kind :raw :text clear-attack} 60))))
   (check "raw tool output cannot clear the screen"
-    (string/contains? rendered "[2J") #f)
+    (string/contains? rendered "[2J")
+    #f)
   (check-contains "raw visible text survives sanitizing"
-    (term/strip rendered) "beforeafter"))
+    (term/strip rendered)
+    "beforeafter"))
 
-(let ((rendered (apply string/append
-                  (block-lines {:kind :raw
-                                :text (string/append "a" "\x07;" "b" "\x0d;" "c" "\x08;" "d")}
-                               60))))
+(let ((rendered
+        (apply string/append
+          (block-lines
+            {:kind :raw
+             :text (string/append "a" "\x07;" "b" "\x0d;" "c" "\x08;" "d")}
+            60))))
   (check "bare terminal controls are removed"
-    (term/strip rendered) " abcd"))
+    (term/strip rendered)
+    " abcd"))
 
-(let ((rendered (apply string/append
-                  (block-lines {:kind :tool :tool osc52-attack :arg clear-attack
-                                :state :done :ms 1 :result osc52-attack :error #f}
-                               60))))
+(let ((rendered
+        (apply string/append
+          (block-lines
+            {:kind :tool
+             :tool osc52-attack
+             :arg clear-attack
+             :state :done
+             :ms 1
+             :result osc52-attack
+             :error #f}
+            60))))
   (check "tool name/arg/result cannot emit OSC52"
-    (string/contains? rendered "]52;c;") #f)
+    (string/contains? rendered "]52;c;")
+    #f)
   (check "tool name/arg/result cannot clear screen"
-    (string/contains? rendered "[2J") #f))
+    (string/contains? rendered "[2J")
+    #f))
 
 (done)
 
 ;; ── edit-file results paint as a diff; ⌃X expands past the preview cap ──
 (set! *tool-expanded* #f)
-(let* ((b {:kind :tool :tool "edit-file" :arg "x.txt" :state :done :ms 1
-           :result "Edited x.txt (1 replacement)\n  ctx\n- old\n+ new\n  more\n  more\n  more\n  more"})
+(let* ((b
+         {:kind :tool
+          :tool "edit-file"
+          :arg "x.txt"
+          :state :done
+          :ms 1
+          :result "Edited x.txt (1 replacement)\n  ctx\n- old\n+ new\n  more\n  more\n  more\n  more"})
        (lines (map term/strip (block-lines b 60))))
-  (check-contains "removed line is red" (string/join "\n" (block-lines b 60)) (bad "- old"))
-  (check-contains "added line is green" (string/join "\n" (block-lines b 60)) (ok "+ new"))
+  (check-contains "removed line is red"
+    (string/join "\n" (block-lines b 60))
+    (bad "- old"))
+  (check-contains "added line is green"
+    (string/join "\n" (block-lines b 60))
+    (ok "+ new"))
   (check "preview caps result lines" (length lines) 7)
   (toggle-tool-expand!)
   (check "expanded shows every line" (length (block-lines b 60)) 9)

@@ -3,14 +3,14 @@
 
 (defun plain (lines) (map term/strip lines))
 
-(check "heading text"   (plain (md-lines "# Title" 40)) (list "Title"))
-(check "bold plain"     (plain (md-lines "a **b** c" 40)) (list "a b c"))
+(check "heading text" (plain (md-lines "# Title" 40)) (list "Title"))
+(check "bold plain" (plain (md-lines "a **b** c" 40)) (list "a b c"))
 (check-true "bold styled" (not (= (car (md-lines "**b**" 40)) "b")))
-(check "code plain"     (plain (md-lines "run `foo` now" 40)) (list "run foo now"))
-(check "bullet"         (plain (md-lines "- item" 40)) (list "• item"))
-(check "ordered"        (plain (md-lines "1. first" 40)) (list "1. first"))
-(check "quote"          (plain (md-lines "> quoted" 40)) (list "▏ quoted"))
-(check "nested quote"   (plain (md-lines ">> twice" 40)) (list "▏ ▏ twice"))
+(check "code plain" (plain (md-lines "run `foo` now" 40)) (list "run foo now"))
+(check "bullet" (plain (md-lines "- item" 40)) (list "• item"))
+(check "ordered" (plain (md-lines "1. first" 40)) (list "1. first"))
+(check "quote" (plain (md-lines "> quoted" 40)) (list "▏ quoted"))
+(check "nested quote" (plain (md-lines ">> twice" 40)) (list "▏ ▏ twice"))
 (check "nested bullets keep depth"
   (plain (md-lines "- top\n  - nested\n    - deeper\n\t- tab" 40))
   (list "• top" "  • nested" "    • deeper" "  • tab"))
@@ -20,8 +20,10 @@
 (check "nested wrapped item hangs under its text"
   (plain (md-lines "  - aaaa bbbb cccc" 12))
   (list "  • aaaa" "    bbbb" "    cccc"))
-(check "code fence"     (plain (md-lines "```\ncode line\n```" 40)) (list "│ code line"))
-(check "open fence"     (plain (md-lines "```\nx = 1" 40)) (list "│ x = 1"))
+(check "code fence"
+  (plain (md-lines "```\ncode line\n```" 40))
+  (list "│ code line"))
+(check "open fence" (plain (md-lines "```\nx = 1" 40)) (list "│ x = 1"))
 (check "different fence marker stays inside code"
   (plain (md-lines "```\na\n~~~\nb\n```" 40))
   (list "│ a" "│ ~~~" "│ b"))
@@ -31,9 +33,12 @@
 (check "longer matching fence closes code"
   (plain (md-lines "```\na\n````\nafter" 40))
   (list "│ a" "after"))
-(check "blank kept"     (plain (md-lines "a\n\nb" 40)) (list "a" "" "b"))
-(check-true "wraps"     (> (length (md-lines "word word word word word word word word" 18)) 1))
-(check-contains "link text" (car (plain (md-lines "see [docs](http://x)" 40))) "docs")
+(check "blank kept" (plain (md-lines "a\n\nb" 40)) (list "a" "" "b"))
+(check-true "wraps"
+  (> (length (md-lines "word word word word word word word word" 18)) 1))
+(check-contains "link text"
+  (car (plain (md-lines "see [docs](http://x)" 40)))
+  "docs")
 
 ;; ── tables ──
 (define tbl "| Name | Age |\n|:-----|----:|\n| Bob | 42 |\n| Alice | 7 |")
@@ -43,10 +48,10 @@
     (check-contains "header cell 1" (nth p 0) "Name")
     (check-contains "header cell 2" (nth p 0) "Age")
     (check-contains "sep is a rule" (nth p 1) "─┼─")
-    (check-contains "body cell 1"   (nth p 2) "Bob")
-    (check-contains "body cell 2"   (nth p 2) "42")
+    (check-contains "body cell 1" (nth p 2) "Bob")
+    (check-contains "body cell 2" (nth p 2) "42")
     ;; right-aligned Age column: the digits sit at the column's right edge
-    (check "Alice row aligned"   (nth p 3) (nth p 3))))
+    (check "Alice row aligned" (nth p 3) (nth p 3))))
 
 ;; ── task lists / strikethrough / rule ──
 (check "task done" (car (plain (md-lines "- [x] done" 40))) "☑ done")
@@ -57,31 +62,47 @@
 
 ;; ── headings wrap to width like any other prose ──
 ;; (an over-wide heading used to escape the row and stomp the line below it)
-(let ((rows (md-lines "## a very long heading that absolutely must wrap instead of overflowing the terminal row" 40)))
+(let ((rows
+        (md-lines
+          "## a very long heading that absolutely must wrap instead of overflowing the terminal row"
+          40)))
   (check-true "long heading wraps" (> (length rows) 1))
-  (check "heading lines fit width" (length (filter #(> (string/width %) 40) rows)) 0)
+  (check "heading lines fit width"
+    (length (filter #(> (string/width %) 40) rows))
+    0)
   (check-contains "heading still styled" (car rows) "\x1b;["))
 
 ;; ── resize hardening: ANSI-safe clip never cuts an escape ──
-(check "clip-styled width" (string/width (clip-styled (bright "hello world") 5)) 5)
-(check "clip-styled text"  (term/strip (clip-styled (bright "hello world") 5)) "hello")
+(check "clip-styled width"
+  (string/width (clip-styled (bright "hello world") 5))
+  5)
+(check "clip-styled text"
+  (term/strip (clip-styled (bright "hello world") 5))
+  "hello")
 (check-true "narrow table fits"
-  (null? (filter (lambda (r) (> (string/width r) 8))
-                 (map (lambda (r) (clip-styled r 8))
-                      (md-lines "| **Alpha** | Beta |\n|----|----|\n| one | two |" 60)))))
+  (null?
+    (filter (lambda (r) (> (string/width r) 8))
+      (map (lambda (r) (clip-styled r 8))
+        (md-lines "| **Alpha** | Beta |\n|----|----|\n| one | two |" 60)))))
 
 ;; ── multi-byte safety: regex offsets are bytes, slicing is codepoints ──
-(check-contains "emoji inline" (term/strip (md-inline "✅ **ok** ~~no~~ ⚠️ 🔥🔥")) "ok")
-(check-true "emoji table"  (> (length (md-lines "| A | B |\n|---|---|\n| ✅ x | **y** ⚠️ |" 40)) 2))
-(check "cjk inline"        (term/strip (md-inline "**日本語** text")) "日本語 text")
+(check-contains "emoji inline"
+  (term/strip (md-inline "✅ **ok** ~~no~~ ⚠️ 🔥🔥"))
+  "ok")
+(check-true "emoji table"
+  (> (length (md-lines "| A | B |\n|---|---|\n| ✅ x | **y** ⚠️ |" 40)) 2))
+(check "cjk inline" (term/strip (md-inline "**日本語** text")) "日本語 text")
 
 ;; ── column alignment: every row renders to the same width (no overflow) ──
-(let ((ws (map string/width
-                (md-lines (string/append
-                            "| ID | Name | Desc |\n|----|------|------|\n"
-                            "| 1 | Alice | short |\n"
-                            "| 2 | Björn Ångström | a very long description that definitely exceeds the sixty character column cap for sure |\n"
-                            "| 3 | 李明 | 短い |") 200))))
-  (check-true "rows equal width" (null? (filter (lambda (w) (not (= w (car ws)))) ws))))
+(let ((ws
+        (map string/width
+          (md-lines
+            (string/append "| ID | Name | Desc |\n|----|------|------|\n"
+              "| 1 | Alice | short |\n"
+              "| 2 | Björn Ångström | a very long description that definitely exceeds the sixty character column cap for sure |\n"
+              "| 3 | 李明 | 短い |")
+            200))))
+  (check-true "rows equal width"
+    (null? (filter (lambda (w) (not (= w (car ws)))) ws))))
 
 (done)

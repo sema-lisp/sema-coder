@@ -14,13 +14,17 @@
 (check-false "reported failure never passes"
   (test-result-ok? 0 {:checks 3 :fails 1}))
 (check "missing summary diagnostic"
-  (test-result-detail 0 #f #f) "missing summary")
+  (test-result-detail 0 #f #f)
+  "missing summary")
 (check "timeout diagnostic"
-  (test-result-detail 124 #f #t) "timed out")
+  (test-result-detail 124 #f #t)
+  "timed out")
 (check-contains "child diagnostics include stderr"
-  (child-output {:stderr "err" :stdout "out"}) "err")
+  (child-output {:stderr "err" :stdout "out"})
+  "err")
 (check-contains "child diagnostics include stdout"
-  (child-output {:stderr "err" :stdout "out"}) "out")
+  (child-output {:stderr "err" :stdout "out"})
+  "out")
 (check "positive timeout parsed" (positive-number-or "250" 30) 250)
 (check "invalid timeout uses fallback" (positive-number-or "nope" 30) 30)
 (check "non-positive timeout uses fallback" (positive-number-or "0" 30) 30)

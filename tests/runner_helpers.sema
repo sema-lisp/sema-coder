@@ -2,9 +2,10 @@
 
 (defun parse-summary (output)
   "The harness's closing line -> {:checks N :fails M}, or #f when absent."
-  (if-let (m (regex/match #"SEMA_TEST_SUMMARY (\d+) checks, (\d+) failed" output))
+  (if-let (m
+           (regex/match #"SEMA_TEST_SUMMARY (\d+) checks, (\d+) failed" output))
     {:checks (string->number (nth (:groups m) 0))
-     :fails  (string->number (nth (:groups m) 1))}
+     :fails (string->number (nth (:groups m) 1))}
     #f))
 
 (defun child-output (result)
@@ -19,8 +20,8 @@
   "A clean exit without the harness summary is not a passing test: it usually
    means the file forgot `(done)` or returned before its assertions finished."
   (and (= exit-code 0)
-       summary
-       (= (get summary :fails 1) 0)))
+    summary
+    (= (get summary :fails 1) 0)))
 
 (defun test-result-detail (exit-code summary timed-out?)
   (cond

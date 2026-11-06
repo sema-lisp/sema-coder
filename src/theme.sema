@@ -6,18 +6,18 @@
 ;; helpers so a future :theme switch is a one-file change.
 
 ;; Brand gold — the sema accent (#c8a855)
-(defun accent (text)     (term/rgb text 200 168 85))
+(defun accent (text) (term/rgb text 200 168 85))
 ;; Darker gold for secondary accents (#a08838)
 (defun accent-dim (text) (term/rgb text 160 136 56))
 ;; Warm muted text for hints / metadata (#968c79)
-(defun muted (text)      (term/rgb text 150 140 121))
+(defun muted (text) (term/rgb text 150 140 121))
 ;; Faint — least prominent
-(defun faint (text)      (term/dim text))
+(defun faint (text) (term/dim text))
 
 ;; Semantic status colors (reuse the 16-color set so they stay legible on any bg)
-(defun ok (text)    (term/green text))
-(defun warn (text)  (term/yellow text))
-(defun bad (text)   (term/red text))
+(defun ok (text) (term/green text))
+(defun warn (text) (term/yellow text))
+(defun bad (text) (term/red text))
 
 ;; Pure white — the letters of the canonical (sema) logotype are #ffffff
 (defun bright (text) (term/rgb text 255 255 255))
