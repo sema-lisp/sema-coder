@@ -12,10 +12,10 @@ execution. No live provider is needed by the regressions.
 
 | Priority | Issue / grouped fix | Evidence before fix | Status |
 | --- | --- | --- | --- |
+| High | [#10](https://github.com/sema-lisp/sema-coder/issues/10): cancel before process cleanup | `foreground_race_test` runs two real foreground commands and expands the cleanup scheduling window. Initially the second command starts and writes a file after cancel was requested (2 failed assertions). | Fixed: cancel runner before awaiting process termination. Regression passes; foreground/interrupt/controller/tools suites pass 177 checks. |
 | High | [#6](https://github.com/sema-lisp/sema-coder/issues/6): empty session / queue lifecycle | `state_machines_test`: removing the last queued input preserves it on disk; `/clear` with zero messages preserves queue/pause/session identity. `new-session!` timestamp+PID also permits same-millisecond ID reuse. Restored removed work may execute tools. | Fixed: empty updates are saved; explicit reset flag; timestamp/PID/sequence IDs. `state_machines_test`: 8 checks green; session/restore/audit suites: 58 checks green. |
 | High for concurrent extensions | [#8](https://github.com/sema-lisp/sema-coder/issues/8): MCP attempt ownership | `mcp_races_test`: disconnect→late connect reconnects; changed endpoint→late connect publishes old tools; removed endpoint→late handle is leaked. Seven assertions fail with real MCP handles and deterministic channel barriers. Built-in modal calls are serialized; async extensions can overlap these public functions. | Fixed: per-attempt ownership, duplicate-connect guard and superseded-handle cleanup. `mcp_races_test`: 18 checks green (initially 7 failures); MCP/reconcile suites also pass. |
 | Medium | [#7](https://github.com/sema-lisp/sema-coder/issues/7): executed input visibility | `state_machines_test`: direct+queued input both run, but only direct input has a user block. `on-enter` owns user rendering while queue drain bypasses it. Steers share the bypass. | Fixed: common turn entry owns the user block. Direct+queue and interrupt+steer assertions went red→green; state/controller/e2e suites pass 110 checks. |
-
 | Medium | [#9](https://github.com/sema-lisp/sema-coder/issues/9): input action freshness | `event_boundaries_test` initially fails 3 assertions: actual Kitty release bytes insert text/quit; transcript mutation between drag move and release copies stale coordinates. Releases require a terminal reporting event types. | Fixed: ignore key-up; revalidate transcript version on release. 101 input/selection/decoder checks pass. |
 
 ## 1. Process and front-end lifecycle
@@ -59,7 +59,7 @@ it does not expose every substate separately.
 | Model | text delta for active ID | Queue chunks for reveal and interrupted-history capture |
 | Model | tool start | Flush reveal; reset round text; indexed running tool block |
 | Tool | tool end | Set indexed block done/failed; clear tool index; new assistant target |
-| Running | interrupt matching active ID | Record one cancel request; stop foreground processes; cancel task |
+| Running | interrupt matching active ID | Record one cancel request; cancel task before awaiting foreground cleanup |
 | Cancelling | repeated matching interrupt | Idempotent; steer may upgrade stop |
 | Any | stale turn ID callback/interrupt | Ignore |
 | Running/cancelling | runner returns successfully | Drain reveal; preserve prior metadata prefix; completed event + save |
@@ -174,7 +174,7 @@ completed/failed/stopped, evicted. Monitor: stopped/running.
 | Absent | foreground bash | Spawn, register handle, bounded poll/drain |
 | Foreground running | exit | Wait for readers, collect tail, forget and close |
 | Foreground running | deadline | Terminate process group, forget and close; timeout result |
-| Foreground running | turn interrupt | Stop registered processes before task cancellation |
+| Foreground running | turn interrupt | Cancel runner first, then stop registered processes |
 | Absent | background bash, room available | Spawn, close stdin, register stable task ID |
 | Registry full | settled records exist / all active | Evict oldest settled / reject |
 | Background running | poll sees leader exit | Settling with exit code; bounded reader-EOF wait |
@@ -232,7 +232,7 @@ resume delete unarmed/armed(ID); palette closed/command/argument completion.
 | --- | --- | --- |
 | No overlay/top | open registered kind | Push fresh state; throwing open adds error and pushes nothing |
 | Top | close | Pop to parent; last pop returns to composer |
-| MCP list | Enter / tools action | Connect selected record / tools view |
+| MCP list | C/R / D / Enter or T | Connect selected record / disconnect / tools view |
 | MCP tools | Esc | MCP list |
 | Resume list | query/scope/navigation | Refilter; clamp selection; reset delete arm |
 | Resume list | Enter / Ctrl-R / Ctrl-E | Detail / restore and close / rename |

@@ -1443,10 +1443,11 @@
       (set! *interrupt-mode* mode)
       (set! *interrupt-turn-id* expected)
       (record-turn-event! :cancel-requested {:turn-id expected :mode mode})
-      ;; Foreground bash owns an OS process which ordinary Sema cancellation
-      ;; cannot unwind. Stop it while its proc handle is still available.
-      (stop-active-foreground-processes!)
+      ;; Stop execution before cleanup parks, otherwise the runner can finish
+      ;; this tool and launch another command while termination is awaiting.
+      ;; Handles live in the app registry, so cancellation cannot lose them.
       (when *turn* (async/cancel *turn*))
+      (stop-active-foreground-processes!)
       #t)))
 
 (defun request-interrupt! ()

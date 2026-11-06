@@ -1,0 +1,47 @@
+(load "harness.sema")
+(load "../src/tui.sema")
+
+;; While group termination parks, a tool can finish and the runner can start
+;; another foreground command. Expand that real scheduling window without
+;; mocking process ownership, cancellation, or the command runner.
+(define native-terminate terminate-proc!)
+(set! terminate-proc!
+  (lambda (handle)
+    (async/sleep 100)
+    (native-terminate handle)))
+(define second-started #f)
+(define marker (test-temp-path "interrupt-side-effect"))
+(when (file/exists? marker) (file/delete marker))
+(define native-register register-foreground-process!)
+(define registrations 0)
+(set! register-foreground-process!
+  (lambda (handle)
+    (set! registrations (+ registrations 1))
+    (when (= registrations 2) (set! second-started #t))
+    (native-register handle)))
+
+(parameterize
+  ((current-turn-render (lambda () nil))
+   (current-turn-runner
+     (lambda (agent input messages on-tool on-text on-partial effort)
+       (run-in-workspace-timed "sleep 0.02" 1000)
+       (run-in-workspace-timed f"echo unexpected > ${(shell/quote marker)}; sleep 5" 6000)
+       {:messages messages :response ""}))
+   (current-turn-pump
+     (lambda (turn)
+       (let wait ()
+         (when (null? *foreground-process-handles*)
+           (async/sleep 1)
+           (wait)))
+       (request-interrupt!))))
+  (run-agent-turn! "cancel across two foreground tools"))
+
+(check-false "cancel prevents a subsequent foreground command during cleanup" second-started)
+(check-false "no command side effect after cancellation request" (file/exists? marker))
+(check "interrupt leaves no foreground process owners" (length *foreground-process-handles*) 0)
+;; Cleanup even on the intentionally failing pre-fix run.
+(set! terminate-proc! native-terminate)
+(set! register-foreground-process! native-register)
+(stop-active-foreground-processes!)
+(when (file/exists? marker) (file/delete marker))
+(done)
