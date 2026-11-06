@@ -35,4 +35,20 @@
   (check-false "stale release clears drag" *selection-drag*)
   (check-false "stale release clears selection" *selection*))
 
+;; Expanding tool output also reflows rendered coordinates, even though the
+;; underlying block contents have not changed.
+(set! *tool-expanded* #f)
+(set! copies 0)
+(parameterize ((current-clipboard-copy
+                 (lambda (text) (set! copies (+ copies 1)) #t)))
+  (clear-transcript!)
+  (add-block! {:kind :tool :tool "bash" :arg "example" :state :done :ms 0
+               :result "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight"})
+  (handle-mouse {:kind :mouse :action :press :button 0 :x 2 :y 2})
+  (handle-mouse {:kind :mouse :action :move :button 0 :x 6 :y 2})
+  (toggle-tool-expand!)
+  (check-false "tool expansion invalidates active selection" (current-selection))
+  (handle-mouse {:kind :mouse :action :release :button 0 :x 6 :y 2})
+  (check "tool expansion prevents stale release copy" copies 0))
+
 (done)

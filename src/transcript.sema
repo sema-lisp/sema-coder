@@ -145,7 +145,10 @@
 
 (define *tool-expanded* #f) ;; ⌃T: show whole tool results instead of previews
 
-(defun toggle-tool-expand! () (set! *tool-expanded* (not *tool-expanded*)))
+(defun toggle-tool-expand! ()
+  (set! *tool-expanded* (not *tool-expanded*))
+  ;; Rendered line positions change even though block contents do not.
+  (mark-tdirty-from! 0))
 
 (defun tool-preview-limit ()
   (if *tool-expanded* 100000 (max 1 (get *config* :tool-preview-lines 5))))
