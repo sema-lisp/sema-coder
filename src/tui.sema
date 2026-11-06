@@ -963,6 +963,8 @@
     (reset-type-buffer!)
     (record-turn-event! :turn-started
       {:turn-id turn-id :input-chars (string/length text) :source source})
+    ;; All submission paths (direct, queued, steer) enter here exactly once.
+    (add-block! {:kind :user :text text})
     ;; The empty assistant block is the streaming target for :on-text.
     (add-block! {:kind :assistant :text ""})
     ((current-turn-render))
@@ -1396,7 +1398,7 @@
           (unless (command-keeps-input? (:name (parse-command chosen)))
             (prompt-clear!))
           (run-command! chosen)))
-      (else (add-block! {:kind :user :text text})
+      (else
         (prompt-clear!)
         (set! *scroll* 0) ;; sending always returns you to the tail
         (run-agent-turn! text)))))

@@ -411,6 +411,9 @@
 (check "steer starts only after cancelled turn"
   steer-calls
   (list "original" "replacement"))
+(check "steering turns show both user prompts exactly once"
+  (map :text (filter #(= (:kind %) :user) (transcript-blocks)))
+  (list "original" "replacement"))
 (check "steer leaves ordinary queue paused"
   (map :text (queued-messages))
   (list "ordinary"))

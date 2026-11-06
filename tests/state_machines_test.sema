@@ -54,7 +54,26 @@
     (check-true "same-millisecond resets never reuse an identity"
       (not (= same-tick-id *session-id*))))
 
-)
+  ;; The queue-draining path must show the same user prompts as restoration.
+  (reset-state!)
+  (define calls '())
+  (parameterize
+    ((current-turn-pump (lambda (turn) nil))
+     (current-turn-runner
+       (lambda (agent input messages on-tool on-text on-partial effort)
+         (set! calls (append calls (list input)))
+         (when (= input "direct") (enqueue-input! "queued" "follow-up"))
+         (on-text "answer")
+         {:response "answer"
+          :messages (append messages
+            (list {:role "user" :content input}
+                  {:role "assistant" :content "answer"}))})))
+    (prompt-set! "direct")
+    (on-enter))
+  (check "queue actually ran" calls (list "direct" "queued"))
+  (check "each executed input has one visible user block"
+    (map :text (filter #(= (:kind %) :user) (transcript-blocks)))
+    (list "direct" "queued")))
 
 (set! *tui-active* #f)
 (shell "rm" "-rf" root)
