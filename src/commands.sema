@@ -514,5 +514,279 @@
          (minor (if match (string->number (nth (:groups match) 1)) 0)))
     {:version (if match (:match match) "unknown")
      :minimum "1.37"
-     :compatible
-       (if (and match (or (> major 1) (and (= major 1) (>= minor 37)))) #t #f)}))
+     :compatible (if (and match (or (> major 1) (and (= major 1) (>= minor 37)))) #t #f)}))
+
+(defun doctor-env-present? (name)
+  (let ((value (env name))) (if (and value (not (= value ""))) #t #f)))
+
+(defun doctor-provider-keys ()
+  (foldl (lambda (result key) (assoc result key (doctor-env-present? key)))
+    {}
+    (provider-env-keys)))
+
+(defun doctor-session-storage ()
+  (let* ((dir (sessions-dir))
+         (probe (path/join dir f".doctor-${(sys/pid)}-${(time-ms)}")))
+    (try
+      (begin
+        (file/mkdir dir)
+        (file/write probe "ok")
+        (file/delete probe)
+        {:dir dir :writable #t :error ""})
+      (catch e
+        (try
+          (when (file/exists? probe) (file/delete probe))
+          (catch cleanup-error nil))
+        {:dir dir :writable #f :error (get e :message (str e))}))))
+
+(defun doctor-ripgrep ()
+  (let ((result (try (shell "rg" "--version") (catch e #f))))
+    (if (and result (= (get result :exit-code 1) 0))
+      {:available #t
+       :version (car (string/split (string/trim (get result :stdout "")) "\n"))}
+      {:available #f :version ""})))
+
+(defun doctor-mcp-state ()
+  {:declared (length (mcp-records))
+   :servers (map
+     (lambda (server)
+       {:name (get server :name "")
+        :transport (get server :transport "")
+        :status (get server :status :idle)})
+     (mcp-records))})
+
+(defun doctor-report (state)
+  "Secret-safe environment and runtime readiness report."
+  (let* ((cfg (get state :config {}))
+         (config-error
+           (or (config-validation-error cfg)
+             (if *tui-active* *config-error* #f)))
+         (model (choose-model (get state :model "") cfg))
+         (sema-info (doctor-sema-version))
+         (storage (doctor-session-storage)))
+    {:ok (and (:compatible sema-info) (not config-error) (:writable storage))
+     :sema sema-info
+     :providers (doctor-provider-keys)
+     :config {:path (config-path)
+      :valid (not config-error)
+      :error (if config-error (str config-error) "")}
+     :sessions storage
+     :ripgrep (doctor-ripgrep)
+     :mcp (doctor-mcp-state)
+     :model {:effective model :provider (or (model-provider-name cfg model) "unknown")}}))
+
+(register-command! "debug"
+  "Developer diagnostics: /debug [status|session|transcript|tasks|doctor]"
+  (lambda (state args)
+    (match (string/trim args)
+      ("status" (poll-background-tasks!)
+        (if *tui-active*
+          (emit :raw (json/encode-pretty (turn-controller-state)))
+          (emit :raw
+            (json/encode-pretty
+              {:status :idle
+               :background-tasks (background-task-summaries)
+               :message-count (length (get state :messages '()))}))))
+      ("session" (emit :raw (json/encode-pretty (debug-session-state state))))
+      ("transcript"
+        (if *tui-active*
+          (emit :raw (json/encode-pretty (transcript-debug-state)))
+          (emit :error "/debug transcript is available in the TUI")))
+      ("tasks" (emit :raw (json/encode-pretty (background-task-debug-state))))
+      ("doctor" (emit :raw (json/encode-pretty (doctor-report state))))
+      (""
+        (emit :info
+          "available diagnostics: /debug status, /debug session, /debug transcript, /debug tasks, /debug doctor"))
+      (_ (emit :error f"unknown diagnostic: ${args} (try /debug)")))
+    state))
+
+(register-completions! "debug"
+  (lambda (state)
+    (list {:value "status" :label "show turn-controller state and events"}
+      {:value "session" :label "show exact messages and queued input"}
+      {:value "transcript" :label "show TUI blocks and render-cache state"}
+      {:value "tasks" :label "show background tasks and retained output"}
+      {:value "doctor"
+       :label "check runtime, providers, storage, and MCP readiness"})))
+
+(register-command! "mcp"
+  "Manage MCP servers (opens the modal; ⌃O in the TUI)"
+  (lambda (state args)
+    (if *tui-active*
+      (open-mcp-modal!)
+      (let ((servers (mcp-records)))
+        (if (= (length servers) 0)
+          (emit :info "no MCP servers declared (add one in init.sema)")
+          (for-each
+            (lambda (r)
+              (emit :line
+                (format "    ~a  ~a  ~a"
+                  (string/pad-right (:name r) 14)
+                  (string/pad-right (:transport r) 6)
+                  (:status r))))
+            servers))))
+    state))
+
+(defun session-restore-fields (id cwd config)
+  "Load session ID and compute the conversational state it restores to —
+   {:messages :model :effort :agent :meta}, with a fresh agent on the restored
+   model. The ONE place both the REPL /resume path and the TUI restore-session!
+   build this, so the two frontends can't drift."
+  (let* ((r (load-session id))
+         (meta (:meta r))
+         (m (get meta :model "")))
+    {:messages (:messages r)
+     :model m
+     :effort (get meta :effort "")
+     :agent (create-agent cwd m config)
+     :meta meta}))
+
+(defun resume-command-parts (args)
+  (filter #(not (= % "")) (string/split (string/trim args) " ")))
+
+(defun rename-session-command! (parts)
+  (if (< (length parts) 3)
+    (emit :error "usage: /resume rename ID TITLE")
+    (let ((id (nth parts 1))
+          (title (string/join (drop 2 parts) " ")))
+      (try
+        (let ((meta (rename-session! id title)))
+          (when (and *tui-active* (= id *session-id*))
+            (set! *session-custom-title* (:custom-title meta)))
+          (emit :ok f"renamed ${id} → “${(:title meta)}”"))
+        (catch e
+          (emit :error f"couldn't rename ${id}: ${(get e :message (str e))}"))))))
+
+(defun delete-session-command! (parts)
+  (if (not (= (length parts) 2))
+    (emit :error "usage: /resume delete ID")
+    (let ((id (nth parts 1)))
+      (cond
+        ((and *tui-active* (= id *session-id*))
+          (emit :error "cannot delete the active session; clear it first"))
+        ((try (delete-session! id) (catch e #f))
+          (emit :ok f"deleted session ${id}"))
+        (else (emit :error f"no session ${id}"))))))
+
+(register-command! "resume"
+  "Resume or manage sessions: /resume [ID|rename ID TITLE|delete ID]"
+  (lambda (state args)
+    (let* ((parts (resume-command-parts args))
+           (action (if (null? parts) "" (car parts))))
+      (cond
+        ((= action "rename") (rename-session-command! parts) state)
+        ((= action "delete") (delete-session-command! parts) state)
+        ;; /resume <id> — restore directly, no modal.
+        ((not (= args ""))
+          (if *tui-active*
+            (begin
+              (try
+                (restore-session! args)
+                (catch e
+                  (emit :error
+                    f"couldn't restore “${args}”: ${(get e :message (str e))}")))
+              ;; restore-session! updates the TUI globals; hand them back as state.
+              (tui-state))
+            (let ((f
+                    (try
+                      (session-restore-fields args
+                        (:cwd state)
+                        (get state :config {}))
+                      (catch e #f))))
+              (if (not f)
+                (begin
+                  (emit :error
+                    f"no session “${args}” (try /resume for the list)")
+                  state)
+                (let ((title
+                        (flatten-terminal-row
+                          (sanitize-terminal-text (get (:meta f) :title args)))))
+                  (emit :ok
+                    f"resumed “${title}” · ${(length (:messages f))} messages")
+                  (assoc state
+                    :messages (:messages f)
+                    :model (:model f)
+                    :effort (:effort f)
+                    :agent (:agent f)))))))
+        (*tui-active* (open-resume-modal!) state)
+        (else
+          (let ((ss (list-sessions)))
+            (if (= (length ss) 0)
+              (emit :info "no saved sessions yet")
+              (for-each
+                (lambda (m)
+                  (let ((title
+                          (flatten-terminal-row
+                            (sanitize-terminal-text (:title m)))))
+                    (emit :line
+                      (format "    ~a  ~a msgs  ~a"
+                        (string/pad-right title 40)
+                        (:count m)
+                        (:id m)))))
+                ss)))
+          state)))))
+
+;; The /resume argument completes from the saved sessions, newest first.
+(register-completions! "resume"
+  (lambda (state)
+    (let ((sessions (list-sessions)))
+      (append
+        (map
+          (lambda (m)
+            {:value (:id m)
+             :label f"restore: ${(:title m)} · ${(:count m)} msgs"})
+          sessions)
+        (map
+          (lambda (m)
+            {:value f"rename ${(:id m)} "
+             :label f"rename: ${(:title m)}"})
+          sessions)
+        (map
+          (lambda (m)
+            {:value f"delete ${(:id m)}"
+             :label f"delete: ${(:title m)}"})
+          sessions)))))
+
+(register-command! "cwd"
+  "Show the working directory"
+  (lambda (state args)
+    (emit :info (:cwd state))
+    state))
+
+(register-completions! "config"
+  (lambda (state)
+    (list {:value "edit" :label "open init.sema in your editor"})))
+
+(register-command! "config"
+  "Show the config path (/config edit opens it)"
+  (lambda (state args)
+    (if (= args "edit")
+      (if (open-config!)
+        (emit :info f"opening ${(config-path)}")
+        (emit :error
+          f"couldn't open an editor — edit ${(config-path)} manually"))
+      (begin
+        (emit :info f"config: ${(config-path)}")
+        (emit :info "edit it in any pane — changes hot-reload on save")))
+    state))
+
+(register-command! "reload"
+  "Reload config from disk and rebuild the agent"
+  (lambda (state args)
+    ;; On a broken init.sema, apply-config! keeps the running config (it
+    ;; reconciles nothing) — a typo must not wipe the user's live commands,
+    ;; keybindings, and MCP servers.
+    (let ((r (apply-config! (config-path) (get state :config {}))))
+      (if (:ok r)
+        (let ((cfg (:ok r)))
+          (emit :ok "config reloaded")
+          (emit-config-warnings! (:warnings r))
+          (assoc state
+            :config cfg
+            :agent (create-agent (:cwd state) (:model state) cfg)))
+        (begin
+          (emit :error f"config: ${(:error r)} — keeping current config")
+          state)))))
+
+(register-command! "quit" "Exit Sema Coder" (lambda (state args) 'quit))
+(register-command! "exit" "Exit Sema Coder" (lambda (state args) 'quit))
