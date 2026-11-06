@@ -1,0 +1,38 @@
+(load "harness.sema")
+(load "../src/tui.sema")
+
+;; Drive the byte decoder, not just hand-authored maps. Kitty event type 3 is
+;; release, type 2 repeat, and type 1 press.
+(prompt-clear!)
+(handle-key (:event (parse-terminal-event (string/to-utf8 "\x1b;[120;1:3u") #f)))
+(check "key release never inserts text" (prompt-text) "")
+(prompt-clear!)
+(handle-key (:event (parse-terminal-event (string/to-utf8 "\x1b;[120;1:1u") #f)))
+(handle-key (:event (parse-terminal-event (string/to-utf8 "\x1b;[120;1:2u") #f)))
+(check "press and repeat still insert text" (prompt-text) "xx")
+(set! *should-quit* #f)
+(prompt-clear!)
+(handle-key (:event (parse-terminal-event (string/to-utf8 "\x1b;[99;5:3u") #f)))
+(check-false "Ctrl-C release cannot quit an idle app" *should-quit*)
+
+;; A transcript mutation between the last move and release must invalidate the
+;; gesture just as it does between two moves. No external clipboard is used.
+(set! *rows* 6)
+(set! *cols* 40)
+(set! *scroll* 0)
+(define copies 0)
+(parameterize ((current-clipboard-copy
+                 (lambda (text) (set! copies (+ copies 1)) #t)))
+  (clear-transcript!)
+  (add-block! {:kind :info :text "alpha\nbeta\ngamma"})
+  (handle-mouse {:kind :mouse :action :press :button 0 :x 2 :y 2})
+  (handle-mouse {:kind :mouse :action :move :button 0 :x 6 :y 2})
+  (check-true "test has a live drag" (and *selection-drag* (:dragged *selection-drag*)))
+  ;; A streaming delta or background-task notice can cause this mutation.
+  (add-block! {:kind :info :text "new lifecycle notice"})
+  (handle-mouse {:kind :mouse :action :release :button 0 :x 6 :y 2})
+  (check "stale drag release never copies different transcript text" copies 0)
+  (check-false "stale release clears drag" *selection-drag*)
+  (check-false "stale release clears selection" *selection*))
+
+(done)

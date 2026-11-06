@@ -16,6 +16,8 @@ execution. No live provider is needed by the regressions.
 | High for concurrent extensions | [#8](https://github.com/sema-lisp/sema-coder/issues/8): MCP attempt ownership | `mcp_races_test`: disconnect→late connect reconnects; changed endpoint→late connect publishes old tools; removed endpoint→late handle is leaked. Seven assertions fail with real MCP handles and deterministic channel barriers. Built-in modal calls are serialized; async extensions can overlap these public functions. | Fixed: per-attempt ownership, duplicate-connect guard and superseded-handle cleanup. `mcp_races_test`: 18 checks green (initially 7 failures); MCP/reconcile suites also pass. |
 | Medium | [#7](https://github.com/sema-lisp/sema-coder/issues/7): executed input visibility | `state_machines_test`: direct+queued input both run, but only direct input has a user block. `on-enter` owns user rendering while queue drain bypasses it. Steers share the bypass. | Fixed: common turn entry owns the user block. Direct+queue and interrupt+steer assertions went red→green; state/controller/e2e suites pass 110 checks. |
 
+| Medium | [#9](https://github.com/sema-lisp/sema-coder/issues/9): input action freshness | `event_boundaries_test` initially fails 3 assertions: actual Kitty release bytes insert text/quit; transcript mutation between drag move and release copies stale coordinates. Releases require a terminal reporting event types. | Fixed: ignore key-up; revalidate transcript version on release. 101 input/selection/decoder checks pass. |
+
 ## 1. Process and front-end lifecycle
 
 Owners: `coder.sema`, `tui-run`, `run-turn`, `run-turn-streaming`.
@@ -257,6 +259,7 @@ Owners: prompt/history/selection/frame helpers in `src/tui.sema`,
 | Composer editing / history browsing | insert/delete/move/history step | Codepoint cursor stays within input; history bounded to 100; blank input is not submitted |
 | Clipboard notice absent/present | copy succeeds/fails, expiry | Show bounded status until deadline, then clear |
 | Selection none/pressed/dragging | press/move/release | Capture origin and transcript version; drag after distance threshold; release copies and clears feedback |
+| Keyboard press/repeat/release | decoded event type | Press/repeat may execute; release is ignored before command, overlay or copy routing |
 | Click chain 1/2/3 | same cell within 300ms | Cycle single/word/line, then restart |
 | Selection valid/stale | transcript mutation or resize | Invalidate gesture/highlight rather than copy different rendered text |
 | Input reader stopped/running/EOF | start/read/stop | One task owns stdin; captured channel isolates old reader from replacement |

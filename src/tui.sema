@@ -1625,7 +1625,8 @@
       (:release
         (when *selection-drag*
           (let ((drag *selection-drag*)
-                (p (resolve-transcript-position (:x k) (:y k))))
+                (p (when (= (:version *selection-drag*) (transcript-version))
+                     (resolve-transcript-position (:x k) (:y k)))))
             (set! *selection-drag* #f)
             (if (:dragged drag)
               (begin
@@ -1666,6 +1667,8 @@
 
 (defun handle-key (k)
   (cond
+    ;; Kitty release events describe key-up, never a second user action.
+    ((= (get k :event :press) :release) nil)
     ;; Ctrl-Shift-C is copy-only: never turn it into Ctrl-C/quit when there is
     ;; no active selection.
     ((ctrl-shift-c? k) (copy-selection!))
