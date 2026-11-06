@@ -396,7 +396,9 @@ logs a warning at boot/reload (first match wins).
 `↑` / `↓` walk the prompt history for this process (newest first); the text
 being edited is kept and comes back when you step past the newest entry. In a
 multi-line prompt they move between lines first. `Page Up` / `Page Down` and
-the mouse wheel scroll the transcript. `Shift-Enter` or `Option-Enter` inserts
+the mouse wheel scroll the transcript. Scrolling up pauses automatic scrolling;
+new output and prompt submissions preserve your reading position until you
+scroll all the way back down. `Shift-Enter` or `Option-Enter` inserts
 a line break; a pasted snippet keeps its line breaks. The prompt grows to six
 rows and windows vertically after that. `edit-file` results show the changed
 lines as a diff, removed lines red and added lines green.

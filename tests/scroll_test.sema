@@ -1,0 +1,114 @@
+(load "harness.sema")
+(load "../src/tui.sema")
+
+(set! *rows* 10)
+(set! *cols* 60)
+(set! *session-id* #f)
+
+(defun scroll-view ()
+  (viewport-info (transcript-lines (- *cols* 2)) (transcript-height)))
+
+(defun visible-scroll-text () (map term/strip (:lines (scroll-view))))
+
+(defun reset-scroll-test! ()
+  (clear-transcript!)
+  (reset-scroll!)
+  (set! *busy* #f)
+  (set! *turn* #f)
+  (set! *input-queue* '())
+  (set! *queue-paused* #f)
+  (set! *interrupt* #f)
+  (set! *messages* '())
+  (prompt-clear!)
+  (for-each
+    (lambda (i) (add-block! {:kind :info :text f"history ${i}"}))
+    (range 0 30))
+  (scroll-view))
+
+;; Stream through the actual reveal path while viewing older transcript text.
+(reset-scroll-test!)
+(handle-mouse {:kind :mouse :action :wheel-up})
+(define before-stream (visible-scroll-text))
+(define before-offset *scroll*)
+(on-text-cb "new streamed line one\nnew streamed line two")
+(flush-type-buffer!)
+(check "streaming preserves the scrolled viewport" (visible-scroll-text) before-stream)
+(check-true "distance from bottom increases while reading older text" (> *scroll* before-offset))
+
+;; Scrolling partway down must not re-enable following.
+(scroll-by! -1)
+(define before-notice (visible-scroll-text))
+(add-block! {:kind :info :text "background task finished"})
+(check "partial scroll-down keeps following disabled" (visible-scroll-text) before-notice)
+
+(scroll-by! (- (max-scroll)))
+(check "scrolling to the bottom clears offset" *scroll* 0)
+(define bottom-before (:start (scroll-view)))
+(add-block! {:kind :info :text "now follow new output"})
+(check-true "bottom resumes following new output" (> (:start (scroll-view)) bottom-before))
+
+;; Clamp repeated scrolling at the top, and keep downward scrolling responsive
+;; after output arrives while anchored at the oldest line.
+(scroll-by! 100000)
+(check "scroll-up clamps at oldest line" (:start (scroll-view)) 0)
+(add-block! {:kind :info :text "another new line"})
+(scroll-by! -1)
+(check "one scroll-down moves one line after transcript growth" (:start (scroll-view)) 1)
+
+;; Queue/composer rows change viewport height; keep the first visible line.
+(reset-scroll-test!)
+(scroll-by! 8)
+(define composing-top (:start (scroll-view)))
+(prompt-set! "first\nsecond\nthird")
+(check "multiline composer keeps the viewport top" (:start (scroll-view)) composing-top)
+(prompt-clear!)
+(check "shrinking composer keeps the viewport top" (:start (scroll-view)) composing-top)
+
+;; Prompt submission must not jump to the tail, whether it runs immediately,
+;; queues a follow-up, or steers the active turn.
+(reset-scroll-test!)
+(scroll-by! 8)
+(define submission-top (:start (scroll-view)))
+(parameterize
+  ((current-turn-render (lambda () nil))
+   (current-turn-pump (lambda (turn) nil))
+   (current-turn-runner
+     (lambda (agent input messages on-tool on-text on-partial effort)
+       (on-text "new response")
+       {:response "new response"
+        :messages (append messages
+          (list {:role "user" :content input}
+                {:role "assistant" :content "new response"}))})))
+  (prompt-set! "new direct prompt")
+  (on-enter))
+(check "direct submission keeps reading position" (:start (scroll-view)) submission-top)
+
+(set! *busy* #t)
+(set! *active-turn-id* "scroll-test-turn")
+(prompt-set! "queued prompt")
+(on-tab)
+(check "queuing input keeps reading position" (:start (scroll-view)) submission-top)
+(prompt-set! "steering prompt")
+(on-enter)
+(check "steering input keeps reading position" (:start (scroll-view)) submission-top)
+
+;; If a resize makes all text fit, keep following paused until manual scrolling
+;; reaches the bottom; layout alone must not re-enable it.
+(reset-scroll-test!)
+(scroll-by! 5)
+(set! *rows* 100)
+(scroll-view)
+(add-block! {:kind :info :text (string/join (map #(str "growth " %) (range 0 100)) "\n")})
+(check "fitting all content during resize does not resume following"
+  (:start (scroll-view)) 0)
+(scroll-by! -100000)
+(define after-resume (:start (scroll-view)))
+(add-block! {:kind :info :text "follow again"})
+(check-true "explicit bottom scroll resumes after resize"
+  (> (:start (scroll-view)) after-resume))
+
+(new-session!)
+(check "new conversation starts following" *scroll* 0)
+(check-false "new conversation clears old viewport anchor" *scroll-anchor*)
+
+(done)

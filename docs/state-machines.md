@@ -17,6 +17,7 @@ execution. No live provider is needed by the regressions.
 | High for concurrent extensions | [#8](https://github.com/sema-lisp/sema-coder/issues/8): MCP attempt ownership | `mcp_races_test`: disconnect→late connect reconnects; changed endpoint→late connect publishes old tools; removed endpoint→late handle is leaked. Seven assertions fail with real MCP handles and deterministic channel barriers. Built-in modal calls are serialized; async extensions can overlap these public functions. | Fixed: per-attempt ownership, duplicate-connect guard and superseded-handle cleanup. `mcp_races_test`: 18 checks green (initially 7 failures); MCP/reconcile suites also pass. |
 | Medium | [#7](https://github.com/sema-lisp/sema-coder/issues/7): executed input visibility | `state_machines_test`: direct+queued input both run, but only direct input has a user block. `on-enter` owns user rendering while queue drain bypasses it. Steers share the bypass. | Fixed: common turn entry owns the user block. Direct+queue and interrupt+steer assertions went red→green; state/controller/e2e suites pass 110 checks. |
 | Medium | [#9](https://github.com/sema-lisp/sema-coder/issues/9): input action freshness | `event_boundaries_test` initially fails 3 assertions: actual Kitty release bytes insert text/quit; transcript mutation between drag move and release copies stale coordinates. Tool expansion also left coordinates valid despite reflow (2 further red assertions). Releases require a terminal reporting event types. | Fixed: ignore key-up; revalidate transcript version on release. 101 initial input/selection/decoder checks pass; reflow follow-up passes 85 event/selection/transcript checks. |
+| Medium | [#11](https://github.com/sema-lisp/sema-coder/issues/11): paused transcript following | `scroll_test` initially fails 8 assertions: streamed output/background notices move a fixed bottom offset; submission resets it; composer height shifts the viewport. | Fixed: retain the first visible rendered line until manual scrolling reaches bottom. All 16 scroll checks pass, including resize and new-session reset. |
 
 ## 1. Process and front-end lifecycle
 
@@ -257,6 +258,10 @@ Owners: prompt/history/selection/frame helpers in `src/tui.sema`,
 | Machine / states | Event | Transition and invariant |
 | --- | --- | --- |
 | Composer editing / history browsing | insert/delete/move/history step | Codepoint cursor stays within input; history bounded to 100; blank input is not submitted |
+| Transcript following/anchored | scroll up from bottom | Capture the first visible rendered line; pause automatic following |
+| Transcript anchored | stream/notice/submit/composer height/resize | Preserve top line, clamped to valid content; layout alone never resumes following |
+| Transcript anchored | manual scroll reaches bottom | Clear anchor and follow new output again; partial down-scroll stays anchored |
+| Any transcript view | new or restored conversation | `reset-scroll!` clears offset and anchor |
 | Clipboard notice absent/present | copy succeeds/fails, expiry | Show bounded status until deadline, then clear |
 | Selection none/pressed/dragging | press/move/release | Capture origin and transcript version; drag after distance threshold; release copies and clears feedback |
 | Keyboard press/repeat/release | decoded event type | Press/repeat may execute; release is ignored before command, overlay or copy routing |
@@ -279,9 +284,9 @@ block; width/preview changes invalidate cache. Tests: `terminal_input_test`,
 
 ## Verification and limits
 
-Final local verification on Sema 1.37.0: `./test.sema` passes **41 files / 973
-checks** after all fixes. `git diff --check` passes. Five related issue groups
-(#6–#10) are fixed and closed; each fix and this document were committed and
+Final local verification on Sema 1.37.0: `./test.sema` passes **42 files / 989
+checks** after all fixes. `git diff --check` passes. Six related issue groups
+(#6–#11) are fixed and closed; each fix and this document were committed and
 pushed as work progressed. The implementation diff was reviewed for ownership,
 cleanup order, old-session compatibility and unintended state-map changes.
 
@@ -292,11 +297,12 @@ cleanup order, old-session compatibility and unintended state-map changes.
 | [MCP attempt races](../tests/mcp_races_test.sema) | [Connect → disconnect/reconcile/retry](../src/mcp.sema) with real handles and channel barriers | `sema tests/mcp_races_test.sema` |
 | [Cancellation cleanup race](../tests/foreground_race_test.sema) | [Interrupt](../src/tui.sema) across two real [foreground commands](../src/tools.sema); injected cleanup delay expands the scheduling window | `sema tests/foreground_race_test.sema` |
 | [Input action boundaries](../tests/event_boundaries_test.sema) | [Byte decode](../src/terminal_input.sema) → [routing/drag release](../src/tui.sema), plus [tool reflow](../src/transcript.sema) | `sema tests/event_boundaries_test.sema` |
+| [Paused transcript following](../tests/scroll_test.sema) | [Reading anchor and manual scroll](../src/tui.sema), streaming, submission and layout changes | `sema tests/scroll_test.sema` |
 | [Controller regressions](../tests/turn_control_test.sema) | Direct/queued/steer rendering, cancellation, late callbacks, terminal history | `sema tests/turn_control_test.sema` |
 
 Baseline: `./test.sema` passed 36 files / 918 checks before synchronization;
 Sema 1.37 compatibility changes from origin add eight checks. The fixes add
-47 checks, including existing-controller coverage. Each confirmed failure above
+63 checks, including existing-controller and scroll-following coverage. Each confirmed failure above
 was reproduced before its corresponding fix; the same-tick identity test uses
 a fixed clock, and the original timestamp/PID collision follows directly from
 `new-session!`'s former ID expression.

@@ -44,7 +44,7 @@
   (range 0 30))
 (set! *scroll* 4)
 (check-frame "scrolled mid-transcript")
-(set! *scroll* 0)
+(reset-scroll!)
 
 ;; Header: a long model name on a narrow terminal (the gap is floored at 1).
 (set! *model* "anthropic:claude-fable-5-extremely-long-model-identifier")

@@ -57,7 +57,8 @@
 (define *history-pos* -1) ;; index into *history* being viewed; -1 = live text
 (define *history-draft* "") ;; the live text saved when Up leaves it
 (define *kill* "") ;; last killed text; ⌃Y yanks it
-(define *scroll* 0) ;; lines scrolled up from the bottom (0 = follow tail)
+(define *scroll* 0) ;; current distance from bottom; anchor controls tail following
+(define *scroll-anchor* #f) ;; first visible rendered line while following is paused
 (define *psel* 0) ;; selected index in the slash palette
 (define *busy* #f) ;; an agent turn is in flight
 (define *turn* #f) ;; promise for the in-flight turn (#f when idle)
@@ -485,11 +486,23 @@
   "How far up the transcript can scroll before the top line is on screen."
   (max 0 (- (length (transcript-lines (- *cols* 2))) (transcript-height))))
 
+(defun reset-scroll! ()
+  "Start following a new or restored transcript."
+  (set! *scroll* 0)
+  (set! *scroll-anchor* #f))
+
 (defun scroll-by! (n)
   "Scroll by N lines (positive = toward older), clamped to [0, max-scroll].
    Clamping on write (not just at render) keeps scroll-down responsive after
    the user over-scrolls past the top."
-  (set! *scroll* (max 0 (min (+ *scroll* n) (max-scroll)))))
+  (let* ((lines (transcript-lines (- *cols* 2)))
+         (h (transcript-height))
+         (limit (max 0 (- (length lines) h))))
+    ;; Account for output received since the previous frame before applying
+    ;; this input, so one scroll-down still moves exactly one rendered line.
+    (viewport-info lines h)
+    (set! *scroll* (max 0 (min (+ *scroll* n) limit)))
+    (set! *scroll-anchor* (if (> *scroll* 0) (- limit *scroll*) #f))))
 
 (defun round1 (x) (/ (round (* x 10)) 10.0)) ;; one decimal place
 
@@ -645,17 +658,27 @@
   "Window metadata for transcript rendering and mouse-coordinate resolution."
   (let* ((n (length lines))
          (maxscroll (max 0 (- n h)))
-         (sc (min *scroll* maxscroll))
-         (end (- n sc))
-         (start (max 0 (- end h)))
+         (anchored? (or (number? *scroll-anchor*) (> *scroll* 0)))
+         ;; A fixed bottom offset drifts as streaming adds lines. Keep the
+         ;; first visible line instead, until scrolling explicitly reaches 0.
+         (start (if anchored?
+                  (min maxscroll
+                    (if (number? *scroll-anchor*)
+                      *scroll-anchor*
+                      (max 0 (- maxscroll *scroll*))))
+                  maxscroll))
+         (end (min n (+ start h)))
          (window (if (> n 0) (take (- end start) (drop start lines)) '()))
          (pad (- h (length window))))
+    (set! *scroll* (- maxscroll start))
+    ;; Fitting the bottom after reflow is not an explicit request to follow.
+    (set! *scroll-anchor* (if anchored? start #f))
     {:lines (if (> pad 0) (append (make-list pad "") window) window)
      :start start
      :pad pad}))
 
 (defun viewport (lines h)
-  "Take the last H lines, honoring *scroll* (0 = bottom). Pad with blanks on top."
+  "Show H lines at the reading anchor or live tail. Pad with blanks on top."
   (:lines (viewport-info lines h)))
 
 (defun current-selection ()
@@ -1146,6 +1169,7 @@
   (set! *session-created* ((current-ui-clock)))
   (set! *session-id* f"${*session-created*}-${(sys/pid)}-${*session-seq*}")
   (set! *session-custom-title* "")
+  (reset-scroll!)
   (set! *input-queue* '())
   (set! *queue-paused* #f)
   (clear-turn-events!)
@@ -1209,7 +1233,7 @@
       (add-block!
         {:kind :info
          :text f"resumed “${(get (:meta f) :title id)}” · ${(length (:messages f))} messages · ${(let ((m (:model f))) (if (= m "") "auto" m))}"})
-      (set! *scroll* 0))
+      (reset-scroll!))
     (catch e
       (add-block! {:kind :error :text f"failed to restore session: ${e}"}))))
 
@@ -1390,7 +1414,6 @@
           (let ((target *active-turn-id*))
             (when (enqueue-input! text "steer" target)
               (prompt-clear!)
-              (set! *scroll* 0)
               (request-interrupt-for! target :steer)))))
       ((palette-open?)
         (let ((chosen (palette-choice (palette-view) *psel* *input*)))
@@ -1400,7 +1423,6 @@
           (run-command! chosen)))
       (else
         (prompt-clear!)
-        (set! *scroll* 0) ;; sending always returns you to the tail
         (run-agent-turn! text)))))
 
 (defun on-steer-enter ()
@@ -1418,8 +1440,7 @@
         (set! *psel* 0))
       (when (and *busy* (not (= text "")))
         (when (enqueue-input! text "follow-up")
-          (prompt-clear!)
-          (set! *scroll* 0))))))
+          (prompt-clear!))))))
 
 (defun run-key-command! (action)
   "A key bound to a non-built-in action fires the like-named custom command, so
