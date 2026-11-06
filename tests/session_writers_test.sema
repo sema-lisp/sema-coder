@@ -1,0 +1,52 @@
+(load "harness.sema")
+(load "../src/session.sema")
+
+;; Model two processes sharing a sessions directory: pause writer A after its
+;; real file/write and before its rename, let writer B save, then finish A.
+;; This is the exact interleaving the OS can produce between two app instances.
+(define root (test-temp-path "session-writers"))
+(file/mkdir root)
+(define native-rename file/rename)
+(define ready (channel/new 1))
+(define release (channel/new 1))
+(define renames 0)
+(set! file/rename
+  (lambda (from to)
+    (set! renames (+ renames 1))
+    (when (= renames 1)
+      (channel/send ready #t)
+      (channel/recv release))
+    (native-rename from to)))
+
+(parameterize ((config-dir-override root))
+  (define writer-a
+    (async
+      (try
+        (begin
+          (save-session! "shared" 1 "m" ""
+            (list {:role "user" :content "writer A"}))
+          #t)
+        (catch e #f))))
+  (channel/recv ready)
+  (save-session! "shared" 1 "m" ""
+    (list {:role "user" :content "writer B"}))
+  (check "writer B publishes its own complete snapshot"
+    (:content (car (:messages (load-session "shared")))) "writer B")
+  (channel/send release #t)
+  (check-true "overlapping writer A can complete its own rename" (await writer-a))
+  (check "last rename publishes writer A's own snapshot"
+    (:content (car (:messages (load-session "shared")))) "writer A")
+
+  (set! file/rename (lambda (from to) (error "injected rename failure")))
+  (check-throws "failed publication is reported"
+    (lambda ()
+      (save-session! "shared" 1 "m" ""
+        (list {:role "user" :content "unpublished"}))))
+  (check "failed publication preserves the last complete snapshot"
+    (:content (car (:messages (load-session "shared")))) "writer A")
+  (check "failed publication cleans up its own temporary file"
+    (filter #(string/ends-with? % ".tmp") (file/list (sessions-dir))) '()))
+
+(set! file/rename native-rename)
+(shell "rm" "-rf" root)
+(done)

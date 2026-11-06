@@ -13,7 +13,7 @@ execution. No live provider is needed by the regressions.
 | Priority | Issue / grouped fix | Evidence before fix | Status |
 | --- | --- | --- | --- |
 | High | [#10](https://github.com/sema-lisp/sema-coder/issues/10): cancel before process cleanup | `foreground_race_test` runs two real foreground commands and expands the cleanup scheduling window. Initially the second command starts and writes a file after cancel was requested (2 failed assertions). | Fixed: cancel runner before awaiting process termination. Regression passes; foreground/interrupt/controller/tools suites pass 177 checks. |
-| High | [#6](https://github.com/sema-lisp/sema-coder/issues/6): empty session / queue lifecycle | `state_machines_test`: removing the last queued input preserves it on disk; `/clear` with zero messages preserves queue/pause/session identity. `new-session!` timestamp+PID also permits same-millisecond ID reuse. Restored removed work may execute tools. | Fixed: empty updates are saved; explicit reset flag; timestamp/PID/sequence IDs. `state_machines_test`: 8 checks green; session/restore/audit suites: 58 checks green. |
+| High | [#6](https://github.com/sema-lisp/sema-coder/issues/6): empty session / queue lifecycle | `state_machines_test`: removing the last queued input preserves it on disk; `/clear` with zero messages preserves queue/pause/session identity. `new-session!` timestamp+PID also permits same-millisecond ID reuse. Restored removed work may execute tools. `session_writers_test` also proves shared-temp rename failure under overlapping saves (2 red assertions). | Fixed: empty updates are saved; explicit reset flag; timestamp/PID/sequence IDs. `state_machines_test`: 8 checks green; session/restore/audit suites: 58 checks green. Per-writer temporary paths fix overlapping publication; writer regression passes. |
 | High for concurrent extensions | [#8](https://github.com/sema-lisp/sema-coder/issues/8): MCP attempt ownership | `mcp_races_test`: disconnect→late connect reconnects; changed endpoint→late connect publishes old tools; removed endpoint→late handle is leaked. Seven assertions fail with real MCP handles and deterministic channel barriers. Built-in modal calls are serialized; async extensions can overlap these public functions. | Fixed: per-attempt ownership, duplicate-connect guard and superseded-handle cleanup. `mcp_races_test`: 18 checks green (initially 7 failures); MCP/reconcile suites also pass. |
 | Medium | [#7](https://github.com/sema-lisp/sema-coder/issues/7): executed input visibility | `state_machines_test`: direct+queued input both run, but only direct input has a user block. `on-enter` owns user rendering while queue drain bypasses it. Steers share the bypass. | Fixed: common turn entry owns the user block. Direct+queue and interrupt+steer assertions went red→green; state/controller/e2e suites pass 110 checks. |
 | Medium | [#9](https://github.com/sema-lisp/sema-coder/issues/9): input action freshness | `event_boundaries_test` initially fails 3 assertions: actual Kitty release bytes insert text/quit; transcript mutation between drag move and release copies stale coordinates. Tool expansion also left coordinates valid despite reflow (2 further red assertions). Releases require a terminal reporting event types. | Fixed: ignore key-up; revalidate transcript version on release. 101 initial input/selection/decoder checks pass; reflow follow-up passes 85 event/selection/transcript checks. |
@@ -115,7 +115,7 @@ restored; renamed; deleted; failed save (warning latched).
 | --- | --- | --- |
 | Boot/clear | new session | New identity, created time, empty queue/events/title; session-start hook |
 | Fresh | no messages/queue | Do not create a new empty file |
-| Fresh/persisted | turn terminal or queue mutation | Serialize metadata/messages to temporary file then rename |
+| Fresh/persisted | turn terminal or queue mutation | Serialize metadata/messages to per-writer temporary file then rename |
 | Persisted | clear last queue entry, zero messages | Persist empty update; never leave previous queue on disk |
 | Idle | resume ID | Build agent/fields; restore exact messages, model, effort, queue/pause/title/events; rebuild transcript |
 | Persisted | rename valid nonempty title | Rewrite with normalized durable title |
@@ -128,7 +128,7 @@ must be unique within a process as well as across processes; clear resets queue
 and metadata even when message count is already zero. Restore is not clear.
 JSON event keywords are normalized on restore. Rename preserves history.
 Atomic replacement protects readers against a partially written destination;
-it does not provide multi-process transaction isolation for two instances
+per-writer temporary files prevent writers from consuming each other’s snapshot, and failed publication removes its temporary file. Last completed rename wins; this does not provide multi-process transaction isolation for two instances
 editing the same restored session. Saved files are trusted local application
 data, not schema-validated imports. Session/restore/audit regressions cover the
 normal persisted shape; issue #6 adds queue-only lifecycle coverage.

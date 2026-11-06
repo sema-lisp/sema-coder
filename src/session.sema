@@ -36,14 +36,23 @@
     (when (= clean "") (error "session title must not be empty"))
     clean))
 
+(define *session-write-seq* 0)
+
 (defun write-session! (id meta messages)
   "Atomically write one complete session record."
   (file/mkdir (sessions-dir))
+  (set! *session-write-seq* (+ *session-write-seq* 1))
   (let* ((dest (session-path id))
-         (tmp (string-append dest ".tmp")))
-    (file/write tmp
-      (string/join (cons (json/encode meta) (map json/encode messages)) "\n"))
-    (file/rename tmp dest)))
+         ;; A shared .tmp lets overlapping saves rename each other's snapshot.
+         (tmp f"${dest}.${(sys/pid)}.${*session-write-seq*}.tmp"))
+    (try
+      (begin
+        (file/write tmp
+          (string/join (cons (json/encode meta) (map json/encode messages)) "\n"))
+        (file/rename tmp dest))
+      (catch e
+        (try (when (file/exists? tmp) (file/delete tmp)) (catch cleanup-error nil))
+        (throw e)))))
 
 (defun save-session! (id created model effort messages . rest)
   "Write the session as JSONL (meta line + one message per line). Skip a fresh empty session, but persist empty updates to existing files.
