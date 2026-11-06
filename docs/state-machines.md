@@ -13,7 +13,7 @@ execution. No live provider is needed by the regressions.
 | Priority | Issue / grouped fix | Evidence before fix | Status |
 | --- | --- | --- | --- |
 | High | [#6](https://github.com/sema-lisp/sema-coder/issues/6): empty session / queue lifecycle | `state_machines_test`: removing the last queued input preserves it on disk; `/clear` with zero messages preserves queue/pause/session identity. `new-session!` timestamp+PID also permits same-millisecond ID reuse. Restored removed work may execute tools. | Fixed: empty updates are saved; explicit reset flag; timestamp/PID/sequence IDs. `state_machines_test`: 8 checks green; session/restore/audit suites: 58 checks green. |
-| High for concurrent extensions | [#8](https://github.com/sema-lisp/sema-coder/issues/8): MCP attempt ownership | `mcp_races_test`: disconnect→late connect reconnects; changed endpoint→late connect publishes old tools; removed endpoint→late handle is leaked. Seven assertions fail with real MCP handles and deterministic channel barriers. Built-in modal calls are serialized; async extensions can overlap these public functions. | Fix pending |
+| High for concurrent extensions | [#8](https://github.com/sema-lisp/sema-coder/issues/8): MCP attempt ownership | `mcp_races_test`: disconnect→late connect reconnects; changed endpoint→late connect publishes old tools; removed endpoint→late handle is leaked. Seven assertions fail with real MCP handles and deterministic channel barriers. Built-in modal calls are serialized; async extensions can overlap these public functions. | Fixed: per-attempt ownership, duplicate-connect guard and superseded-handle cleanup. `mcp_races_test`: 18 checks green (initially 7 failures); MCP/reconcile suites also pass. |
 | Medium | [#7](https://github.com/sema-lisp/sema-coder/issues/7): executed input visibility | `state_machines_test`: direct+queued input both run, but only direct input has a user block. `on-enter` owns user rendering while queue drain bypasses it. Steers share the bypass. | Fix pending |
 
 ## 1. Process and front-end lifecycle
@@ -142,7 +142,7 @@ Record fields: endpoint opts, transport, handle, tools, error, autostart.
 | Absent | declared | Idle record |
 | Idle/error/needs-auth | explicit connect | Connecting; clear old handle/tools/error; bounded handshake |
 | Connected with handle | connect again | No-op; preserve handle |
-| Connecting | connect again | Must not start a competing owner (pending fix) |
+| Connecting | connect again | Return connecting without starting a competing owner |
 | Connecting | handshake + tool conversion succeeds, still current | Connected with handle/tools |
 | Connecting | timeout/handshake/tool conversion error | Error or needs-auth; close acquired handle; empty tools |
 | Any existing | disconnect | Close handle; idle; invalidate pending completion |

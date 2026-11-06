@@ -8,6 +8,7 @@
 (load "config.sema")
 
 (define *mcp* (mutable-array/new 8))
+(define *mcp-attempt-seq* 0) ;; never reset: old completions cannot match new records
 
 ;; A server that never completes the MCP handshake (wrong binary, unreachable
 ;; URL) must not hang boot or a reconnect. Per-server override: :connect-timeout-ms
@@ -46,6 +47,7 @@
    :autostart (:autostart srv)
    :transport (:transport srv)
    :status :idle
+   :attempt-id #f
    :handle #f
    :tools '()
    :error #f})
@@ -113,13 +115,17 @@
     (cond
       ((not rec) :no-such)
       ((and (= (:status rec) :connected) (:handle rec)) :connected)
+      ((= (:status rec) :connecting) :connecting)
       (else
         ;; A failed or interrupted attempt may still have left a handle on the
         ;; record. Close it before replacement so reconnect cannot orphan it.
         (mcp-close-record! rec)
+        (set! *mcp-attempt-seq* (+ *mcp-attempt-seq* 1))
         (mcp-set! name
-          #(assoc % :status :connecting :handle #f :tools '() :error #f))
-        (let* ((h #f)
+          #(assoc % :status :connecting :handle #f :tools '() :error #f
+             :attempt-id *mcp-attempt-seq*))
+        (let* ((attempt-id *mcp-attempt-seq*)
+               (h #f)
                (result
                  (try
                    (begin
@@ -128,27 +134,37 @@
                    (catch e
                      (when h (try (mcp/close h) (catch close-error nil)))
                      {:err e}))))
-          (if (get result :ok #f)
+          (cond
+            ;; Disconnect, reset, or reconciliation can run while the handshake
+            ;; parks. Only this record generation may publish its result.
+            ((not (= (get (or (mcp-get name) {}) :attempt-id #f) attempt-id))
+              (when (get result :ok #f)
+                (try (mcp/close (:ok result)) (catch close-error nil)))
+              :superseded)
+            ((get result :ok #f)
             (begin
               (mcp-set! name
                 #(assoc %
                   :status :connected
                   :handle (:ok result)
                   :tools (:tools result)
+                  :attempt-id #f
                   :error #f))
-              :connected)
-            (let* ((errmsg (str (:err result)))
+              :connected))
+            (else (let* ((errmsg (str (:err result)))
                    (status (if (auth-error? errmsg) :needs-auth :error)))
               (mcp-set! name
-                #(assoc % :status status :handle #f :tools '() :error errmsg))
-              status)))))))
+                #(assoc % :status status :handle #f :tools '() :error errmsg
+                   :attempt-id #f))
+              status))))))))
 
 (defun mcp-disconnect! (name)
   "Close the server NAME's connection and clear its tools."
   (let ((rec (mcp-get name)))
     (when (and rec (:handle rec))
       (try (mcp/close (:handle rec)) (catch e nil))))
-  (mcp-set! name #(assoc % :status :idle :handle #f :tools '() :error #f)))
+  (mcp-set! name #(assoc % :status :idle :handle #f :tools '() :error #f
+                    :attempt-id #f)))
 
 (defun all-mcp-tools ()
   "Every tool from currently-connected servers, flattened."
