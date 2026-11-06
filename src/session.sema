@@ -46,7 +46,7 @@
     (file/rename tmp dest)))
 
 (defun save-session! (id created model effort messages . rest)
-  "Write the session as JSONL (meta line + one message per line). No-op if empty.
+  "Write the session as JSONL (meta line + one message per line). Skip a fresh empty session, but persist empty updates to existing files.
    MODEL and EFFORT are the session's effective values, so /resume restores them.
    Optional metadata stores the durable input queue and whether an interruption
    paused it; older session files remain valid because both fields default.
@@ -58,7 +58,8 @@
          (events (get opts :events '()))
          (cwd (get opts :cwd (sys/cwd)))
          (custom-title (get opts :custom-title "")))
-    (when (or (> (length messages) 0) (> (length queue) 0))
+    (when (or (> (length messages) 0) (> (length queue) 0)
+            (file/exists? (session-path id)))
       (let* ((explicit
                (if (= custom-title "")
                  ""

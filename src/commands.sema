@@ -397,7 +397,7 @@
   (lambda (state args)
     (emit :clear "")
     (emit :info "conversation cleared")
-    (assoc state :messages '())))
+    (assoc state :messages '() :new-session #t)))
 
 (register-command! "tools"
   "List the agent's tools"

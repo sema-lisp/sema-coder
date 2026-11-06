@@ -87,6 +87,7 @@
 (define *config-error* #f) ;; string while the last reload failed (persistent banner)
 (define *reload-at* 0) ;; debounce: reload once the change settles (0 = idle)
 (define *session-id* #f) ;; current session's file id (persisted after each turn)
+(define *session-seq* 0) ;; disambiguates same-millisecond resets
 (define *session-created* 0) ;; its creation timestamp (ms)
 (define *session-custom-title* "") ;; durable user override, empty = first prompt
 (define *persist-warned* #f) ;; emitted at most one persist-failure warning per session
@@ -1138,10 +1139,10 @@
 ;; exact agent/run :messages shape), so /resume can reload it and continue.
 
 (defun new-session! ()
-  ;; timestamp + pid: two instances started in the same millisecond can't
-  ;; silently share (and clobber) one session file.
-  (set! *session-id* f"${(time-ms)}-${(sys/pid)}")
-  (set! *session-created* (time-ms))
+  ;; PID separates processes; sequence separates resets in the same millisecond.
+  (set! *session-seq* (+ *session-seq* 1))
+  (set! *session-created* ((current-ui-clock)))
+  (set! *session-id* f"${*session-created*}-${(sys/pid)}-${*session-seq*}")
   (set! *session-custom-title* "")
   (set! *input-queue* '())
   (set! *queue-paused* #f)
@@ -1242,7 +1243,8 @@
    :config *config*})
 
 (defun apply-tui-state! (st)
-  (let ((cleared? (and (> (length *messages*) 0) (null? (:messages st)))))
+  (let ((cleared? (or (get st :new-session #f)
+                      (and (> (length *messages*) 0) (null? (:messages st))))))
     (set! *messages* (:messages st))
     (set! *model* (:model st))
     (set! *effort* (get st :effort ""))

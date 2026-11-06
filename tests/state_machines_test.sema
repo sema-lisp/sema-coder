@@ -1,0 +1,61 @@
+(load "harness.sema")
+(load "../src/tui.sema")
+
+(define root (test-temp-path "state-machines"))
+(file/mkdir root)
+(set! *cwd* root)
+(set! *config* default-config)
+(set! *tui-active* #t)
+
+(defun reset-state! ()
+  (set! *messages* '())
+  (set! *input-queue* '())
+  (set! *queue-paused* #f)
+  (set! *session-id* #f)
+  (set! *busy* #f)
+  (clear-transcript!)
+  (clear-turn-events!))
+
+(parameterize ((config-dir-override root)
+               (current-turn-render (lambda () nil)))
+  ;; First turn can queue work before any messages have been committed.
+  (reset-state!)
+  (new-session!)
+  (define queue-session *session-id*)
+  (enqueue-input! "must not resurrect" "follow-up")
+  (clear-input-queue!)
+  (check "clearing a queue-only session clears its durable queue"
+    (get (:meta (load-session queue-session)) :queue '()) '())
+
+  ;; Clear is an explicit command, even with no committed messages.
+  (enqueue-input! "discard on clear" "follow-up")
+  (set! *queue-paused* #t)
+  (run-command! "/clear")
+  (check "clear empties a queue-only conversation" (queued-messages) '())
+  (check-false "clear removes queue pause" *queue-paused*)
+  (check-true "clear creates a different session id"
+    (not (= *session-id* queue-session)))
+
+  ;; Restoring empty history must not be mistaken for /clear by the bridge.
+  (save-session! "queue-only" 100 "" "" '()
+    {:queue (list {:id "q" :text "restored" :mode "follow-up"})
+     :queue-paused #t})
+  (set! *messages* (list {:role "user" :content "old conversation"}))
+  (run-command! "/resume queue-only")
+  (check "resume keeps the restored session identity" *session-id* "queue-only")
+  (check "resume keeps the restored queue" (map :text (queued-messages))
+    (list "restored"))
+  (check-true "resume keeps queue pause" *queue-paused*)
+
+  (parameterize ((current-ui-clock (lambda () 12345)))
+    (new-session!)
+    (define same-tick-id *session-id*)
+    (new-session!)
+    (check-true "same-millisecond resets never reuse an identity"
+      (not (= same-tick-id *session-id*))))
+
+)
+
+(set! *tui-active* #f)
+(shell "rm" "-rf" root)
+(done)
